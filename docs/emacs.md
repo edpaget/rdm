@@ -143,7 +143,7 @@ conventions.
 | normal | `gA` | `rdm-review-resolve` | set the comment at point's status, from those `rdm describe review` declares (the applied commit pre-fills `HEAD`, which rdm resolves in the target's repository) |
 | normal | `C` | `rdm-review-comment-document` | whole-document comment in your draft review (yours as rdm resolves the author — `review list --mine` — unless `rdm-review-author` overrides it) |
 | normal | `gS` | `rdm-review-submit` | submit your draft review with a verdict |
-| visual | `c` | `rdm-review-comment-region` | comment on the selected body text (the selection is the quote) |
+| visual | `c` | `rdm-review-comment-region` | comment on the selected body lines (the lines the selection touches are the anchor, `review comment --line`) |
 
 **`rdm-compose-mode`** (body and comment buffers) starts in insert state:
 
@@ -175,7 +175,7 @@ conventions.
 | `K` | `rdm-review-comment-at-point` |
 | `M-n` / `M-p` | `rdm-review-next-comment` / `rdm-review-previous-comment` |
 | `A` | `rdm-review-resolve` |
-| `c` | `rdm-review-comment-region` (with an active region) |
+| `c` | `rdm-review-comment-region` (with an active region; anchors on the lines it touches) |
 | `C` | `rdm-review-comment-document` |
 | `S` | `rdm-review-submit` |
 
@@ -192,6 +192,25 @@ the item's kind; `T` tags, `B` body; `Rs` show review, `Rq` requests queue,
 `Ra` close as addressed, `Rd` dismiss, `Rv` revise (copy command), `Rn` start
 draft review, `Rc` comment on document, `RS` submit; `+r`/`+p`/`+t` create a
 roadmap, phase or task; `S`/`C`/`D` plan-repo status, commit and discard.
+
+### Review comments in detail buffers
+
+A comment on a selection is anchored on the body lines the selection
+touches (`rdm review comment --line N-M`), numbered in the body at your
+draft's `created_commit`, which the buffer shows while the draft is open.
+
+Emacs places a comment only where rdm's review JSON says it is, and never
+searches a body for it:
+
+- a buffer showing the current body places it at the resolution's
+  `current` range; when rdm reports `current` null (a line range whose
+  lines shifted or changed, or a quote rdm cannot place) the comment is
+  listed un-placed in the Reviews section;
+- a buffer showing the review's `created_commit` (your draft) places it at
+  `range_start`/`range_end` when the resolution's `body` is `original`, so a
+  drifted comment still sits on its original lines there;
+- a buffer at any other revision lists every anchored comment in the
+  Reviews section.
 
 ### Autoloaded commands
 

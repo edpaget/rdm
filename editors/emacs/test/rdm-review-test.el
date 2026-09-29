@@ -201,19 +201,38 @@ Detail buffers are killed afterwards."
 (defun rdm-review-test--comment (id quote start end &rest keys)
   "An anchored comment ID on QUOTE at bytes START..END.
 KEYS: `:state' (default \"resolved\"), `:body' (\"original\"),
-`:status' (\"open\"), `:doc', `:prefix', `:suffix'."
-  (append
-   (list :id id :status (or (plist-get keys :status) "open")
-         :closed (rdm-review-test--closed (or (plist-get keys :status) "open"))
-         :anchor (list :anchor_type "text-quote" :quote quote
-                       :prefix (or (plist-get keys :prefix) "")
-                       :suffix (or (plist-get keys :suffix) ""))
-         :body (format "Comment %s." id)
-         :resolution (list :state (or (plist-get keys :state) "resolved")
-                           :quote quote :range_start start :range_end end
-                           :body (or (plist-get keys :body) "original")))
-   (when (plist-get keys :doc)
-     (list :doc (list :kind "phase" :stem (plist-get keys :doc))))))
+`:status' (\"open\"), `:doc', `:prefix', `:suffix', `:current' (a
+\(START . END) byte pair into the current body, or nil for rdm's null;
+default START..END) and `:anchor' (replaces the quote anchor)."
+  (let ((current (if (plist-member keys :current)
+                     (plist-get keys :current)
+                   (cons start end))))
+    (append
+     (list :id id :status (or (plist-get keys :status) "open")
+           :closed (rdm-review-test--closed (or (plist-get keys :status) "open"))
+           :anchor (or (plist-get keys :anchor)
+                       (list :anchor_type "text-quote" :quote quote
+                             :prefix (or (plist-get keys :prefix) "")
+                             :suffix (or (plist-get keys :suffix) "")))
+           :body (format "Comment %s." id)
+           :resolution (list :state (or (plist-get keys :state) "resolved")
+                             :quote quote :range_start start :range_end end
+                             :body (or (plist-get keys :body) "original")
+                             :current (and current
+                                           (list :range_start (car current)
+                                                 :range_end (cdr current)))))
+     (when (plist-get keys :doc)
+       (list :doc (list :kind "phase" :stem (plist-get keys :doc)))))))
+
+(defun rdm-review-test--line-comment (id lines snippet start end &rest keys)
+  "A line-range comment ID on LINES (START-LINE . END-LINE) with SNIPPET.
+START..END is its byte range in the `created_commit' body; KEYS are as
+for `rdm-review-test--comment'."
+  (apply #'rdm-review-test--comment id snippet start end
+         :anchor (list :anchor_type "line-range"
+                       :start_line (car lines) :end_line (cdr lines)
+                       :snippet snippet)
+         keys))
 
 (defun rdm-review-test--review (id target comments &rest keys)
   "A review ID on TARGET (JSON) with COMMENTS; KEYS override fields."
@@ -367,58 +386,120 @@ so it is listed, never overlaid on the roadmap body."
       (should (string-match-p "#1 open  on phase phase-1-one"
                               (rdm-review-test--section))))))
 
-(ert-deftest rdm-review/original-anchors-mapped ()
-  "An `original' anchor whose offset moved lands on the quote's new
-position; a drifted one whose quote survives is placed drifted, one
-whose quote is gone is listed un-placed; a `current' range is used as is."
-  (let ((old "Old.\nSecond line with target words here.\nA drifting phrase.\nGone text.\n")
-        (new "A much longer new intro — ünïcode.\nSecond line with target words here.\nA drifting phrase!\nX 😀 current.\n"))
-    (rdm-review-test--with
-        (list (rdm-review-test--review
-               "r1" rdm-review-test--task-target
-               (list (rdm-review-test--comment 1 "target words" 22 34)
-                     (rdm-review-test--comment 2 "drifting" 43 51 :state "drifted")
-                     (rdm-review-test--comment 3 "Gone text" 60 69 :state "drifted")
-                     (rdm-review-test--comment
-                      4 "current" (string-bytes "A much longer new intro — ünïcode.\nSecond line with target words here.\nA drifting phrase!\nX 😀 ")
-                      (string-bytes "A much longer new intro — ünïcode.\nSecond line with target words here.\nA drifting phrase!\nX 😀 current")
-                      :body "current"))))
-      (setq rdm-review-test--current new
-            rdm-review-test--originals (list (cons "c0" old)))
-      (with-current-buffer (rdm-open-item rdm-review-test--task)
-        (let ((one (rdm-review-test--overlay-of 1))
-              (two (rdm-review-test--overlay-of 2))
-              (four (rdm-review-test--overlay-of 4)))
-          (should (equal (rdm-review-test--text one) "target words"))
-          (should (equal (rdm-review-test--faces one) '(rdm-review-resolved)))
-          (should (equal (rdm-review-test--text two) "drifting"))
-          (should (equal (rdm-review-test--faces two) '(rdm-review-drifted)))
-          (should (equal (rdm-review-test--text four) "current")))
-        (should-not (rdm-review-test--overlay-of 3))
-        (should (string-match-p "#3 open  un-placed (drifted) \"Gone text\""
-                                (rdm-review-test--section)))
-        ;; The `created_commit' body is read once, with --at.
-        (should (= 1 (seq-count (lambda (argv) (member "--at=c0" argv))
-                                (rdm-mock-argvs calls))))))))
+(defconst rdm-review-test--old
+  "Old.\nSecond line with target words here.\nA drifting phrase.\nGone text.\n"
+  "A `created_commit' body the placement tests review.")
 
-(ert-deftest rdm-review/repeated-quote-chosen-by-context ()
-  "A quote occurring twice in a changed body is placed by its anchor's
-context, else nearest its original offset."
-  (let ((old "x AA y\nz AA w\n")
-        (new "new line\nx AA y\nz AA w\n"))
-    (rdm-review-test--with
-        (list (rdm-review-test--review
-               "r1" rdm-review-test--task-target
-               (list (rdm-review-test--comment 1 "AA" 9 11 :prefix "z " :suffix " w")
-                     (rdm-review-test--comment 2 "AA" 2 4))))
-      (setq rdm-review-test--current new
-            rdm-review-test--originals (list (cons "c0" old)))
-      (with-current-buffer (rdm-open-item rdm-review-test--task)
-        (let ((start (car (rdm-view-body-region))))
-          (should (= (- (overlay-start (rdm-review-test--overlay-of 1)) start)
-                     (string-search "AA w" new)))
-          (should (= (- (overlay-start (rdm-review-test--overlay-of 2)) start)
-                     (string-search "AA" new))))))))
+(defconst rdm-review-test--new
+  "A much longer new intro — ünïcode.\nSecond line with target words here.\nA drifting phrase!\nX 😀 current.\n"
+  "The current body the placement tests render.")
+
+(defun rdm-review-test--bytes-before (body text)
+  "The UTF-8 byte offset in BODY of the first TEXT."
+  (string-bytes (substring body 0 (string-search text body))))
+
+(defun rdm-review-test--placement-reviews ()
+  "One review of task t1 at c0 whose comments place differently.
+#1 resolved, `current' moved; #2 drifted, `current' still set; #3
+drifted, `current' null; #4 a line range whose lines shifted (`current'
+null); #5 a range indexing the current body (`body' current)."
+  (let* ((old rdm-review-test--old)
+         (new rdm-review-test--new)
+         (at (lambda (body text)
+               (let ((s (rdm-review-test--bytes-before body text)))
+                 (cons s (+ s (string-bytes text)))))))
+    (list (rdm-review-test--review
+           "r1" rdm-review-test--task-target
+           (list (rdm-review-test--comment
+                  1 "target words" 22 34
+                  :current (funcall at new "target words"))
+                 (rdm-review-test--comment
+                  2 "drifting" 43 51 :state "drifted"
+                  :current (funcall at new "drifting"))
+                 (rdm-review-test--comment 3 "Gone text" 60 69 :state "drifted"
+                                           :current nil)
+                 (rdm-review-test--line-comment
+                  4 '(2 . 3) "Second line with target words here.\nA drifting phrase."
+                  5 59 :state "drifted" :current nil)
+                 (rdm-review-test--comment
+                  5 "😀 current" (car (funcall at new "😀 current"))
+                  (cdr (funcall at new "😀 current"))
+                  :body "current"))))))
+
+(defun rdm-review-test--at-calls (calls)
+  "The argvs among CALLS that pass `--at'."
+  (seq-filter (lambda (argv) (rdm-review-test--flag argv "at"))
+              (rdm-mock-argvs calls)))
+
+(ert-deftest rdm-review/current-buffer-places-from-current ()
+  "A current-body buffer places each comment at its resolution's
+`current' range (over multibyte text), keeps the drifted face, and lists
+a comment whose `current' is null un-placed -- a shifted line range
+included.  Nothing else is read: no `show --at'."
+  (rdm-review-test--with (rdm-review-test--placement-reviews)
+    (setq rdm-review-test--current rdm-review-test--new
+          rdm-review-test--originals (list (cons "c0" rdm-review-test--old)))
+    (with-current-buffer (rdm-open-item rdm-review-test--task)
+      (should-not rdm-view--at)
+      (let ((one (rdm-review-test--overlay-of 1))
+            (two (rdm-review-test--overlay-of 2))
+            (five (rdm-review-test--overlay-of 5)))
+        (should (equal (rdm-review-test--text one) "target words"))
+        (should (equal (rdm-review-test--faces one) '(rdm-review-resolved)))
+        (should (equal (rdm-review-test--text two) "drifting"))
+        (should (equal (rdm-review-test--faces two) '(rdm-review-drifted)))
+        (should (equal (rdm-review-test--text five) "😀 current")))
+      (should-not (rdm-review-test--overlay-of 3))
+      (should-not (rdm-review-test--overlay-of 4))
+      (let ((section (rdm-review-test--section)))
+        (should (string-match-p "#3 open  un-placed (drifted) \"Gone text\"" section))
+        (should (string-match-p
+                 "#4 open  un-placed (drifted) lines 2-3 \"Second line with" section)))
+      (goto-char (point-min))
+      (search-forward "#4 open")
+      (should (string-match-p "un-placed (drifted), lines 2-3"
+                              (rdm-review-comment-at-point))))
+    (should-not (rdm-review-test--at-calls calls))))
+
+(ert-deftest rdm-review/created-commit-buffer-places-from-original ()
+  "A buffer showing the review's `created_commit' places each comment at
+its `original' range, drifted ones included (the shifted line range sits
+on its original lines); a range indexing the current body is listed.
+The only `show --at' read is the render itself."
+  (rdm-review-test--with (rdm-review-test--placement-reviews)
+    (setq rdm-review-test--current rdm-review-test--new
+          rdm-review-test--originals (list (cons "c0" rdm-review-test--old)))
+    (with-current-buffer (rdm-open-item rdm-review-test--task "c0")
+      (should (equal (rdm-view-body) rdm-review-test--old))
+      (let ((start (car (rdm-view-body-region))))
+        (dolist (want '((1 "target words" rdm-review-resolved)
+                        (2 "drifting" rdm-review-drifted)
+                        (3 "Gone text" rdm-review-drifted)
+                        (4 "Second line with target words here.\nA drifting phrase."
+                           rdm-review-drifted)))
+          (let ((ov (rdm-review-test--overlay-of (car want))))
+            (should ov)
+            (should (equal (rdm-review-test--text ov) (nth 1 want)))
+            (should (= (- (overlay-start ov) start)
+                       (string-search (nth 1 want) rdm-review-test--old)))
+            (should (equal (rdm-review-test--faces ov) (list (nth 2 want)))))))
+      (should-not (rdm-review-test--overlay-of 5))
+      (should (string-match-p "#5 open  un-placed (resolved)"
+                              (rdm-review-test--section))))
+    (should (= 1 (length (rdm-review-test--at-calls calls))))))
+
+(ert-deftest rdm-review/other-revision-lists-every-anchor ()
+  "A buffer at a revision that is neither current nor the review's
+`created_commit' overlays nothing: every anchored comment is listed."
+  (rdm-review-test--with (rdm-review-test--placement-reviews)
+    (setq rdm-review-test--originals (list (cons "c9" rdm-review-test--old)))
+    (with-current-buffer (rdm-open-item rdm-review-test--task "c9")
+      (should (equal (rdm-view-body) rdm-review-test--old))
+      (should-not (rdm-review-test--overlays))
+      (let ((section (rdm-review-test--section)))
+        (dolist (id '(1 2 3 4 5))
+          (should (string-match-p (format "#%d open  un-placed" id) section)))))
+    (should (= 1 (length (rdm-review-test--at-calls calls))))))
 
 (ert-deftest rdm-review/multibyte-ranges ()
   "Byte ranges over 2-, 3- and 4-byte characters cover exactly the quote;
@@ -507,33 +588,6 @@ body, no overlays and no Reviews section, and reports the error."
                           (string-match-p
                            "rdm: reviews of .*unrecognized subcommand 'list'" m))
                         messages)))))
-
-(ert-deftest rdm-review/original-read-error-falls-back-to-quote ()
-  "A failing `show --at' read leaves the original unknown: an `original'
-anchor whose quote is still displayed is placed by quote search, one
-whose quote is gone is listed un-placed, and nothing is signalled."
-  (let ((new "A much longer new intro.\nSecond line with target words here.\n"))
-    (rdm-review-test--with
-        (list (rdm-review-test--review
-               "r1" rdm-review-test--task-target
-               (list (rdm-review-test--comment 1 "target words" 22 34)
-                     (rdm-review-test--comment 2 "Gone text" 40 49))))
-      (setq rdm-review-test--current new
-            rdm-review-test--originals
-            (list (cons "c0" "Old.\nSecond line with target words here.\n"))
-            rdm-review-test--failing '(at))
-      (with-current-buffer (rdm-open-item rdm-review-test--task)
-        (should (equal (rdm-view-body) new))
-        (let ((one (rdm-review-test--overlay-of 1)))
-          (should one)
-          (should (equal (rdm-review-test--text one) "target words"))
-          (should (equal (rdm-review-test--faces one) '(rdm-review-resolved))))
-        (should-not (rdm-review-test--overlay-of 2))
-        (should (string-match-p "#2 open  un-placed (resolved) \"Gone text\""
-                                (rdm-review-test--section)))
-        ;; The failing read was attempted.
-        (should (seq-some (lambda (argv) (member "--at=c0" argv))
-                          (rdm-mock-argvs calls)))))))
 
 ;;;; Resolution
 
@@ -748,21 +802,10 @@ copies the command and runs nothing."
 
 ;;;; Authoring
 
-(ert-deftest rdm-review/occurrences-non-overlapping ()
-  "Occurrences are counted without overlap, as `--occurrence' documents;
-a start inside an overlapping repeat is refused."
-  (should (equal (rdm-review-occurrence-starts "aaaa" "aa") '(0 2)))
-  (should (equal (rdm-review-occurrence-starts "aaaaa" "aa") '(0 2)))
-  (should-not (rdm-review-occurrence-starts "abc" ""))
-  (should (= (rdm-review-occurrence "aaaa" "aa" 2) 2))
-  (should (= (rdm-review-occurrence "aaaa" "aa" 0) 1))
-  (should-not (rdm-review-occurrence "x once y" "once" 2))
-  (should-error (rdm-review-occurrence "aaaa" "aa" 1) :type 'user-error))
-
 (defconst rdm-review-test--authoring-body
   "Intro: open the door.\nrepeat me here\nand repeat me there\naaaa end\n"
-  "A body with a repeated phrase, an overlapping run, and \"open\" (which
-the header's Status line and the Reviews section also show).")
+  "A body with a repeated phrase and \"open\" (which the header's Status
+line and the Reviews section also show).")
 
 (defun rdm-review-test--draft (&rest keys)
   "An own draft review r1 of task t1 created at c0; KEYS override."
@@ -783,11 +826,13 @@ so the draft's text differs from the current one."
      (with-current-buffer (rdm-open-item rdm-review-test--task)
        ,@body)))
 
-(defun rdm-review-test--body-range (text &optional nth)
-  "The buffer range (BEG . END) of the NTH (1-based) TEXT in the body."
+(defun rdm-review-test--body-range (text &optional after)
+  "The buffer range (BEG . END) of TEXT in the body.
+With AFTER, the TEXT found after the first AFTER."
   (let* ((start (car (rdm-view-body-region)))
-         (offset (nth (1- (or nth 1))
-                      (rdm-review-occurrence-starts (rdm-view-body) text))))
+         (body (rdm-view-body))
+         (offset (string-search text body
+                                (if after (string-search after body) 0))))
     (cons (+ start offset) (+ start offset (length text)))))
 
 (defun rdm-review-test--comment-on (range text)
@@ -822,40 +867,51 @@ so; the draft lookup passes the author the package starts drafts with."
       (should-not rdm-view--at)
       (should-not header-line-format))))
 
-(ert-deftest rdm-review/region-comment-quote-and-occurrence ()
-  "A region becomes --quote verbatim; a repeated phrase gets the
-occurrence of the selected copy, a single one no --occurrence."
-  (rdm-review-test--authoring
-    (rdm-review-test--comment-on (rdm-review-test--body-range "repeat me" 2) "Second.")
-    (rdm-review-test--comment-on (rdm-review-test--body-range "repeat me" 1) "First.")
-    (rdm-review-test--comment-on (rdm-review-test--body-range "here\nand") "Span.")
-    (should (equal (rdm-review-test--calls-of calls "review" "comment")
-                   '(("review" "comment" "r1" "--quote=repeat me" "--occurrence=2"
-                      "--body=Second." "--project" "p" "--no-edit")
-                     ("review" "comment" "r1" "--quote=repeat me" "--occurrence=1"
-                      "--body=First." "--project" "p" "--no-edit")
-                     ("review" "comment" "r1" "--quote=here\nand"
-                      "--body=Span." "--project" "p" "--no-edit"))))
-    ;; No new draft was started: the open one was used.
-    (should-not (rdm-review-test--calls-of calls "review" "start"))
-    ;; The layer was re-read after each comment.
-    (should (equal rdm-view--at "c0"))))
-
-(ert-deftest rdm-review/region-occurrence-counts-body-only ()
-  "\"open\" also shows in the Status line and the Reviews section; the
-occurrence counts the body alone."
+(ert-deftest rdm-review/region-comment-line-ranges ()
+  "A region becomes --line: one line, several, partial lines, and a
+selection ending just after a newline (which does not take the next
+line); no quote is passed.  \"open\" also shows in the
+Status line and the Reviews section, but lines count the body alone."
   (rdm-review-test--authoring
     (let ((region (rdm-view-body-region)))
       (should (string-match-p "Status: open" (buffer-substring 1 (car region))))
       (should (string-match-p "open" (buffer-substring (cdr region) (point-max)))))
+    (rdm-review-test--comment-on (rdm-review-test--body-range "repeat me" "and")
+                                 "Second.")
+    (rdm-review-test--comment-on (rdm-review-test--body-range "here\nand") "Span.")
+    (rdm-review-test--comment-on (rdm-review-test--body-range "door.\nrepeat")
+                                 "Partial.")
+    (rdm-review-test--comment-on (rdm-review-test--body-range "repeat me here\n")
+                                 "Newline.")
     (rdm-review-test--comment-on (rdm-review-test--body-range "open") "Once.")
-    (should (equal (car (rdm-review-test--calls-of calls "review" "comment"))
-                   '("review" "comment" "r1" "--quote=open" "--body=Once."
-                     "--project" "p" "--no-edit")))))
+    (should (equal (rdm-review-test--calls-of calls "review" "comment")
+                   '(("review" "comment" "r1" "--line=3" "--body=Second."
+                      "--project" "p" "--no-edit")
+                     ("review" "comment" "r1" "--line=2-3" "--body=Span."
+                      "--project" "p" "--no-edit")
+                     ("review" "comment" "r1" "--line=1-2" "--body=Partial."
+                      "--project" "p" "--no-edit")
+                     ("review" "comment" "r1" "--line=2" "--body=Newline."
+                      "--project" "p" "--no-edit")
+                     ("review" "comment" "r1" "--line=1" "--body=Once."
+                      "--project" "p" "--no-edit"))))
+    ;; No new draft was started: the open one was used.
+    (should-not (rdm-review-test--calls-of calls "review" "start"))
+    (should (equal rdm-view--at "c0"))))
+
+(ert-deftest rdm-review/region-lines ()
+  "Character ranges map to 1-based body lines; the last line is that of
+the last selected character."
+  (let ((body "one\ntwo\nthree\n"))
+    (should (equal (rdm-review-region-lines body 0 3) "1"))
+    (should (equal (rdm-review-region-lines body 0 4) "1"))
+    (should (equal (rdm-review-region-lines body 0 5) "1-2"))
+    (should (equal (rdm-review-region-lines body 5 10) "2-3"))
+    (should (equal (rdm-review-region-lines body 8 14) "3"))))
 
 (ert-deftest rdm-review/region-refusals-issue-no-call ()
-  "A region reaching outside the body, an empty one, and one starting
-inside an overlapping repeat are refused before any rdm call."
+  "A region reaching outside the body and an empty one are refused before
+any rdm call."
   (rdm-review-test--authoring
     (let ((before (length calls))
           (body (rdm-view-body-region)))
@@ -865,13 +921,10 @@ inside an overlapping repeat are refused before any rdm call."
                     :type 'user-error)
       (should-error (rdm-review-comment-region (car body) (car body))
                     :type 'user-error)
-      (let ((run (rdm-review-test--body-range "aaaa")))
-        (should-error (rdm-review-comment-region (1+ (car run)) (+ 3 (car run)))
-                      :type 'user-error))
       (should (= (length calls) before)))))
 
 (ert-deftest rdm-review/document-comment-has-no-quote ()
-  "C files a whole-document comment: no --quote, no --occurrence; an empty
+  "C files a whole-document comment: no --line, no --quote; an empty
 comment is refused and its compose buffer kept."
   (rdm-review-test--authoring
     (let ((compose (rdm-review-comment-document)))
@@ -908,7 +961,7 @@ not submitted.  A selection on the draft's text then lands."
                               (format "%s" header-line-format)))
       (rdm-review-test--comment-on (rdm-review-test--body-range "Committed") "Ok.")
       (should (equal (rdm-review-test--calls-of calls "review" "comment")
-                     '(("review" "comment" "r-new" "--quote=Committed" "--body=Ok."
+                     '(("review" "comment" "r-new" "--line=1" "--body=Ok."
                         "--project" "p" "--no-edit"))))
       (should (= 1 (length (rdm-review-test--calls-of calls "review" "start")))))))
 
@@ -1345,41 +1398,46 @@ without a comment, and a selection on the committed text then lands."
             (should (= 0 (length (plist-get review :comments)))))
           (rdm-review-test--comment-on (rdm-review-test--body-range "line two")
                                        "Say more.")
-          (let ((comments (plist-get (rdm-call-sync 'review-show id) :comments)))
+          (let* ((comments (plist-get (rdm-call-sync 'review-show id) :comments))
+                 (anchor (plist-get (aref comments 0) :anchor)))
             (should (= 1 (length comments)))
-            (should (equal (plist-get (plist-get (aref comments 0) :anchor) :quote)
-                           "line two")))
-          ;; The overlay layer shows the new comment on the draft's text.
+            (should (equal (plist-get anchor :anchor_type) "line-range"))
+            (should (= (plist-get anchor :start_line) 2))
+            (should (= (plist-get anchor :end_line) 2)))
+          ;; The overlay layer shows the new comment on the draft's line.
           (let ((ov (rdm-review-test--overlay-of 1)))
             (should ov)
-            (should (equal (rdm-review-test--text ov) "line two"))))))))
+            (should (equal (rdm-review-test--text ov) "Committed line two."))))))))
 
-(ert-deftest rdm-review/real-repeat-anchor-and-request-changes ()
-  "Commenting on the second of two copies of a string anchors there:
-`review show' reports it resolved at that copy's byte offset.
-Submitting request-changes through the package, with the verdict picked
-from those core declares, lands in `review requests' and the requests
-picker."
+(ert-deftest rdm-review/real-line-anchor-and-request-changes ()
+  "Commenting on a word of the second of two lines sharing it anchors
+that whole line: `review show' reports lines 2-2 resolved at that line's
+byte range.  Submitting request-changes through the package, with the
+verdict picked from those core declares, lands in `review requests' and
+the requests picker."
   (rdm-review-test--with-real-author "emacs-real-author-repeat"
     (let* ((slug "emacs-author-repeat-task")
            (item (list :kind 'task :slug slug))
-           (body "café alpha one\nsecond alpha two\n"))
+           (first "café alpha one\n")
+           (body (concat first "second alpha two\n")))
       (rdm-call-sync 'task-create slug :title "Repeated words" :stdin body)
       (rdm-call-sync 'commit :message "emacs: seed a repeated-words task")
       (with-current-buffer (rdm-open-item item)
         (let ((id (rdm-review-start)))
           (should (equal rdm-view--at (rdm-review-test--plan-head root)))
           (should (equal (rdm-view-body) body))
-          (rdm-review-test--comment-on (rdm-review-test--body-range "alpha" 2)
+          (rdm-review-test--comment-on (rdm-review-test--body-range "alpha" "second")
                                        "This one.")
           (let* ((comment (aref (plist-get (rdm-call-sync 'review-show id) :comments) 0))
-                 (res (plist-get comment :resolution))
-                 (second (nth 1 (rdm-review-occurrence-starts body "alpha"))))
+                 (anchor (plist-get comment :anchor))
+                 (res (plist-get comment :resolution)))
+            (should (equal (plist-get anchor :anchor_type) "line-range"))
+            (should (= (plist-get anchor :start_line) 2))
+            (should (= (plist-get anchor :end_line) 2))
             (should (equal (plist-get res :state) "resolved"))
-            (should (= (plist-get res :range_start)
-                       (string-bytes (substring body 0 second))))
+            (should (= (plist-get res :range_start) (string-bytes first)))
             (should (= (plist-get res :range_end)
-                       (string-bytes (substring body 0 (+ second 5))))))
+                       (string-bytes (concat first "second alpha two")))))
           (let (offered)
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _)
@@ -1401,6 +1459,150 @@ picker."
           (should (string-match-p (concat (regexp-quote id)
                                           "  emacs-author  submitted request-changes")
                                   (rdm-review-test--section))))))))
+
+(defun rdm-review-test--resolution (id)
+  "The resolution of the first comment of review ID, read from rdm."
+  (plist-get (aref (plist-get (rdm-call-sync 'review-show id) :comments) 0)
+             :resolution))
+
+(defun rdm-review-test--commit-body (slug body)
+  "Stage BODY as task SLUG's body and commit it."
+  (rdm-call-sync 'task-update slug :body body)
+  (rdm-call-sync 'commit :message (format "emacs: edit %s" slug)))
+
+(defun rdm-review-test--overlay-range (ov)
+  "OV's (START . END) as character offsets into the displayed body."
+  (let ((start (car (rdm-view-body-region))))
+    (cons (- (overlay-start ov) start) (- (overlay-end ov) start))))
+
+(ert-deftest rdm-review/real-line-range-shifted ()
+  "A selection comment is a line-range anchor.  While the draft is open,
+its buffer shows the `created_commit' body and keeps the comment on its
+original lines from `range_start'/`range_end', drifted once an insertion
+above shifts them.  After submitting, the current-body buffer places it
+exactly at rdm's `current' while only lines below change, and lists it
+un-placed once an insertion above makes `current' null."
+  (rdm-review-test--with-real-author "emacs-real-author-lines"
+    (let* ((slug "emacs-author-lines-task")
+           (item (list :kind 'task :slug slug))
+           (body "Intro — naïve.\nSecond 日本語 line.\nThird line.\nFourth line.\n")
+           (lines "Second 日本語 line.\nThird line."))
+      (rdm-call-sync 'task-create slug :title "Line ranges" :stdin body)
+      (rdm-call-sync 'commit :message "emacs: seed a line-range task")
+      (with-current-buffer (rdm-open-item item)
+        (let ((id (rdm-review-start)))
+          (rdm-review-test--comment-on (rdm-review-test--body-range "日本語 line.\nThird")
+                                       "These two.")
+          (let ((anchor (plist-get (aref (plist-get (rdm-call-sync 'review-show id)
+                                                    :comments)
+                                         0)
+                                   :anchor)))
+            (should (equal (plist-get anchor :anchor_type) "line-range"))
+            (should (= (plist-get anchor :start_line) 2))
+            (should (= (plist-get anchor :end_line) 3)))
+          (let ((ov (rdm-review-test--overlay-of 1)))
+            (should (equal (rdm-review-test--text ov) lines))
+            (should (equal (rdm-review-test--faces ov) '(rdm-review-resolved))))
+          ;; The draft buffer, after an insertion above the range is committed.
+          (rdm-review-test--commit-body slug (concat "New top.\n" body))
+          (revert-buffer)
+          (should (equal rdm-view--at (plist-get rdm-review--draft :commit)))
+          (should (equal (rdm-view-body) body))
+          (let ((res (rdm-review-test--resolution id))
+                (ov (rdm-review-test--overlay-of 1)))
+            (should (equal (plist-get res :state) "drifted"))
+            (should (equal (plist-get res :body) "original"))
+            (should-not (plist-get res :current))
+            (should ov)
+            (should (equal (rdm-review-test--overlay-range ov)
+                           (rdm-review--char-range body
+                                                   (plist-get res :range_start)
+                                                   (plist-get res :range_end))))
+            (should (equal (rdm-review-test--text ov) lines))
+            (should (equal (rdm-review-test--faces ov) '(rdm-review-drifted))))
+          ;; Restore the body, then submit: the buffer shows the current body.
+          (rdm-review-test--commit-body slug body)
+          (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "comment"))
+                    ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+            (call-interactively #'rdm-review-submit))
+          (should-not rdm-view--at)
+          ;; An edit below the range: placed at rdm's `current'.
+          (let ((below (concat "Intro — naïve.\nSecond 日本語 line.\nThird line.\n"
+                               "Fourth line, changed.\nFifth.\n")))
+            (rdm-review-test--commit-body slug below)
+            (revert-buffer)
+            (should (equal (rdm-view-body) below))
+            (let* ((current (plist-get (rdm-review-test--resolution id) :current))
+                   (ov (rdm-review-test--overlay-of 1)))
+              (should current)
+              (should ov)
+              (should (equal (rdm-review-test--overlay-range ov)
+                             (rdm-review--char-range below
+                                                     (plist-get current :range_start)
+                                                     (plist-get current :range_end))))
+              (should (equal (rdm-review-test--text ov) lines))))
+          ;; An insertion above the range: `current' null, listed un-placed.
+          (rdm-review-test--commit-body slug (concat "New top.\n" body))
+          (revert-buffer)
+          (let ((res (rdm-review-test--resolution id)))
+            (should (equal (plist-get res :state) "drifted"))
+            (should-not (plist-get res :current)))
+          (should-not (rdm-review-test--overlays))
+          (should (string-match-p "#1 open  un-placed (drifted) lines 2-3"
+                                  (rdm-review-test--section))))))))
+
+(ert-deftest rdm-review/real-drifted-quote ()
+  "A quote comment rdm reports drifted is placed only from the review
+JSON: the current-body buffer at rdm's `current' (or listed un-placed
+when it is null), a buffer at the review's `created_commit' at the
+original range."
+  (rdm-review-test--with-real-author "emacs-real-drifted-quote"
+    (let* ((slug "emacs-drifted-quote-task")
+           (item (list :kind 'task :slug slug))
+           (body "one alpha\ntwo alpha\nthree\n")
+           (changed "one alpha\nzwo alpha\nthree\n")
+           id commit)
+      (rdm-call-sync 'task-create slug :title "Drifted quote" :stdin body)
+      (rdm-call-sync 'commit :message "emacs: seed a drifted-quote task")
+      (let ((out (rdm-review-test--rdm bin "review" "start" "--on"
+                                       (concat "task/" slug) "--author" "cli-author"
+                                       "--no-edit" "--project" project)))
+        (should (string-match "Started review '\\([^']+\\)'" out))
+        (setq id (match-string 1 out)))
+      (rdm-review-test--rdm bin "review" "comment" id "--quote" "two alpha"
+                            "--body" "Two." "--no-edit" "--project" project)
+      (rdm-review-test--rdm bin "review" "submit" id "--verdict" "comment"
+                            "--no-edit" "--project" project)
+      (rdm-review-test--commit-body slug changed)
+      (setq commit (plist-get (rdm-call-sync 'review-show id) :created_commit))
+      (let ((res (rdm-review-test--resolution id)))
+        (should (equal (plist-get res :state) "drifted"))
+        (with-current-buffer (rdm-open-item item)
+          (should-not rdm-view--at)
+          (should (equal (rdm-view-body) changed))
+          (let ((current (plist-get res :current))
+                (ov (rdm-review-test--overlay-of 1)))
+            (if current
+                (progn
+                  (should ov)
+                  (should (equal (rdm-review-test--overlay-range ov)
+                                 (rdm-review--char-range
+                                  changed (plist-get current :range_start)
+                                  (plist-get current :range_end))))
+                  (should (equal (rdm-review-test--faces ov) '(rdm-review-drifted))))
+              (should-not ov)
+              (should (string-match-p "#1 open  un-placed (drifted)"
+                                      (rdm-review-test--section))))))
+        (with-current-buffer (rdm-open-item item commit)
+          (should (equal (rdm-view-body) body))
+          (let ((ov (rdm-review-test--overlay-of 1)))
+            (should ov)
+            (should (equal (rdm-review-test--overlay-range ov)
+                           (rdm-review--char-range body
+                                                   (plist-get res :range_start)
+                                                   (plist-get res :range_end))))
+            (should (equal (rdm-review-test--text ov) "two alpha"))
+            (should (equal (rdm-review-test--faces ov) '(rdm-review-drifted)))))))))
 
 (provide 'rdm-review-test)
 ;;; rdm-review-test.el ends here

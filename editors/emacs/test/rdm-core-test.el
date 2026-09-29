@@ -304,15 +304,15 @@ the root and project are only passed to rdm and stay safe."
                  '(("review" "update" "r1" "--state=dismissed" "--no-edit"
                     "--project" "p" "--format" "json"))))
   ;; Authoring: `review start' is read as JSON (and passes --no-edit
-  ;; explicitly); comment and submit are writes.  A quote starting with
-  ;; `-' stays joined to its flag.
+  ;; explicitly); comment and submit are writes.  A line range is joined
+  ;; to its flag.
   (should (equal (rdm-argv 'review-start :on "task/t" :author "me" :no-edit t
                            :project "p")
                  '(("review" "start" "--on=task/t" "--author=me" "--no-edit"
                     "--project" "p" "--format" "json"))))
-  (should (equal (rdm-argv 'review-comment "r1" :quote "- item" :occurrence 2
+  (should (equal (rdm-argv 'review-comment "r1" :line "2-4"
                            :body "b" :project "p")
-                 '(("review" "comment" "r1" "--quote=- item" "--occurrence=2"
+                 '(("review" "comment" "r1" "--line=2-4"
                     "--body=b" "--project" "p" "--no-edit"))))
   (should (equal (rdm-argv 'review-submit "r1" :verdict "approve" :project "p")
                  '(("review" "submit" "r1" "--verdict=approve"

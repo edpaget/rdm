@@ -18,13 +18,16 @@
 ;;   not overlaid: whole-document comments, a roadmap review's comments
 ;;   on one of its phases, and comments whose anchor could not be placed.
 ;;   `rdm-review-shown-states' picks the review states shown.
-;; - Placement follows each comment's `resolution' (see
-;;   `rdm-review-place'): a `current' range indexes the displayed body; an
-;;   `original' range indexes the body at the review's `created_commit',
-;;   read once per commit with `show --at'.  When that body is the one
-;;   displayed the range applies as is, otherwise the quote is searched
-;;   for in the displayed body.  Ranges are UTF-8 byte offsets
-;;   (`rdm-review-byte-to-char').
+;; - Placement comes only from each comment's `resolution' in rdm's
+;;   review JSON (see `rdm-review-place'); no body is ever searched.  A
+;;   buffer showing the current body places a comment at its `current'
+;;   range, and lists it un-placed when rdm reports `current' null (a
+;;   line range whose lines shifted or changed, or a quote rdm cannot
+;;   place).  A buffer showing the review's `created_commit' body -- the
+;;   draft you are authoring -- places it at `range_start'..`range_end'
+;;   when that range indexes the `original' body.  A buffer at any other
+;;   revision lists every anchored comment un-placed.  Ranges are UTF-8
+;;   byte offsets (`rdm-review-byte-to-char').
 ;; - `rdm-review-comment-at-point' describes the comment under point,
 ;;   `rdm-review-next-comment' / `rdm-review-previous-comment' move between
 ;;   overlaid comments, `rdm-review-resolve' marks the comment at point
@@ -37,18 +40,17 @@
 ;;   `rdm-review-revise-function' (default: copy the command); the
 ;;   package never starts an agent.
 ;;
-;; - Authoring: `rdm-review-comment-region' turns the selected body text
-;;   into an anchored comment (`--quote' is the text; when it occurs more
-;;   than once in the body, `--occurrence' is its index among the
-;;   non-overlapping occurrences, as `rdm review comment --help'
-;;   documents), `rdm-review-comment-document' files a whole-document
-;;   comment, and `rdm-review-submit' submits with a verdict read from
-;;   `rdm describe review'.  Comments go into your draft review -- the
-;;   newest draft rdm lists as yours (`rdm review list --mine', or
-;;   `--author' when `rdm-review-author' is set) -- which
-;;   `rdm-review-start' or the first comment starts.  A detail buffer of an item with your draft is shown as of
-;;   the draft's `created_commit', the text rdm locates quotes in, and its
-;;   header line says so; a selection made on other text is discarded.
+;; - Authoring: `rdm-review-comment-region' anchors a comment on the
+;;   body lines the selection touches (`--line N' or `--line N-M', as
+;;   `rdm review comment --help' documents), `rdm-review-comment-document'
+;;   files a whole-document comment, and `rdm-review-submit' submits with
+;;   a verdict read from `rdm describe review'.  Comments go into your
+;;   draft review -- the newest draft rdm lists as yours (`rdm review
+;;   list --mine', or `--author' when `rdm-review-author' is set) --
+;;   which `rdm-review-start' or the first comment starts.  A detail
+;;   buffer of an item with your draft is shown as of the draft's
+;;   `created_commit', the text rdm numbers the lines of, and its header
+;;   line says so; a selection made on other text is discarded.
 ;;
 ;; Keys in a detail buffer: `K' describes the comment at point, `M-n' /
 ;; `M-p' move between comments, `A' resolves one, `c' comments on the
@@ -177,80 +179,84 @@ inside a multibyte character."
         (e (rdm-review-byte-to-char body end)))
     (and s e (< s e) (cons s e))))
 
-(defun rdm-review--occurrences (body quoted)
-  "The character offsets of every occurrence of QUOTED in BODY."
-  (let ((start 0) found pos)
-    (unless (string-empty-p quoted)
-      (while (setq pos (string-search quoted body start))
-        (push pos found)
-        (setq start (1+ pos))))
-    (nreverse found)))
+(defun rdm-review--shown-body (review)
+  "Which of REVIEW's bodies this detail buffer shows, as a symbol.
+`current' when the buffer shows the current body (it has no
+`rdm-view--at'), `original' when it shows the body at REVIEW's
+`created_commit', else nil (some other revision)."
+  (let ((commit (rdm--nonempty (plist-get review :created_commit))))
+    (cond ((null rdm-view--at) 'current)
+          ((and commit (equal rdm-view--at commit)) 'original))))
 
-(defun rdm-review--choose (body quoted anchor near occurrences)
-  "Choose one of OCCURRENCES of QUOTED in BODY for ANCHOR.
-Occurrences whose surrounding text matches ANCHOR's `:prefix' and
-`:suffix' are preferred; among the candidates the one nearest NEAR (the
-original character offset, when known) wins, the earliest on a tie."
-  (let* ((prefix (plist-get anchor :prefix))
-         (suffix (plist-get anchor :suffix))
-         (context
-          (seq-filter
-           (lambda (pos)
-             (and (or (not (rdm--nonempty prefix))
-                      (string-suffix-p prefix (substring body 0 pos)))
-                  (or (not (rdm--nonempty suffix))
-                      (string-prefix-p suffix
-                                       (substring body (+ pos (length quoted)))))))
-           occurrences))
-         (pool (or context occurrences))
-         best)
-    (dolist (pos pool)
-      (when (or (null best)
-                (and near (< (abs (- pos near)) (abs (- best near)))))
-        (setq best pos)))
-    best))
-
-(defun rdm-review-place (comment displayed original)
+(defun rdm-review-place (comment displayed shown)
   "Where COMMENT's anchor lies in DISPLAYED, the body the buffer shows.
-ORIGINAL is the body at the review's `created_commit', or nil when it
-is unknown.  Returns a plist: `:placement' is `resolved' or `drifted'
-with `:start' and `:end' (character offsets into DISPLAYED) for a
-placed comment, else `whole' (no anchor), `doc' (a roadmap review's
-comment on one of its phases, whose range indexes the phase body) or
-`lost' (the anchor could not be placed).
+SHOWN says which body that is, as `rdm-review--shown-body' returns it.
+Returns a plist: `:placement' is `resolved' or `drifted' (from the
+resolution's state) with `:start' and `:end' (character offsets into
+DISPLAYED) for a placed comment, else `whole' (no anchor), `doc' (a
+roadmap review's comment on one of its phases, whose range indexes the
+phase body) or `lost' (listed in the Reviews section, not overlaid).
 
-A `current' range indexes DISPLAYED.  An `original' range (resolved or
-drifted) indexes ORIGINAL: when ORIGINAL equals DISPLAYED it applies
-directly, otherwise the quote is searched for in DISPLAYED and, when it
-occurs more than once, the occurrence is chosen by the anchor's
-prefix/suffix context, then by nearness to the original offset (see
-`rdm-review--choose').  A malformed range degrades to `lost'."
+Placement comes only from rdm's resolution, never from a search: a
+current body places at the resolution's `current' range, which rdm
+reports null when the anchor cannot be placed there; the body at the
+review's `created_commit' places at `range_start'..`range_end' when
+the resolution's `body' is `original'; any other revision places
+nothing.  Ranges are UTF-8 byte offsets; a malformed one is `lost'."
   (let* ((anchor (plist-get comment :anchor))
          (res (plist-get comment :resolution))
-         (state (plist-get res :state))
-         (rs (plist-get res :range_start))
-         (re (plist-get res :range_end)))
+         (state (plist-get res :state)))
     (cond
      ((null anchor) (list :placement 'whole))
      ((plist-get comment :doc) (list :placement 'doc))
      ((not (member state '("resolved" "drifted"))) (list :placement 'lost))
      (t
       (let ((range
-             (if (or (equal (plist-get res :body) "current")
-                     (and original (equal original displayed)))
-                 (rdm-review--char-range displayed rs re)
-               (let* ((quoted (or (plist-get res :quote)
-                                  (plist-get anchor :quote) ""))
-                      (near (car (and original
-                                      (rdm-review--char-range original rs re))))
-                      (occ (rdm-review--occurrences displayed quoted))
-                      (pos (and occ (rdm-review--choose displayed quoted anchor
-                                                        near occ))))
-                 (and pos (cons pos (+ pos (length quoted))))))))
+             (pcase shown
+               ('current
+                (when-let* ((current (plist-get res :current)))
+                  (rdm-review--char-range displayed
+                                          (plist-get current :range_start)
+                                          (plist-get current :range_end))))
+               ('original
+                (and (equal (plist-get res :body) "original")
+                     (rdm-review--char-range displayed
+                                             (plist-get res :range_start)
+                                             (plist-get res :range_end)))))))
         (if range
             (list :placement (if (equal state "drifted") 'drifted 'resolved)
                   :start (car range) :end (cdr range))
           (list :placement 'lost)))))))
+
+(defun rdm-review--lines (anchor)
+  "ANCHOR's lines as \"line N\" or \"lines N-M\", or nil.
+Only a `line-range' anchor has lines."
+  (when (equal (plist-get anchor :anchor_type) "line-range")
+    (let ((start (plist-get anchor :start_line))
+          (end (plist-get anchor :end_line)))
+      (if (or (null end) (equal start end))
+          (format "line %s" start)
+        (format "lines %s-%s" start end)))))
+
+(defun rdm-review--anchor-text (comment)
+  "The text COMMENT is anchored on, or the empty string.
+That is the resolution's quote, else the anchor's quote or (for a line
+range) its snippet."
+  (let ((anchor (plist-get comment :anchor)))
+    (or (plist-get (plist-get comment :resolution) :quote)
+        (plist-get anchor :quote)
+        (plist-get anchor :snippet)
+        "")))
+
+(defun rdm-review--anchor-summary (comment)
+  "A one-line summary of COMMENT's anchor: its lines, if any, and text."
+  (let ((lines (rdm-review--lines (plist-get comment :anchor)))
+        (text (format "\"%s\""
+                      (truncate-string-to-width
+                       (replace-regexp-in-string
+                        "\n" " " (rdm-review--anchor-text comment))
+                       40 nil nil t))))
+    (if lines (concat lines " " text) text)))
 
 ;;;; The layer
 
@@ -273,35 +279,6 @@ Its keys are `:review', `:comment', `:placement' and, when overlaid,
   "The number of REVIEW's comments still open."
   (seq-count (lambda (c) (not (rdm-review--closed-p c)))
              (plist-get review :comments)))
-
-(defun rdm-review--needs-original-p (review)
-  "Non-nil when some comment of REVIEW indexes the `created_commit' body."
-  (seq-some (lambda (c)
-              (let ((res (plist-get c :resolution)))
-                (and (plist-get c :anchor)
-                     (not (plist-get c :doc))
-                     (member (plist-get res :state) '("resolved" "drifted"))
-                     (not (equal (plist-get res :body) "current")))))
-            (plist-get review :comments)))
-
-(defun rdm-review--original-bodies (item reviews)
-  "A table from `created_commit' to ITEM's body then, for REVIEWS.
-Each commit is read once; a failed read maps to nil."
-  (let ((bodies (make-hash-table :test #'equal)))
-    (dolist (review reviews)
-      (let ((commit (plist-get review :created_commit)))
-        (when (and (rdm--nonempty commit)
-                   (eq (gethash commit bodies 'unset) 'unset)
-                   (rdm-review--needs-original-p review))
-          (puthash commit
-                   (condition-case nil
-                       (or (plist-get (apply #'rdm-call-sync
-                                             (rdm-item-show-args item commit))
-                                      :body)
-                           "")
-                     (error nil))
-                   bodies))))
-    bodies))
 
 (defun rdm-review--marker-spec (face)
   "A `before-string' marking a comment in FACE.
@@ -346,9 +323,9 @@ The marker goes in the fringe, or the margin in a terminal."
       ('doc (format "on phase %s"
                     (or (plist-get (plist-get comment :doc) :stem) "?")))
       (_ (propertize
-          (format "un-placed (%s) \"%s\""
+          (format "un-placed (%s) %s"
                   (or (plist-get (plist-get comment :resolution) :state) "?")
-                  (or (plist-get (plist-get comment :anchor) :quote) ""))
+                  (rdm-review--anchor-summary comment))
           'font-lock-face 'rdm-review-unplaced)))))
 
 (defun rdm-review--review-line (review)
@@ -416,13 +393,12 @@ The marker goes in the fringe, or the margin in a terminal."
                (memq (plist-get item :kind) '(roadmap phase task)))
       (setq rdm-review--reviews (rdm-review--fetch item))
       (when rdm-review--reviews
-        (let* ((displayed (or (rdm-view-body) ""))
-               (originals (rdm-review--original-bodies item rdm-review--reviews))
-               entries)
+        (let ((displayed (or (rdm-view-body) ""))
+              entries)
           (dolist (review rdm-review--reviews)
-            (let ((original (gethash (plist-get review :created_commit) originals)))
+            (let ((shown (rdm-review--shown-body review)))
               (seq-doseq (comment (plist-get review :comments))
-                (let* ((where (rdm-review-place comment displayed original))
+                (let* ((where (rdm-review-place comment displayed shown))
                        (entry (list :review review :comment comment
                                     :placement (plist-get where :placement))))
                   (when (plist-get where :start)
@@ -487,7 +463,7 @@ The item itself is not re-read; `revert-buffer' does both."
          (reply (plist-get comment :reply))
          (commit (plist-get comment :applied_commit)))
     (concat
-     (format "Review %s #%s by %s — %s, %s\n"
+     (format "Review %s #%s by %s — %s, %s%s\n"
              (plist-get review :id) (plist-get comment :id)
              (or (plist-get review :author) "?")
              (plist-get comment :status)
@@ -498,7 +474,10 @@ The item itself is not re-read; `revert-buffer' does both."
                ('doc "on a phase")
                (_ (format "un-placed (%s)"
                           (or (plist-get (plist-get comment :resolution) :state)
-                              "?")))))
+                              "?"))))
+             (if-let* ((lines (rdm-review--lines (plist-get comment :anchor))))
+                 (concat ", " lines)
+               ""))
      (or (plist-get comment :body) "")
      (if (rdm--nonempty reply) (concat "\nReply: " reply) "")
      (if (rdm--nonempty commit) (concat "\nApplied: " commit) ""))))
@@ -664,8 +643,15 @@ Returns the buffer."
                                           "whole document"))
                                 'font-lock-face 'rdm-view-label)
                     "\n")
-            (when-let* ((quoted (plist-get (plist-get c :anchor) :quote)))
-              (insert "> " quoted "\n"))
+            (when (plist-get c :anchor)
+              (when-let* ((lines (rdm-review--lines (plist-get c :anchor))))
+                (insert lines "\n"))
+              (let ((quoted (rdm-review--anchor-text c)))
+                (unless (string-empty-p quoted)
+                  (insert (mapconcat (lambda (line) (concat "> " line))
+                                     (split-string quoted "\n")
+                                     "\n")
+                          "\n"))))
             (insert (or (plist-get c :body) "") "\n")
             (when (rdm--nonempty (plist-get c :reply))
               (insert "Reply: " (plist-get c :reply) "\n"))))
@@ -779,7 +765,7 @@ so this is the first draft it returns."
 (defun rdm-review--adopt (review)
   "Make REVIEW, an own draft's JSON, this buffer's draft and show its text.
 The buffer is re-rendered at REVIEW's `created_commit' -- the text rdm
-locates quotes in -- unless it already shows that revision."
+numbers a comment's lines in -- unless it already shows that revision."
   (let ((commit (rdm--nonempty (plist-get review :created_commit)))
         (previous (if rdm-review--draft
                       (plist-get rdm-review--draft :previous-at)
@@ -843,28 +829,17 @@ says so in its header line.  Returns the draft's id."
     (message "rdm: reviewing %s in draft %s" (rdm-item-identifier rdm-view--item) id)
     id))
 
-(defun rdm-review-occurrence-starts (body quoted)
-  "The starts of the non-overlapping occurrences of QUOTED in BODY.
-Counted as `rdm review comment --occurrence' documents: scanning from
-the start, each match resumes after its own end."
-  (let ((start 0) found pos)
-    (unless (string-empty-p quoted)
-      (while (setq pos (string-search quoted body start))
-        (push pos found)
-        (setq start (+ pos (length quoted)))))
-    (nreverse found)))
-
-(defun rdm-review-occurrence (body quoted offset)
-  "The `--occurrence' of QUOTED at character OFFSET of BODY, or nil.
-nil when QUOTED occurs once (no `--occurrence' is needed); else its
-1-based index among the non-overlapping occurrences.  A `user-error'
-when OFFSET is not one of them (it starts inside an overlapping repeat)."
-  (let* ((starts (rdm-review-occurrence-starts body quoted))
-         (index (seq-position starts offset)))
-    (unless index
-      (user-error "rdm: This selection starts inside a repeat of the same \
-text, which rdm cannot anchor to; select from the start of the repeat"))
-    (when (cdr starts) (1+ index))))
+(defun rdm-review-region-lines (body beg end)
+  "The lines of BODY that characters BEG..END touch, as `--line' takes them.
+BEG and END are character offsets into BODY, BEG < END.  Lines are
+1-based and counted by newlines, as rdm numbers them; the last line is
+that of the last selected character, so a selection ending just after a
+newline does not take the next line.  Returns \"N\" or \"N-M\"."
+  (let ((first (1+ (cl-count ?\n body :end beg)))
+        (last (1+ (cl-count ?\n body :end (1- end)))))
+    (if (= first last)
+        (number-to-string first)
+      (format "%d-%d" first last))))
 
 (defun rdm-review--authored (what)
   "Report WHAT was staged on this buffer's item and redraw its reviews."
@@ -896,9 +871,11 @@ arguments (none for a whole-document comment)."
 whole document)")))
 
 (defun rdm-review-comment-region (beg end)
-  "Comment on the body text between BEG and END, in your draft review.
-The text is the comment's `--quote'; when it occurs more than once in
-the body, its `--occurrence' is passed too.  Without a draft one is
+  "Comment on the body lines between BEG and END, in your draft review.
+The comment is anchored on the lines the selection touches, passed as
+`--line' (see `rdm-review-region-lines'); those line numbers index the
+body at the draft's `created_commit', which the buffer shows.  Without
+a draft one is
 started (or yours adopted) and the buffer re-rendered as of its
 `created_commit'; if that text differs from what the selection was
 made on, the selection is discarded and you are asked to select again.
@@ -910,7 +887,8 @@ The comment itself is typed in a compose buffer.  Returns that buffer."
       (user-error "rdm: Select text inside the body to comment on it"))
     (let* ((quoted (buffer-substring-no-properties beg end))
            (shown (rdm-view-body))
-           (occurrence (rdm-review-occurrence shown quoted (- beg (car region)))))
+           (lines (rdm-review-region-lines shown (- beg (car region))
+                                           (- end (car region)))))
       (deactivate-mark)
       (let ((id (rdm-review--ensure-draft)))
         (unless (equal (rdm-view-body) shown)
@@ -919,10 +897,11 @@ anchors to; your selection was made on other text, so select it again"
                       (rdm-review--short (or rdm-view--at "?")) id))
         (rdm-review--compose
          id
-         (format "Comment in review %s on \"%s\""
-                 id (truncate-string-to-width
-                     (replace-regexp-in-string "\n" " " quoted) 40 nil nil t))
-         :quote quoted :occurrence occurrence)))))
+         (format "Comment in review %s on %s %s \"%s\""
+                 id (if (string-search "-" lines) "lines" "line") lines
+                 (truncate-string-to-width
+                  (rdm-review--first-line quoted) 40 nil nil t))
+         :line lines)))))
 
 (defun rdm-review-comment-document ()
   "Comment on the whole document in your draft review (started if needed).

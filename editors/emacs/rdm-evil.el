@@ -28,8 +28,8 @@
 ;;
 ;; and in visual state
 ;;
-;;   c    comment on the selected body text in your draft review (the
-;;        selection is the comment's quote)
+;;   c    comment on the selected body lines in your draft review (the
+;;        lines the selection touches are the comment's anchor)
 ;;
 ;; The first comment starts a draft when you have none, and the buffer
 ;; then shows the item as of the draft's `created_commit'.
