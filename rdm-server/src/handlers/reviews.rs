@@ -921,6 +921,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_reviews_returns_newest_first() {
+        let (_dir, state) = setup();
+        // Review ids carry a random suffix within a minute, so id order is
+        // arbitrary. Keep creating until creation order is not strictly
+        // id-descending: then id order and newest-first order must differ,
+        // so this test cannot pass by accident under an id-ordered listing.
+        let mut created_ids = vec![
+            create_draft(&state, "task/fix-login", "ed").await,
+            create_draft(&state, "roadmap/alpha", "ed").await,
+        ];
+        while created_ids.windows(2).all(|w| w[0] > w[1]) {
+            assert!(created_ids.len() < 16, "ids kept descending");
+            created_ids.push(create_draft(&state, "task/fix-login", "ed").await);
+        }
+
+        let response = send(&state, get_req("/projects/demo/reviews")).await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        let items = json["_embedded"]["reviews"].as_array().unwrap();
+        assert_eq!(items.len(), created_ids.len());
+        let keys: Vec<(chrono::DateTime<chrono::Utc>, String)> = items
+            .iter()
+            .map(|r| {
+                (
+                    r["created"].as_str().unwrap().parse().unwrap(),
+                    r["id"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(keys, sorted, "reviews not listed newest first");
+    }
+
+    #[tokio::test]
     async fn list_reviews_filter_by_on() {
         let (_dir, state) = setup();
         create_draft(&state, "task/fix-login", "ed").await;
