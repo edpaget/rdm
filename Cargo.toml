@@ -36,7 +36,7 @@ terminal_size = "0.4"
 tracing = "0.1"
 ratatui = "0.30.1"
 sha2 = "0.10"
-signal-hook = "0.3"
+signal-hook = "0.4"
 rustix = { version = "1", features = ["process"] }
 
 # The profile that 'dist' will build with
