@@ -436,6 +436,20 @@ fn parse_plan_args_never_parses_persist() {
             json!(false),
             "and nothing was asked for, so nothing was ignored"
         );
+        let slugged = js.plan_call(
+            "parsePlanArgs",
+            vec![json!({ "implementationPlan": true, "planSlug": "p" })],
+        )?;
+        check_eq!(
+            slugged["persist"],
+            json!({ "on": null }),
+            "a plan named by slug persists by default"
+        );
+        check_eq!(
+            slugged["persistIgnored"],
+            json!(false),
+            "and nothing was ignored"
+        );
         Ok(())
     });
 }

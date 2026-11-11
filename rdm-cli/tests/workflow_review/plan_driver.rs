@@ -1160,6 +1160,28 @@ fn plan_slug_persists_to_plan_target() {
         check_eq!(reviews.len(), 1, "the ladder landed a review on plan/p");
         check_eq!(reviews[0]["state"], json!("submitted"), "submitted");
 
+        let defaulted = drive_lib(
+            &mut js,
+            with(
+                &axes(),
+                json!({ "implementationPlan": true, "planSlug": "p" }),
+            ),
+            json!([]),
+        )?;
+        let dr = defaulted.ok()?;
+        let script = dr["persistScript"].as_str().unwrap_or_default();
+        check!(
+            !script.is_empty(),
+            "a slug-named plan with no persist argument still returns a ladder: {dr}"
+        );
+        repo.run_ok(&Run::bare(), script)?;
+        let reviews = repo.reviews_on(PROJECT, "plan/p")?;
+        check_eq!(
+            reviews.len(),
+            2,
+            "the default ladder landed a second review on plan/p"
+        );
+
         let free = drive_lib(
             &mut js,
             json!({ "implementationPlan": true, "planFile": "/tmp/loose-plan.md", "persist": { "on": "plan/p" } }),
