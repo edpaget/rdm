@@ -1545,13 +1545,25 @@ here.
 ### Persisting a review (`persist: { on }`)
 
 Both review workflows can record their surviving findings as a REAL rdm review
-instead of leaving them in an ephemeral OUTCOME. It is OPT-IN and defaults OFF,
-so a caller that omits it gets a byte-identical OUTCOME to before.
+instead of leaving them in an ephemeral OUTCOME. The default differs per engine:
+
+- **Code review (`rdm-wf-review-refute-fix`)** — OPT-IN and defaults OFF, so a
+  caller that omits `persist` gets a byte-identical OUTCOME to before.
+- **Plan review (`rdm-wf-plan-review`)** — ON by default for a target with an
+  rdm item behind it: a roadmap, phase or task, or an `--implementation-plan`
+  named by `planSlug`. Every unit of such a run carries the persist ladder, and
+  `persist: false` opts out for a report-only run. A plan given as a `planFile`
+  (no slug) has nothing to record a review on and is always report-only: an
+  absent `persist` is off there, and an explicit `true` / `{ on }` is dropped
+  and logged as "persist ignored".
 
 `persist` is read from STRUCTURED ARG KEYS ONLY — never tokenized out of an
-`$ARGUMENTS` flag string. Legal shapes: absent / `false` (off), `true` or `{}`
-(on; derive the ref per unit), `{ on: '<ref>' }` (on; explicit target). Anything
-else throws.
+`$ARGUMENTS` flag string. Legal shapes: `false` (off), `true` or `{}` (on;
+derive the ref per unit), `{ on: '<ref>' }` (on; explicit target), and absent,
+which is off for the code engine and, for the plan engine, on when the target
+has an item behind it (`null` counts as absent there). Anything else throws.
+The plan engine decides this in `resolvePersistArg(value, target)`
+(`lib/plan-review.mjs`), where `target` is `{ kind, planSlug }`.
 
 **THREE ref grammars are in play and must never be conflated.** This is the one
 sharp edge:

@@ -325,23 +325,60 @@ fn refs_emitted_shell_quoted() {
 fn resolve_persist_arg() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let cases = [
-            (json!({ "$undefined": true }), json!(null)),
-            (json!(null), json!(null)),
-            (json!(false), json!(null)),
-            (json!(true), json!({ "on": null })),
-            (json!({}), json!({ "on": null })),
-            (json!({ "on": "plan/x" }), json!({ "on": "plan/x" })),
+        let absent = json!({ "$undefined": true });
+        let on = json!({ "on": null });
+        // A target with an rdm item behind it: an absent `persist` means on.
+        let backed = [
+            json!({ "kind": "roadmap" }),
+            json!({ "kind": "phase" }),
+            json!({ "kind": "task" }),
+            json!({ "kind": "implementation-plan", "planSlug": "p" }),
         ];
-        for (arg, want) in cases {
-            check_eq!(
-                js.plan_call("resolvePersistArg", vec![arg.clone()])?,
-                want,
-                "resolvePersistArg({arg})"
-            );
+        for target in backed {
+            let cases = [
+                (absent.clone(), on.clone()),
+                (json!(null), on.clone()),
+                (json!(false), json!(null)),
+                (json!(true), on.clone()),
+                (json!({}), on.clone()),
+                (json!({ "on": "plan/x" }), json!({ "on": "plan/x" })),
+            ];
+            for (arg, want) in cases {
+                check_eq!(
+                    js.plan_call("resolvePersistArg", vec![arg.clone(), target.clone()])?,
+                    want,
+                    "resolvePersistArg({arg}, {target})"
+                );
+            }
+        }
+        // A plan with no slug has nothing to attach a review to, and so does a
+        // call that names no target at all: absent means off.
+        for target in [
+            json!({ "kind": "implementation-plan" }),
+            json!({ "kind": "implementation-plan", "planSlug": "" }),
+            absent.clone(),
+        ] {
+            let cases = [
+                (absent.clone(), json!(null)),
+                (json!(null), json!(null)),
+                (json!(false), json!(null)),
+                (json!(true), on.clone()),
+                (json!({}), on.clone()),
+                (json!({ "on": "plan/x" }), json!({ "on": "plan/x" })),
+            ];
+            for (arg, want) in cases {
+                check_eq!(
+                    js.plan_call("resolvePersistArg", vec![arg.clone(), target.clone()])?,
+                    want,
+                    "resolvePersistArg({arg}, {target})"
+                );
+            }
         }
         for bad in [json!("task/x"), json!(["a"])] {
-            let r = js.plan_try_call("resolvePersistArg", vec![bad.clone()])?;
+            let r = js.plan_try_call(
+                "resolvePersistArg",
+                vec![bad.clone(), json!({ "kind": "task" })],
+            )?;
             check!(
                 r.as_ref()
                     .is_err_and(|e| e.message.contains("persist must be omitted")),
@@ -356,15 +393,26 @@ fn resolve_persist_arg() {
 fn parse_plan_args_never_parses_persist() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let a = js.plan_call(
+        let flagged = js.plan_call(
             "parsePlanArgs",
             vec![json!({ "target": "--task t --persist" })],
         )?;
+        let plain = js.plan_call("parsePlanArgs", vec![json!({ "target": "--task t" })])?;
         check_eq!(
-            a["persist"],
-            json!(null),
+            plain["persist"],
+            json!({ "on": null }),
+            "a task target persists by default"
+        );
+        check_eq!(
+            flagged["persist"],
+            plain["persist"],
             "persist is never tokenized out of the flag string"
         );
+        let off = js.plan_call(
+            "parsePlanArgs",
+            vec![json!({ "task": "t", "persist": false })],
+        )?;
+        check_eq!(off["persist"], json!(null), "an explicit false is off");
         let b = js.plan_call(
             "parsePlanArgs",
             vec![json!({ "task": "t", "persist": true })],
@@ -373,6 +421,20 @@ fn parse_plan_args_never_parses_persist() {
             b["persist"],
             json!({ "on": null }),
             "the structured key is honoured"
+        );
+        let free = js.plan_call(
+            "parsePlanArgs",
+            vec![json!({ "implementationPlan": true, "planFile": "/tmp/x.md" })],
+        )?;
+        check_eq!(
+            free["persist"],
+            json!(null),
+            "a plan given as a file is report-only"
+        );
+        check_eq!(
+            free["persistIgnored"],
+            json!(false),
+            "and nothing was asked for, so nothing was ignored"
         );
         Ok(())
     });

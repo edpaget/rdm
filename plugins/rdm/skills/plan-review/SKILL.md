@@ -65,6 +65,11 @@ never parsed out of the `$ARGUMENTS` flag string:
   plan-review --status wont-fix --type task --project <PROJECT> --format json`. Absent
   suppresses nothing, which is the safe direction.
 - **`reviewers`** — see the bullet above.
+- **`persist`** — omit it. Every unit of a roadmap, phase or task target, and an
+  `--implementation-plan` named by `planSlug`, then carries the persist ladder
+  (step 1 below). Pass `persist: false` for a report-only run that records no
+  review. A plan given as a file has nothing to attach a review to and is always
+  report-only.
 - **`findModel` / `findEffort`**, **`verifyModel` / `verifyEffort`** and
   **`consolidateModel` / `consolidateEffort`** — the `model` and `effort` fields
   printed by `rdm model resolve review-find<preset-flag> --format json`,
@@ -94,7 +99,7 @@ never parsed out of the `$ARGUMENTS` flag string:
 **Writes it would make, it hands back.** Nothing in the workflow mutates the plan
 repo. Run these yourself, in order, and report each exit status:
 
-1. **Persist the review** — with `persist` on, each unit carries
+1. **Persist the review** — unless you passed `persist: false`, each unit carries
    `persistCommands` / `persistScript`: the `review start` → `review comment` per
    finding → `review submit` → `commit` ladder. Run the script in **one** Bash
    session (later lines read variables the earlier ones set); it prints
@@ -128,8 +133,8 @@ repo. Run these yourself, in order, and report each exit status:
    only**: the engine never reads it back. The round-3 cap and repeat detection
    instead come from `priorReviews` (the reviews already persisted on the
    target), so they only engage across passes when at least one **prior** pass
-   actually persisted a review — if round-tracking matters, run the persist
-   ladder (step 1) even for an otherwise "informal" pass, not just this note.
+   actually persisted a review — so run the persist ladder (step 1) on every
+   pass, including an otherwise "informal" one, rather than relying on this note.
    Append `roundNote` to the item's body anyway (read the current body, write
    the whole thing back) and commit, for a human audit trail. `--body` is
    whole-document-authoritative and there is no patch-shaped write, so do the

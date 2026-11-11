@@ -596,11 +596,8 @@ fn round_from_caller_prior_reviews() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         for persist in [false, true] {
-            let mut args = json!({ "roadmap": "r", "phase": "phase-1-x", "tags": ["needs-plan-review"],
-                                   "priorReviews": prior(2, json!([])) });
-            if persist {
-                args["persist"] = json!(true);
-            }
+            let args = json!({ "roadmap": "r", "phase": "phase-1-x", "tags": ["needs-plan-review"],
+                               "priorReviews": prior(2, json!([])), "persist": persist });
             let d = drive_lib(&mut js, args, json!([blocking("still ambiguous")]))?;
             let r = d.ok()?;
             check_eq!(
@@ -725,7 +722,7 @@ fn persist_ladder_lands_unit_review() {
         check_eq!(reviews[0]["target"]["kind"], json!("phase"), "on the phase");
         let off = drive_lib(
             &mut js,
-            json!({ "roadmap": "r", "phase": "phase-1-x", "tags": [] }),
+            json!({ "roadmap": "r", "phase": "phase-1-x", "tags": [], "persist": false }),
             json!([]),
         )?;
         let off = off.ok()?;
@@ -733,6 +730,60 @@ fn persist_ladder_lands_unit_review() {
             off.get("persistCommands").is_none() && off.get("persistScript").is_none(),
             "persist off returns no ladder: {off}"
         );
+        Ok(())
+    });
+}
+
+#[test]
+fn phase_target_persists_by_default() {
+    run_real(|lib| {
+        let repo = plan_repo()?;
+        let mut js = Js::open(lib)?;
+        let d = drive_lib(
+            &mut js,
+            with(
+                &axes(),
+                json!({ "roadmap": "r", "phase": "phase-1-x", "tags": [] }),
+            ),
+            json!([blocking("the phase is ambiguous")]),
+        )?;
+        let r = d.ok()?;
+        let unit = &r["units"][0];
+        check_eq!(
+            unit["findings"].as_array().map(Vec::len),
+            Some(1),
+            "the unit produced a finding"
+        );
+        let script = unit["persistScript"].as_str().unwrap_or_default();
+        check!(
+            !script.is_empty(),
+            "with no persist argument the unit carries a ladder: {unit}"
+        );
+        repo.run_ok(&Run::bare(), script)?;
+        let reviews = repo.reviews_on(PROJECT, "phase/r/phase-1-x")?;
+        check_eq!(
+            reviews.len(),
+            1,
+            "the ladder landed one review on the phase"
+        );
+        check_eq!(reviews[0]["state"], json!("submitted"), "submitted");
+
+        let swept = drive_lib(
+            &mut js,
+            with(
+                &axes(),
+                json!({ "roadmap": "r", "phases": [{ "stem": "phase-1-x", "tags": [] }], "tags": [] }),
+            ),
+            json!([blocking("the phase is ambiguous")]),
+        )?;
+        let units = swept.ok()?["units"].as_array().cloned().unwrap_or_default();
+        check_eq!(units.len(), 2, "the roadmap and its phase");
+        for u in units {
+            check!(
+                u["persistScript"].as_str().is_some_and(|s| !s.is_empty()),
+                "every swept unit carries a ladder: {u}"
+            );
+        }
         Ok(())
     });
 }
@@ -1126,6 +1177,26 @@ fn plan_slug_persists_to_plan_target() {
                 .any(|m| m.contains("persist ignored")),
             "and says so: {:?}",
             free.agent.logs()
+        );
+
+        let unasked = drive_lib(
+            &mut js,
+            json!({ "implementationPlan": true, "planFile": "/tmp/loose-plan.md" }),
+            json!([]),
+        )?;
+        let u = unasked.ok()?;
+        check!(
+            u.get("persistCommands").is_none() && u.get("persistScript").is_none(),
+            "a free-form file with no persist argument returns no ladder: {u}"
+        );
+        check!(
+            !unasked
+                .agent
+                .logs()
+                .iter()
+                .any(|m| m.contains("persist ignored")),
+            "and logs nothing, because nothing was asked for: {:?}",
+            unasked.agent.logs()
         );
         Ok(())
     });

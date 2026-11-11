@@ -388,9 +388,12 @@ function parsePlanArgs(rawArgs) {
   // The PERSIST switch — record this review as a REAL rdm review (see
   // docs/workflow-schemas.md § "Persisting a review"). Read from a STRUCTURED
   // key only: a positional target slug must never be able to turn writing into
-  // the plan repo on. Default OFF. It no longer WRITES anything — it makes the
-  // engine return the ladder that would.
-  let persist = resolvePersistArg(a.persist)
+  // the plan repo on. Default ON for a target with an rdm item behind it (a
+  // roadmap, phase or task, or a plan named by `planSlug`), and `persist: false`
+  // opts out; a plan with no slug has nothing to record a review on and
+  // defaults OFF. It no longer WRITES anything — it makes the engine return the
+  // ladder that would.
+  let persist = resolvePersistArg(a.persist, { kind: kind, planSlug: planSlug })
   // `planSlug` names a REAL persisted rdm document, so every way of using it
   // wrongly is caught HERE, at parse time, before any agent() call — the
   // resolveRefutationBudget precedent. Each throw names both halves of the
@@ -487,18 +490,32 @@ function parsePlanArgs(rawArgs) {
   }
 }
 
-// resolvePersistArg(value) — the four legal shapes of the `persist` arg, and a
-// THROW on anything else:
+// resolvePersistArg(value, target) — the legal shapes of the `persist` arg, and
+// a THROW on anything else. `target` is `{ kind, planSlug }`; it has an rdm item
+// behind it when `kind` is roadmap, phase or task, or when it is an
+// implementation plan named by a non-empty `planSlug`. An omitted `target`
+// counts as having none.
 //
-//   absent / null / false        -> null            (off, the default)
+//   absent / null, item behind   -> { on: null }    (on, the default)
+//   absent / null, no item       -> null            (off; nothing to record on)
+//   false                        -> null            (off, the explicit opt-out)
 //   true / {}                    -> { on: null }    (on; derive the ref per unit)
 //   { on: '<rdm review ref>' }   -> { on: '<ref>' } (on; explicit single target)
 //
 // Throwing on an unrecognized shape is deliberate: a silent "off" would turn a
 // typo into a review that was never recorded, with nothing in the transcript to
 // say so.
-function resolvePersistArg(value) {
-  if (value === undefined || value === null || value === false) return null
+function resolvePersistArg(value, target) {
+  if (value === false) return null
+  if (value === undefined || value === null) {
+    const t = target || {}
+    const hasItem =
+      t.kind === 'roadmap' ||
+      t.kind === 'phase' ||
+      t.kind === 'task' ||
+      (t.kind === 'implementation-plan' && typeof t.planSlug === 'string' && t.planSlug !== '')
+    return hasItem ? { on: null } : null
+  }
   if (value === true) return { on: null }
   if (typeof value === 'object' && !Array.isArray(value)) {
     const on = value.on
