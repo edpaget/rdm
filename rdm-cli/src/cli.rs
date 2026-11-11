@@ -539,7 +539,7 @@ pub(crate) enum BacklogCommand {
 #[derive(Subcommand)]
 pub(crate) enum ModelCommand {
     /// Resolve a dispatch step (plus optional tier hint) to a concrete model id
-    /// (text) or a `{step, host, tier, model, effort}` profile (`--format json`).
+    /// (text) or a `{step, host, preset, tier, model, effort}` profile (`--format json`).
     Resolve {
         /// Dispatch step: plan, implement, review-find, review-verify, review-consolidate, or mechanical.
         step: String,
@@ -549,12 +549,24 @@ pub(crate) enum ModelCommand {
         /// Host whose profile table to resolve against: claude (default) or codex.
         #[arg(long)]
         host: Option<String>,
+        /// Model preset to resolve with; overrides RDM_MODEL_PRESET and the `[models] preset` key.
+        #[arg(long)]
+        preset: Option<String>,
+        /// Resolve with no preset, ignoring RDM_MODEL_PRESET and the `[models] preset` key.
+        #[arg(long, conflicts_with = "preset")]
+        no_preset: bool,
     },
-    /// Show the resolved model policy for a host: tier profiles, review floor, and each step's no-hint profile.
+    /// Show the resolved model policy for a host: active preset, selectable presets, tier profiles, review floor, and each step's no-hint profile.
     Show {
         /// Host whose profile table to show: claude (default) or codex.
         #[arg(long)]
         host: Option<String>,
+        /// Model preset to show; overrides RDM_MODEL_PRESET and the `[models] preset` key.
+        #[arg(long)]
+        preset: Option<String>,
+        /// Show the policy with no preset, ignoring RDM_MODEL_PRESET and the `[models] preset` key.
+        #[arg(long, conflicts_with = "preset")]
+        no_preset: bool,
     },
 }
 

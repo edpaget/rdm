@@ -1,5 +1,10 @@
 {
   "host": "claude",
+  "preset": null,
+  "presets": [
+    "fable",
+    "fable-build"
+  ],
   "small": "opus",
   "medium": "opus",
   "large": "opus",

@@ -28,6 +28,9 @@
 //! profile. Presets come from config (`[models.presets.<name>]`) or are built
 //! in ([`BUILTIN_PRESETS`](crate::model_policy::BUILTIN_PRESETS)); a
 //! configured preset replaces a built-in one of the same name.
+//! [`select_preset`](crate::model_policy::select_preset) picks the preset for
+//! one run: the `--preset` / `--no-preset` flag, else `RDM_MODEL_PRESET`, else
+//! the `[models] preset` key, else none.
 
 use std::fmt;
 use std::str::FromStr;
@@ -328,6 +331,133 @@ pub fn available_presets(config: &Config) -> Vec<String> {
     names
 }
 
+/// The environment variable that selects a model preset for one run when no
+/// `--preset` / `--no-preset` flag is given (see [`select_preset`]).
+pub const MODEL_PRESET_ENV: &str = "RDM_MODEL_PRESET";
+
+/// Where a selected model preset name came from (see [`select_preset`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetSource {
+    /// The `--preset <name>` command-line flag.
+    Flag,
+    /// The [`MODEL_PRESET_ENV`] (`RDM_MODEL_PRESET`) environment variable.
+    Env,
+    /// The `preset` key of the `[models]` config table.
+    Config,
+}
+
+impl PresetSource {
+    /// Returns a one-word label for this source (`flag`, `env` or
+    /// `config`), for compact text output such as `rdm model show`'s
+    /// `preset:` line.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            PresetSource::Flag => "flag",
+            PresetSource::Env => "env",
+            PresetSource::Config => "config",
+        }
+    }
+}
+
+impl fmt::Display for PresetSource {
+    /// Names the exact origin: `--preset flag`, `RDM_MODEL_PRESET
+    /// environment variable` or `[models] preset config key`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PresetSource::Flag => write!(f, "--preset flag"),
+            PresetSource::Env => write!(f, "{MODEL_PRESET_ENV} environment variable"),
+            PresetSource::Config => write!(f, "[models] preset config key"),
+        }
+    }
+}
+
+/// The command-line layer of a preset selection: what the `--preset` /
+/// `--no-preset` flags asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetRequest<'a> {
+    /// Neither flag was given: fall through to the env var, then config.
+    Unspecified,
+    /// `--preset <name>`: use this preset, whatever the env var or config say.
+    Named(&'a str),
+    /// `--no-preset`: use no preset, whatever the env var or config say.
+    NoPreset,
+}
+
+/// A preset chosen by [`select_preset`], with the layer that chose it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedPreset {
+    /// The preset name, verbatim as its source gave it.
+    pub name: String,
+    /// The layer the name came from.
+    pub source: PresetSource,
+}
+
+/// Selects the model preset for one run.
+///
+/// Precedence: [`PresetRequest::NoPreset`] selects no preset without reading
+/// the env var or config; else a [`PresetRequest::Named`] flag; else a
+/// non-blank [`MODEL_PRESET_ENV`] value, read through `env` (a set but
+/// whitespace-only value counts as unset); else the `[models] preset` config
+/// key; else no preset. Only the winning layer is checked, so a bad lower
+/// layer never fails a run a higher layer decides.
+///
+/// # Errors
+///
+/// Returns [`Error::UnknownModelPreset`], carrying the winning layer as its
+/// `source` and listing [`available_presets`], if the selected name is
+/// neither a built-in nor a configured preset.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::config::Config;
+/// use rdm_core::model_policy::{PresetRequest, PresetSource, select_preset};
+///
+/// let env = |k: &str| (k == "RDM_MODEL_PRESET").then(|| "fable".to_string());
+/// let flag = select_preset(PresetRequest::Named("fable-build"), &Config::default(), env)
+///     .unwrap()
+///     .unwrap();
+/// assert_eq!((flag.name.as_str(), flag.source), ("fable-build", PresetSource::Flag));
+///
+/// let from_env = select_preset(PresetRequest::Unspecified, &Config::default(), env)
+///     .unwrap()
+///     .unwrap();
+/// assert_eq!((from_env.name.as_str(), from_env.source), ("fable", PresetSource::Env));
+/// ```
+pub fn select_preset(
+    request: PresetRequest<'_>,
+    config: &Config,
+    env: impl Fn(&str) -> Option<String>,
+) -> crate::error::Result<Option<SelectedPreset>> {
+    let picked = match request {
+        PresetRequest::NoPreset => return Ok(None),
+        PresetRequest::Named(name) => Some((name.to_string(), PresetSource::Flag)),
+        PresetRequest::Unspecified => env(MODEL_PRESET_ENV)
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| (v, PresetSource::Env))
+            .or_else(|| {
+                config
+                    .models
+                    .as_ref()
+                    .and_then(|m| m.preset.clone())
+                    .map(|v| (v, PresetSource::Config))
+            }),
+    };
+    let Some((name, source)) = picked else {
+        return Ok(None);
+    };
+    let available = available_presets(config);
+    if !available.contains(&name) {
+        return Err(Error::UnknownModelPreset {
+            name,
+            source: Some(source),
+            available,
+        });
+    }
+    Ok(Some(SelectedPreset { name, source }))
+}
+
 /// Resolves a [`DispatchStep`] (plus an optional caller tier hint) to a
 /// concrete [`Profile`] for a [`Host`].
 ///
@@ -452,6 +582,7 @@ impl ModelPolicy {
         let Some(resolved) = configured.or_else(|| builtin_preset(name)) else {
             return Err(Error::UnknownModelPreset {
                 name: name.to_string(),
+                source: None,
                 available: available_presets(config),
             });
         };
@@ -585,8 +716,9 @@ mod tests {
     use crate::error::Error;
     use crate::model::{Effort, ModelTier};
     use crate::model_policy::{
-        BUILTIN_PRESETS, DispatchStep, Host, ModelPolicy, PLAN_FLOOR, available_presets,
-        builtin_preset, default_profile,
+        BUILTIN_PRESETS, DispatchStep, Host, MODEL_PRESET_ENV, ModelPolicy, PLAN_FLOOR,
+        PresetRequest, PresetSource, SelectedPreset, available_presets, builtin_preset,
+        default_profile, select_preset,
     };
 
     const ALL_STEPS: [DispatchStep; 6] = [
@@ -1436,8 +1568,13 @@ mod tests {
     fn unknown_preset_errors_listing_available_names() {
         let cfg = with_preset(ModelsConfig::default(), "mine", PresetConfig::default());
         match ModelPolicy::for_preset(&cfg, Some("nope")) {
-            Err(Error::UnknownModelPreset { name, available }) => {
+            Err(Error::UnknownModelPreset {
+                name,
+                source,
+                available,
+            }) => {
                 assert_eq!(name, "nope");
+                assert_eq!(source, None);
                 assert_eq!(available, ["fable", "fable-build", "mine"]);
             }
             other => panic!("expected UnknownModelPreset, got {other:?}"),
@@ -1472,6 +1609,176 @@ mod tests {
             assert!(builtin_preset(name).is_some(), "{name}");
         }
         assert!(builtin_preset("nope").is_none());
+    }
+
+    /// An injected env holding only `RDM_MODEL_PRESET = value`, if any.
+    fn preset_env(value: Option<&str>) -> impl Fn(&str) -> Option<String> {
+        let value = value.map(ToString::to_string);
+        move |k: &str| {
+            assert_eq!(k, MODEL_PRESET_ENV, "only the preset env var is read");
+            value.clone()
+        }
+    }
+
+    /// Config with presets `a`, `b`, `c` and `[models] preset = config_preset`.
+    fn abc_config(config_preset: Option<&str>) -> Config {
+        let mut m = ModelsConfig {
+            preset: config_preset.map(ToString::to_string),
+            ..Default::default()
+        };
+        for name in ["a", "b", "c"] {
+            m.presets.insert(name.to_string(), PresetConfig::default());
+        }
+        models(m)
+    }
+
+    fn selected(name: &str, source: PresetSource) -> Option<SelectedPreset> {
+        Some(SelectedPreset {
+            name: name.to_string(),
+            source,
+        })
+    }
+
+    #[test]
+    fn select_preset_precedence_is_flag_then_env_then_config() {
+        let cfg = abc_config(Some("c"));
+        let flag = PresetRequest::Named("a");
+        let none = PresetRequest::Unspecified;
+        assert_eq!(
+            select_preset(flag, &cfg, preset_env(Some("b"))).unwrap(),
+            selected("a", PresetSource::Flag)
+        );
+        assert_eq!(
+            select_preset(none, &cfg, preset_env(Some("b"))).unwrap(),
+            selected("b", PresetSource::Env)
+        );
+        assert_eq!(
+            select_preset(none, &cfg, preset_env(None)).unwrap(),
+            selected("c", PresetSource::Config)
+        );
+        assert_eq!(
+            select_preset(none, &abc_config(None), preset_env(None)).unwrap(),
+            None
+        );
+        assert_eq!(
+            select_preset(none, &Config::default(), preset_env(None)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn select_no_preset_ignores_env_and_config() {
+        // A bad env var and config key are never read under `NoPreset`.
+        let cfg = abc_config(Some("bad-config"));
+        let env = |_: &str| -> Option<String> { panic!("env must not be read") };
+        assert_eq!(
+            select_preset(PresetRequest::NoPreset, &cfg, env).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn select_preset_blank_env_falls_through_to_config() {
+        let cfg = abc_config(Some("c"));
+        for blank in ["", "  ", "\t"] {
+            assert_eq!(
+                select_preset(PresetRequest::Unspecified, &cfg, preset_env(Some(blank))).unwrap(),
+                selected("c", PresetSource::Config),
+                "{blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn select_preset_unknown_name_carries_its_source() {
+        for (request, env, config, source) in [
+            (PresetRequest::Named("nope"), None, None, PresetSource::Flag),
+            (
+                PresetRequest::Unspecified,
+                Some("nope"),
+                None,
+                PresetSource::Env,
+            ),
+            (
+                PresetRequest::Unspecified,
+                None,
+                Some("nope"),
+                PresetSource::Config,
+            ),
+        ] {
+            let cfg = abc_config(config);
+            match select_preset(request, &cfg, preset_env(env)) {
+                Err(Error::UnknownModelPreset {
+                    name,
+                    source: got,
+                    available,
+                }) => {
+                    assert_eq!(name, "nope");
+                    assert_eq!(got, Some(source));
+                    assert_eq!(available, ["a", "b", "c", "fable", "fable-build"]);
+                }
+                other => panic!("{source}: expected UnknownModelPreset, got {other:?}"),
+            }
+        }
+        // An empty flag value is an unknown name, not "no preset".
+        assert!(matches!(
+            select_preset(
+                PresetRequest::Named(""),
+                &Config::default(),
+                preset_env(None)
+            ),
+            Err(Error::UnknownModelPreset {
+                source: Some(PresetSource::Flag),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn select_preset_higher_layer_shadows_a_bad_lower_one() {
+        let cfg = abc_config(Some("bad-config"));
+        assert_eq!(
+            select_preset(
+                PresetRequest::Named("fable"),
+                &cfg,
+                preset_env(Some("bad-env"))
+            )
+            .unwrap(),
+            selected("fable", PresetSource::Flag)
+        );
+        assert_eq!(
+            select_preset(PresetRequest::Unspecified, &cfg, preset_env(Some("b"))).unwrap(),
+            selected("b", PresetSource::Env)
+        );
+    }
+
+    #[test]
+    fn unknown_preset_display_with_and_without_source() {
+        let available = vec!["fable".to_string(), "fable-build".to_string()];
+        let err = |source| Error::UnknownModelPreset {
+            name: "nope".to_string(),
+            source,
+            available: available.clone(),
+        };
+        assert_eq!(
+            err(None).to_string(),
+            "unknown model preset 'nope' — available presets: fable, fable-build"
+        );
+        for (source, spelled) in [
+            (PresetSource::Flag, "--preset flag"),
+            (PresetSource::Env, "RDM_MODEL_PRESET environment variable"),
+            (PresetSource::Config, "[models] preset config key"),
+        ] {
+            assert_eq!(
+                err(Some(source)).to_string(),
+                format!(
+                    "unknown model preset 'nope' (from the {spelled}) — available presets: fable, fable-build"
+                )
+            );
+        }
+        assert_eq!(PresetSource::Flag.label(), "flag");
+        assert_eq!(PresetSource::Env.label(), "env");
+        assert_eq!(PresetSource::Config.label(), "config");
     }
 
     #[test]

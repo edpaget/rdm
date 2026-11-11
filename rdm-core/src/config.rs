@@ -281,6 +281,14 @@ pub struct ModelsConfig {
     /// per-step override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_floor: Option<ModelTier>,
+    /// The preset selected when neither `--preset` / `--no-preset` nor a
+    /// non-blank `RDM_MODEL_PRESET` says otherwise (`[models] preset`; see
+    /// [`crate::model_policy::select_preset`]).
+    ///
+    /// Not validated at load: an unknown name is reported only when a model
+    /// command selects it, so a bad selector never breaks unrelated commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
     /// Per-step tier overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<StepTiersConfig>,
@@ -1761,6 +1769,7 @@ mechanical = "small"
                 medium: Some("sonnet".to_string()),
                 large: Some("opus".to_string()),
                 review_floor: Some(ModelTier::Medium),
+                preset: Some("fable-build".to_string()),
                 steps: Some(StepTiersConfig {
                     plan: Some(ModelTier::Medium),
                     implement: Some(ModelTier::Large),
@@ -1804,6 +1813,7 @@ mechanical = "small"
             medium: Some("sonnet".to_string()),
             large: Some("opus".to_string()),
             review_floor: Some(ModelTier::Medium),
+            preset: None,
             steps: None,
             profiles: None,
             presets: BTreeMap::new(),
@@ -1823,6 +1833,7 @@ mechanical = "small"
             medium: None,
             large: None,
             review_floor: None,
+            preset: None,
             steps: None,
             profiles: None,
             presets: BTreeMap::new(),
@@ -1832,6 +1843,7 @@ mechanical = "small"
             medium: Some("sonnet".to_string()),
             large: Some("opus".to_string()),
             review_floor: Some(ModelTier::Large),
+            preset: None,
             steps: None,
             profiles: None,
             presets: BTreeMap::new(),

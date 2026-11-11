@@ -59,7 +59,7 @@ than falling back to defaults.
 
 ```bash
 rdm model resolve plan --tier small --format json
-# {"step":"plan","host":"claude","tier":"medium","model":"opus","effort":"medium"}
+# {"step":"plan","host":"claude","preset":null,"tier":"medium","model":"opus","effort":"medium"}
 rdm model resolve review-verify --host codex     # gpt-6-astra
 rdm model show --host codex
 ```
@@ -111,9 +111,8 @@ A **preset** is a named, sparse overlay on the profile table. It changes what
 a tier or a role *runs on*, never which tier is picked: tier resolution above
 (hint, `[models.steps]`, defaults, `PLAN_FLOOR`, `review_floor`) is untouched.
 
-Selecting a preset per run (flag, env var or config default) is not wired to
-the CLI yet; today only rdm-core's `ModelPolicy::for_preset` takes a preset
-name. With no preset the policy is exactly the one described above.
+With no preset the policy is exactly the one described above. How a run picks
+a preset is under [Selecting a preset](#selecting-a-preset).
 
 ```toml
 [models.presets.fable-build.claude.steps.plan]
@@ -154,8 +153,60 @@ Neither sets an effort, so each role keeps the effort of its resolved tier.
 
 A `[models.presets.<name>]` table whose name is a built-in's **replaces** that
 built-in entirely; the two are not merged. Asking for a name that is neither
-built in nor configured fails with
-`unknown model preset '<name>' — available presets: fable, fable-build, …`.
+built in nor configured fails (see below).
+
+### Selecting a preset
+
+`rdm model resolve` and `rdm model show` pick at most one preset per run. The
+first of these that applies wins:
+
+1. `--preset <name>` on the command line.
+2. A non-blank `RDM_MODEL_PRESET` environment variable.
+3. The `preset` key of the `[models]` table.
+4. Otherwise, no preset.
+
+```toml
+[models]
+preset = "fable-build"   # the default for every model command in this repo
+```
+
+Some details:
+
+- **`--no-preset`** selects no preset for that one invocation, whatever the
+  env var or config key say. It is a separate flag rather than a reserved
+  value such as `none`, so every string stays a usable preset name. It
+  cannot be combined with `--preset`.
+- **A blank env var** (empty or whitespace only) counts as unset and falls
+  through to the config key. A parent session can export `RDM_MODEL_PRESET=`
+  to go back to the config default. The env var has no "none" value; use
+  `--no-preset`.
+- **The `preset` key** lives in `[models]`, so it follows the wholesale repo
+  vs global rule below: a repo `[models]` table hides the global one's
+  `preset` too. It is set by editing `[models]`, not through
+  `rdm config get/set`. `rdm model show` displays the active selection.
+- **Only the winning layer is checked.** An unknown name fails the command
+  and names where it came from and the presets that exist, e.g.
+  `unknown model preset 'nope' (from the RDM_MODEL_PRESET environment
+  variable) — available presets: fable, fable-build`. The other sources read
+  `--preset flag` and `[models] preset config key`. A bad config key does not
+  fail a run whose flag or env var names a valid preset. An empty
+  `--preset ""` is an unknown name, not "no preset".
+
+What the output shows:
+
+- `rdm model resolve <step> --format json` carries `"preset"`: the active
+  preset's name, or `null` when none is selected. The text form stays a bare
+  model id, so `model=$(rdm model resolve …)` consumers are unaffected.
+- `rdm model show --format json` carries `"preset"` (name or `null`) and
+  `"presets"`, every selectable name, built in and configured, sorted. The
+  list does not depend on the selection.
+- `rdm model show` text output starts with `preset: <name> (from
+  flag|env|config)` (or `preset: none`) and `presets: fable, fable-build, …`.
+- In `model show`, the per-step lines and `steps` entries include the
+  preset's role overrides. The tier lines (`small:` … `frontier:`, and the
+  JSON `profiles` / `small` … `frontier` fields) show the tier layer only:
+  the configured-or-default profile with the preset's `tiers` overrides,
+  without its `steps` overrides.
 
 ### Global vs repo config
 

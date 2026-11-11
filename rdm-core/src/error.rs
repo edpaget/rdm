@@ -508,6 +508,10 @@ pub enum Error {
     UnknownModelPreset {
         /// The preset name that was requested.
         name: String,
+        /// Where the name came from when it was picked by
+        /// [`crate::model_policy::select_preset`]; `None` when the name was
+        /// passed to [`crate::model_policy::ModelPolicy::for_preset`] directly.
+        source: Option<crate::model_policy::PresetSource>,
         /// Every preset name that is available, sorted (see
         /// [`crate::model_policy::available_presets`]).
         available: Vec<String>,
@@ -1301,11 +1305,17 @@ impl std::fmt::Display for Error {
                     "invalid value '{value}' for '{key}' — valid values: {valid}"
                 )
             }
-            Error::UnknownModelPreset { name, available } => write!(
-                f,
-                "unknown model preset '{name}' — available presets: {}",
-                available.join(", ")
-            ),
+            Error::UnknownModelPreset {
+                name,
+                source,
+                available,
+            } => {
+                write!(f, "unknown model preset '{name}'")?;
+                if let Some(source) = source {
+                    write!(f, " (from the {source})")?;
+                }
+                write!(f, " — available presets: {}", available.join(", "))
+            }
             Error::KeyNotProjectScopable { key } => write!(
                 f,
                 "'{key}' cannot be set per project — project-scopable keys: {}",

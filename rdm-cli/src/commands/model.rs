@@ -2,7 +2,10 @@
 use anyhow::{Result, bail};
 use rdm_core::config::Config;
 use rdm_core::model::ModelTier;
-use rdm_core::model_policy::{DispatchStep, Host, ModelPolicy, Profile};
+use rdm_core::model_policy::{
+    DispatchStep, Host, ModelPolicy, PresetRequest, Profile, SelectedPreset, available_presets,
+    select_preset,
+};
 use serde::Serialize;
 
 use crate::{ModelCommand, OutputFormat};
@@ -24,18 +27,42 @@ const ALL_STEPS: [DispatchStep; 6] = [
 /// concrete model id (or, with `--format json`, a model + effort profile),
 /// or showing the full resolved policy for a host.
 ///
+/// The preset is selected by core's [`select_preset`]: `--preset` /
+/// `--no-preset`, else `RDM_MODEL_PRESET`, else the `[models] preset` key.
+///
 /// # Errors
 ///
-/// Returns an error if `step`, `--tier`, or `--host` fail to parse, or if
-/// `--format table` is requested for `model show` (unsupported), or if
-/// the resolved policy cannot be serialized as JSON.
+/// Returns an error if the selected preset is unknown (core's message, naming
+/// the source and the available presets), if `step`, `--tier`, or `--host`
+/// fail to parse, or if `--format table` is requested for `model show`
+/// (unsupported), or if the resolved policy cannot be serialized as JSON.
 pub fn run(command: ModelCommand, repo_config: &Config, format: OutputFormat) -> Result<()> {
-    let policy = ModelPolicy::from_config(repo_config);
-    match command {
-        ModelCommand::Resolve { step, tier, host } => {
-            run_resolve(&policy, step, tier, host, format)
+    let (preset, no_preset) = match &command {
+        ModelCommand::Resolve {
+            preset, no_preset, ..
         }
-        ModelCommand::Show { host } => run_show(&policy, parse_host(host)?, format),
+        | ModelCommand::Show {
+            preset, no_preset, ..
+        } => (preset.as_deref(), *no_preset),
+    };
+    let request = match (preset, no_preset) {
+        (_, true) => PresetRequest::NoPreset,
+        (Some(name), false) => PresetRequest::Named(name),
+        (None, false) => PresetRequest::Unspecified,
+    };
+    let selected = select_preset(request, repo_config, |k| std::env::var(k).ok())?;
+    let policy = ModelPolicy::for_preset(repo_config, selected.as_ref().map(|s| s.name.as_str()))?;
+    match command {
+        ModelCommand::Resolve {
+            step, tier, host, ..
+        } => run_resolve(&policy, selected.as_ref(), step, tier, host, format),
+        ModelCommand::Show { host, .. } => run_show(
+            &policy,
+            selected.as_ref(),
+            available_presets(repo_config),
+            parse_host(host)?,
+            format,
+        ),
     }
 }
 
@@ -51,6 +78,7 @@ fn parse_host(host: Option<String>) -> Result<Host> {
 /// Note: `step` is parsed before `tier`, and `tier` before `host`, so if several are invalid the earliest error is the one surfaced.
 fn run_resolve(
     policy: &ModelPolicy,
+    selected: Option<&SelectedPreset>,
     step: String,
     tier: Option<String>,
     host: Option<String>,
@@ -63,12 +91,14 @@ fn run_resolve(
     };
     let host = parse_host(host)?;
     let tier = policy.resolve_tier(step, hint);
-    let profile = policy.profile(host, tier);
+    // `resolve`, not `profile`: a preset's role overrides apply per step.
+    let profile = policy.resolve(step, hint, host);
     match format {
         OutputFormat::Json => {
             let view = ResolvedModelView {
                 step: step.to_string(),
                 host: host.to_string(),
+                preset: selected.map(|s| s.name.clone()),
                 tier: tier.to_string(),
                 model: profile.model.clone(),
                 effort: profile.effort.to_string(),
@@ -88,6 +118,8 @@ fn run_resolve(
 struct ResolvedModelView {
     step: String,
     host: String,
+    /// The active preset's name; always serialized, `null` when none.
+    preset: Option<String>,
     tier: String,
     model: String,
     effort: String,
@@ -96,6 +128,10 @@ struct ResolvedModelView {
 #[derive(Serialize)]
 struct ModelPolicyView {
     host: String,
+    /// The active preset's name; always serialized, `null` when none.
+    preset: Option<String>,
+    /// Every selectable preset name, built-in and configured, sorted.
+    presets: Vec<String>,
     small: String,
     medium: String,
     large: String,
@@ -121,10 +157,20 @@ struct StepView {
     effort: String,
 }
 
-fn build_view(policy: &ModelPolicy, host: Host) -> ModelPolicyView {
+/// Tier lines show the tier layer only ([`ModelPolicy::profile`]); the
+/// `steps` entries are fully resolved, so they include a preset's role
+/// overrides.
+fn build_view(
+    policy: &ModelPolicy,
+    selected: Option<&SelectedPreset>,
+    presets: Vec<String>,
+    host: Host,
+) -> ModelPolicyView {
     let profile = |tier| policy.profile(host, tier).clone();
     ModelPolicyView {
         host: host.to_string(),
+        preset: selected.map(|s| s.name.clone()),
+        presets,
         small: profile(ModelTier::Small).model,
         medium: profile(ModelTier::Medium).model,
         large: profile(ModelTier::Large).model,
@@ -140,7 +186,7 @@ fn build_view(policy: &ModelPolicy, host: Host) -> ModelPolicyView {
             .iter()
             .map(|s| {
                 let tier = policy.resolve_tier(*s, None);
-                let p = policy.profile(host, tier);
+                let p = policy.resolve(*s, None, host);
                 StepView {
                     step: s.to_string(),
                     tier: tier.to_string(),
@@ -152,11 +198,22 @@ fn build_view(policy: &ModelPolicy, host: Host) -> ModelPolicyView {
     }
 }
 
-fn run_show(policy: &ModelPolicy, host: Host, format: OutputFormat) -> Result<()> {
-    let view = build_view(policy, host);
+fn run_show(
+    policy: &ModelPolicy,
+    selected: Option<&SelectedPreset>,
+    presets: Vec<String>,
+    host: Host,
+    format: OutputFormat,
+) -> Result<()> {
+    let view = build_view(policy, selected, presets, host);
     match format {
         // Markdown renders identically to Human — settled precedent (next.rs:38, phase.rs, roadmap.rs).
         OutputFormat::Human | OutputFormat::Markdown => {
+            match selected {
+                Some(s) => println!("preset: {} (from {})", s.name, s.source.label()),
+                None => println!("preset: none"),
+            }
+            println!("presets: {}", view.presets.join(", "));
             println!("host: {}", view.host);
             let p = &view.profiles;
             for (name, profile) in [
@@ -188,8 +245,15 @@ mod tests {
     #[test]
     fn build_view_reflects_default_bindings_and_all_six_steps() {
         let policy = ModelPolicy::from_config(&Config::default());
-        let view = build_view(&policy, Host::Claude);
+        let view = build_view(
+            &policy,
+            None,
+            available_presets(&Config::default()),
+            Host::Claude,
+        );
         assert_eq!(view.host, "claude");
+        assert_eq!(view.preset, None);
+        assert_eq!(view.presets, ["fable", "fable-build"]);
         assert_eq!(view.small, "opus");
         assert_eq!(view.medium, "opus");
         assert_eq!(view.large, "opus");
@@ -217,11 +281,32 @@ mod tests {
     #[test]
     fn build_view_codex_host() {
         let policy = ModelPolicy::from_config(&Config::default());
-        let view = build_view(&policy, Host::Codex);
+        let view = build_view(&policy, None, Vec::new(), Host::Codex);
         assert_eq!(view.host, "codex");
         assert_eq!(view.small, "gpt-6-sol");
         assert_eq!(view.large, "gpt-6-astra");
         assert_eq!(view.steps[3].model, "gpt-6-astra");
         assert_eq!(view.steps[3].effort, "medium");
+    }
+
+    #[test]
+    fn build_view_steps_carry_preset_role_overrides_but_tiers_do_not() {
+        let cfg = Config::default();
+        let policy = ModelPolicy::for_preset(&cfg, Some("fable-build")).unwrap();
+        let selected = SelectedPreset {
+            name: "fable-build".to_string(),
+            source: rdm_core::model_policy::PresetSource::Flag,
+        };
+        let view = build_view(
+            &policy,
+            Some(&selected),
+            available_presets(&cfg),
+            Host::Claude,
+        );
+        assert_eq!(view.preset.as_deref(), Some("fable-build"));
+        assert_eq!(view.medium, "opus");
+        assert_eq!(view.steps[0].model, "fable"); // plan
+        assert_eq!(view.steps[1].model, "fable"); // implement
+        assert_eq!(view.steps[3].model, "opus"); // review-verify
     }
 }

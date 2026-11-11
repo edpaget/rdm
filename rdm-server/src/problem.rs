@@ -669,6 +669,7 @@ mod tests {
     fn from_unknown_model_preset_is_bad_request() {
         let err = Error::UnknownModelPreset {
             name: "nope".to_string(),
+            source: None,
             available: vec!["fable".to_string(), "fable-build".to_string()],
         };
         let pd = ProblemDetail::from(&err);
