@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-11
+
 ### Added
 
 - **Model presets in core.** `[models.presets.<name>]` tables (per host, `tiers.<tier>` and `steps.<step>` model/effort overrides) layer over the model policy field by field — role override, then tier override, then the configured-or-default profile — without changing which tier a step resolves to. Built-in `fable` (every judgment role on Fable) and `fable-build` (planner and implementer on Fable) presets for the claude host; a configured preset of the same name replaces a built-in. Preset efforts are validated at load, naming the offending key. Documented in `docs/model-profiles.md` § "Presets". rdm-core API: `ModelPolicy::for_preset`, `model_policy::{builtin_preset, BUILTIN_PRESETS, available_presets}`, `DispatchStep::ALL`, `config::{PresetConfig, PresetHostConfig, StepProfilesConfig}` and `Error::UnknownModelPreset`. Breaking (rdm-core API): `ModelsConfig` gains `presets`, and the new `Error` variant breaks exhaustive matches.
