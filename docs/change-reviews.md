@@ -63,7 +63,10 @@ Rather than fail closed there, `review source` falls back to the merge-base
 with the default branch — a strict superset of the intended range, safe if
 noisier — and names the stale `started_head` and the reason in `baseNote`. An
 explicit `--base` is exempt from this check: it was named deliberately, and
-is the escape hatch an operator has after history changes.
+is the escape hatch an operator has after history changes. The report has one
+more optional field of the same kind: `headMovedFrom`, the pinned
+`--expected-head`, present only on a `review source --no-code` report whose
+observed `head` differs from it (a code report refuses a moved head instead).
 
 **Who writes `started_head`, and when.** No status transition records it as a
 side effect. `phase update`/`task update --start-commit <sha>` is an
@@ -752,7 +755,11 @@ two hand-written ladders in `rdm-cli`. An audit confirmed the two genuinely
 and that the disagreement is intentional rather than drift:
 
 - `rdm review --on change/…` pins content. It must name a source or refuse,
-  so it may leave the cwd for a configured local directory.
+  so it may leave the cwd for a configured local directory. `rdm review
+  source` and the `--source` binding of `phase update` / `task update` are
+  `ConfiguredLocal` consumers too: they list the registered checkouts of the
+  repository this selects, so they answer the same from any working
+  directory.
 - `rdm link check` is a lint that fails open. It never verifies against a
   repository the operator is not standing in; every other environment is a
   documented skip, reported as `path_verification_skipped`.

@@ -189,6 +189,24 @@ updates accept `--source`, `--base`, `--expected-head`, `--expected-branch`, and
 `--no-code`; explicit requests fail closed if inspection is unavailable, including
 non-git builds. Default legacy no-source behavior below remains unchanged.
 
+**A moved head is refused everywhere except a no-code report.** When the
+checkout's HEAD differs from `--expected-head`, a code `review source` and
+every `--source`-bound `phase update` / `task update` refuse with `HEAD moved;
+restart review at the new commit` — including a status write passed
+`--no-code`, because that path stamps or gates on the observed head. The one
+exception is the read-only `rdm review source --no-code`: no committed range is
+under review, so it exits 0 and its report carries the observed `head` plus
+`headMovedFrom`, the pinned value it moved from. `headMovedFrom` is absent when
+the head did not move. `--expected-branch` and the empty-range check are not
+relaxed.
+
+**The source repository is found from the project's configuration, not the
+working directory.** `rdm review source` and the `--source` binding resolve it
+the way a change review does (`docs/change-reviews.md` § "Source discovery"):
+the cwd's checkout when it is the project's source, otherwise the project's
+local `source.repo`. Run from another repository, or from no repository, they
+read the configured one and report the same thing.
+
 Source-bound needs-review writes stamp the resolved head/branch even when invoked
 from another checkout. `review pending --format json` exposes `review_sha` and
 `branch` for readback. Revalidation detects drift at workflow boundaries; git and
@@ -221,10 +239,13 @@ Three distinct cases, and the distinction is load-bearing:
   the "if `rdm worktree` knows one" escape clause. (c) is skipped.
 - **Probe returns `Err`, or returns output rdm cannot parse** —
   `Error::GateWorktreeUnobservable`. **An unobservable worktree is never a
-  clean one.** Every probe error becomes this, including the probe's two
+  clean one.** Every probe error becomes this, including the probe's three
   caller-visible refusals (`Error::ReviewSourceItemMismatch` when a bound
   probe is asked about a different item, `Error::ReviewSourceBranchChanged`
-  when a registered checkout moved off its branch); they are matchable apart
+  when a registered checkout moved off its branch,
+  `Error::ReviewSourceDetached` when it is in detached-HEAD state — the
+  refusal names the checkout, that it is detached, and the branch it was
+  registered on); they are matchable apart
   from `Error::Git` — which now means only "the repository cannot be queried"
   — and their text lands in the refusal's `cause`. Because a probe `Err`
   observes nothing, it short-circuits (b)'s HEAD comparison and can never

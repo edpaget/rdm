@@ -208,6 +208,16 @@ pub enum Error {
         /// The branch it is on now, as observed.
         found: String,
     },
+    /// A registered source checkout is in detached-HEAD state, so it is on
+    /// no branch and cannot be matched to the branch it was registered on.
+    /// Operator-fixable, and distinct from [`Error::Git`] for the same
+    /// reason as [`Error::ReviewSourceBranchChanged`].
+    ReviewSourceDetached {
+        /// Absolute path of the registered checkout.
+        path: String,
+        /// The branch it was registered on.
+        expected: String,
+    },
     /// The plan a new plan would supersede does not exist.
     PlanSupersedesMissing(String),
     /// A plan's `supersedes` named a reference kind that is not a plan
@@ -1058,6 +1068,14 @@ impl std::fmt::Display for Error {
                      checkout with `rdm worktree add`"
                 )
             }
+            Error::ReviewSourceDetached { path, expected } => {
+                write!(
+                    f,
+                    "the registered checkout {path} is in detached-HEAD state; it was \
+                     registered on branch '{expected}' — run `git switch {expected}` in it, or \
+                     re-register the checkout with `rdm worktree add`"
+                )
+            }
             Error::GateOverrideEmptyReason => {
                 write!(
                     f,
@@ -1893,6 +1911,14 @@ mod tests {
                     path: "/wt/foo".to_string(),
                     expected: "roadmap/foo".to_string(),
                     found: "main".to_string(),
+                }
+                .to_string(),
+            ),
+            (
+                "ReviewSourceDetached",
+                Error::ReviewSourceDetached {
+                    path: "/wt/foo".to_string(),
+                    expected: "roadmap/foo".to_string(),
                 }
                 .to_string(),
             ),

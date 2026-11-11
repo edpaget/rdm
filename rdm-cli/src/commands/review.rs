@@ -87,6 +87,9 @@ pub fn run(
                 &item,
                 &project_default_branch(&project, raw_repo_config, global_config)?,
                 None,
+                // A no-code report reviews no committed range, so a moved
+                // head is reported (`headMovedFrom`) rather than refused.
+                source.no_code,
             )?;
             println!("{}", serde_json::to_string_pretty(&identity)?);
         }

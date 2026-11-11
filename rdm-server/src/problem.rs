@@ -137,7 +137,8 @@ impl From<&Error> for ProblemDetail {
             // Conflict-shaped for the same reason: the request is
             // well-formed, but the repository/probe state contradicts it.
             | Error::ReviewSourceItemMismatch { .. }
-            | Error::ReviewSourceBranchChanged { .. } => ProblemDetail {
+            | Error::ReviewSourceBranchChanged { .. }
+            | Error::ReviewSourceDetached { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),
                 status: 409,

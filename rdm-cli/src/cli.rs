@@ -1479,12 +1479,20 @@ pub(crate) struct ReviewSourceArgs {
     #[arg(long)]
     pub base: Option<String>,
     /// Full expected source HEAD; refuse a moved checkout.
+    ///
+    /// The one exception is `rdm review source --no-code`, which reports a
+    /// moved head as `headMovedFrom` and exits 0. Every other use refuses,
+    /// including a `phase update` / `task update` passed `--no-code`.
     #[arg(long)]
     pub expected_head: Option<String>,
     /// Expected source branch.
     #[arg(long)]
     pub expected_branch: Option<String>,
     /// Declare an intentional review with no committed code diff.
+    ///
+    /// On `rdm review source` it also turns a HEAD that differs from
+    /// `--expected-head` into a `headMovedFrom` field on the report instead
+    /// of a refusal; a status write still refuses a moved head.
     #[arg(long)]
     pub no_code: bool,
 }

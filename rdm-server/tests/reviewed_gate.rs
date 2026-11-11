@@ -574,6 +574,10 @@ fn the_probe_mismatch_refusals_are_409s_with_details() {
             expected: "roadmap/auth".to_string(),
             found: "scratch".to_string(),
         },
+        rdm_core::error::Error::ReviewSourceDetached {
+            path: "/wt/auth".to_string(),
+            expected: "roadmap/auth".to_string(),
+        },
     ] {
         let p = rdm_server::problem::ProblemDetail::from(&err);
         assert_eq!(p.status, 409, "{err:?} must be conflict-shaped");

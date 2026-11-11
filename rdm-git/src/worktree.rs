@@ -1135,6 +1135,21 @@ impl GitWorktreeProbe {
         }
         String::from_utf8(output.stdout).map_err(|e| rdm_core::error::Error::Git(e.to_string()))
     }
+
+    /// The branch the registered checkout at `path` is on.
+    ///
+    /// A checkout on no branch (detached HEAD) is refused as
+    /// [`rdm_core::error::Error::ReviewSourceDetached`], naming `path` and
+    /// the `registered` branch, rather than surfacing git's own
+    /// `ref HEAD is not a symbolic ref`.
+    fn branch_or_detached(path: &Path, registered: &str) -> rdm_core::error::Result<String> {
+        crate::current_branch_at(path)
+            .map_err(|e| rdm_core::error::Error::Git(e.to_string()))?
+            .ok_or_else(|| rdm_core::error::Error::ReviewSourceDetached {
+                path: path.display().to_string(),
+                expected: registered.to_string(),
+            })
+    }
 }
 
 impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
@@ -1185,11 +1200,7 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
                     .trim()
                     .to_string(),
             );
-            check.branch = Some(
-                Self::git_text(&info.path, &["symbolic-ref", "--short", "HEAD"])?
-                    .trim()
-                    .to_string(),
-            );
+            check.branch = Some(Self::branch_or_detached(&info.path, &info.branch)?);
             if check.branch.as_deref() != Some(info.branch.as_str()) {
                 // The checkout moved off its registered branch since
                 // registration — an operator-fixable state, not an
@@ -1230,9 +1241,7 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
             return Err(fail("phase requires its shared roadmap checkout"));
         }
         let path = std::fs::canonicalize(&info.path).map_err(|e| fail(&e.to_string()))?;
-        let branch = Self::git_text(&path, &["symbolic-ref", "--short", "HEAD"])?
-            .trim()
-            .to_string();
+        let branch = Self::branch_or_detached(&path, &info.branch)?;
         if branch != info.branch {
             return Err(fail("registered branch differs from observed branch"));
         }
@@ -1386,6 +1395,7 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
             diff_text,
             no_code: request.no_code,
             base_note,
+            head_moved_from: None,
         })
     }
 }
@@ -2265,6 +2275,32 @@ mod tests {
             err.to_string().contains("git switch"),
             "the refusal must name the remedy: {err}"
         );
+
+        // (2b) The same checkout on no branch at all: named as detached,
+        // from both the gate probe and the source report, never as git's
+        // raw `ref HEAD is not a symbolic ref`.
+        run_git(&wt.path, &["checkout", "--detach"]);
+        let source_request = rdm_core::ReviewSourceRequest {
+            no_code: true,
+            ..Default::default()
+        };
+        for err in [
+            probe.worktree_for(&item_a).unwrap_err(),
+            rdm_core::resolve_review_source(&probe, &item_a, &source_request).unwrap_err(),
+        ] {
+            let rdm_core::error::Error::ReviewSourceDetached {
+                ref path,
+                ref expected,
+            } = err
+            else {
+                panic!("expected ReviewSourceDetached, got {err:?}");
+            };
+            assert!(same_path(path, &wt.path), "names the checkout: {path}");
+            assert_eq!(expected, &roadmap.branch_name());
+            let text = err.to_string();
+            assert!(text.contains("detached"), "{text}");
+            assert!(!text.contains("not a symbolic ref"), "{text}");
+        }
 
         // (3) A genuine query failure is still Error::Git.
         let broken = GitWorktreeProbe::new(repo.join("definitely-not-a-repo"));

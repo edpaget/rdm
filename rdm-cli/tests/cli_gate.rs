@@ -2516,3 +2516,358 @@ fn a_commit_past_the_follow_up_is_a_stale_refusal_naming_the_follow_up() {
         "the followed review is not the one to act on: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Identity-check edge cases: a moved head on a no-code report, a detached
+// checkout, and a working directory outside the source repository
+// ---------------------------------------------------------------------------
+
+/// Runs `rdm review source --on <on> --project demo --format json <extra>`
+/// from `cwd`.
+fn review_source(plan: &Path, cwd: &Path, on: &str, extra: &[&str]) -> assert_cmd::assert::Assert {
+    rdm()
+        .arg("--root")
+        .arg(plan)
+        .args([
+            "review",
+            "source",
+            "--on",
+            on,
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .args(extra)
+        .current_dir(cwd)
+        .assert()
+}
+
+fn stdout_json(a: assert_cmd::assert::Assert) -> Value {
+    serde_json::from_slice(&a.get_output().stdout).unwrap()
+}
+
+/// Whether `text` names the directory `path`, in either its given or its
+/// canonical spelling (macOS temp directories have both).
+fn names_path(text: &str, path: &Path) -> bool {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    text.contains(&*path.to_string_lossy()) || text.contains(&*canonical.to_string_lossy())
+}
+
+const PHASE: &str = "phase/auth/phase-1-design";
+
+/// A no-code report states the head it saw and the pinned head it moved
+/// from, and exits 0: no committed range is under review.
+#[test]
+fn a_no_code_review_source_reports_a_moved_head_instead_of_refusing() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    let old_head = rev_parse(&wt, "HEAD");
+    let new_head = commit_in(&wt, "src/neighbour.rs");
+
+    let report = stdout_json(
+        review_source(
+            plan.path(),
+            src.path(),
+            PHASE,
+            &["--no-code", "--expected-head", &old_head],
+        )
+        .success(),
+    );
+    assert_eq!(report["head"], new_head, "{report}");
+    assert_eq!(report["headMovedFrom"], old_head, "{report}");
+
+    // Control: a pin that still matches reports no move at all.
+    let unmoved = stdout_json(
+        review_source(
+            plan.path(),
+            src.path(),
+            PHASE,
+            &["--no-code", "--expected-head", &new_head],
+        )
+        .success(),
+    );
+    assert_eq!(unmoved["head"], new_head);
+    assert!(unmoved.get("headMovedFrom").is_none(), "{unmoved}");
+}
+
+/// A code review's range depends on the head, so the same moved head is
+/// still refused without `--no-code`.
+#[test]
+fn a_code_review_source_still_refuses_a_moved_head() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    let old_head = rev_parse(&wt, "HEAD");
+    commit_in(&wt, "src/neighbour.rs");
+
+    let err = stderr_of(
+        review_source(
+            plan.path(),
+            src.path(),
+            PHASE,
+            &["--expected-head", &old_head],
+        )
+        .failure(),
+    );
+    assert!(err.contains("HEAD moved"), "{err}");
+}
+
+/// Reporting a moved head relaxes only the head check: a wrong branch on
+/// the same no-code report is still refused.
+#[test]
+fn a_no_code_review_source_still_refuses_a_wrong_branch() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    let old_head = rev_parse(&wt, "HEAD");
+    commit_in(&wt, "src/neighbour.rs");
+
+    let err = stderr_of(
+        review_source(
+            plan.path(),
+            src.path(),
+            PHASE,
+            &[
+                "--no-code",
+                "--expected-head",
+                &old_head,
+                "--expected-branch",
+                "roadmap/some-other-roadmap",
+            ],
+        )
+        .failure(),
+    );
+    assert!(err.contains("branch changed"), "{err}");
+}
+
+/// The relaxation belongs to the read-only report alone. A status write
+/// bound with `--source ... --expected-head` refuses a moved head even with
+/// `--no-code`, and writes nothing.
+#[test]
+fn a_source_bound_status_write_refuses_a_moved_head_even_with_no_code() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    let old_head = rev_parse(&wt, "HEAD");
+    commit_in(&wt, "src/neighbour.rs");
+    let before = phase_json(plan.path())["status"].clone();
+
+    let err = stderr_of(
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args([
+                "phase",
+                "update",
+                "phase-1-design",
+                "--status",
+                "needs-review",
+                "--no-edit",
+                "--roadmap",
+                "auth",
+                "--project",
+                "demo",
+                "--source",
+                wt.to_str().unwrap(),
+                "--no-code",
+                "--expected-head",
+                &old_head,
+            ])
+            .current_dir(src.path())
+            .assert()
+            .failure(),
+    );
+    assert!(err.contains("HEAD moved"), "{err}");
+    assert_eq!(phase_json(plan.path())["status"], before);
+
+    // The task write shares the binding and is just as strict.
+    let task_wt = add_task_worktree(plan.path(), src.path());
+    let task_base = rev_parse(src.path(), "main");
+    let task_old_head = rev_parse(&task_wt, "HEAD");
+    commit_in(&task_wt, "src/neighbour.rs");
+    let task_before = task_json_for(plan.path(), "solo")["status"].clone();
+    let err = stderr_of(
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args([
+                "task",
+                "update",
+                "solo",
+                "--status",
+                "needs-review",
+                "--no-edit",
+                "--project",
+                "demo",
+                "--source",
+                task_wt.to_str().unwrap(),
+                "--base",
+                &task_base,
+                "--no-code",
+                "--expected-head",
+                &task_old_head,
+            ])
+            .current_dir(src.path())
+            .assert()
+            .failure(),
+    );
+    assert!(err.contains("HEAD moved"), "{err}");
+    assert_eq!(task_json_for(plan.path(), "solo")["status"], task_before);
+}
+
+/// Marks the phase reviewed with `--override-gate`, which waives the plan
+/// and review records and so reaches the worktree precondition directly.
+fn mark_reviewed_overriding(plan: &Path, cwd: &Path) -> assert_cmd::assert::Assert {
+    let mut cmd = rdm();
+    cmd.env("RDM_REVIEW_AUTHOR", "alice");
+    cmd.arg("--root")
+        .arg(plan)
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "reviewed",
+            "--override-gate",
+            "operator: hotfix",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(cwd)
+        .assert()
+}
+
+/// A detached registered checkout is refused by name — the checkout, that
+/// it is detached, and the branch it was registered on — by both the gated
+/// write and the source report, never as git's own symbolic-ref failure.
+#[test]
+fn a_detached_checkout_is_refused_naming_the_checkout_and_its_registered_branch() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    let branch = current_branch(&wt);
+    git(&wt, &["checkout", "--detach"]);
+    let before = phase_json(plan.path())["status"].clone();
+
+    let gate = stderr_of(mark_reviewed_overriding(plan.path(), &wt).failure());
+    let report = stderr_of(review_source(plan.path(), src.path(), PHASE, &[]).failure());
+    for err in [&gate, &report] {
+        assert!(names_path(err, &wt), "names the checkout: {err}");
+        assert!(err.contains("detached"), "{err}");
+        assert!(
+            err.contains(&format!("'{branch}'")),
+            "names the registered branch: {err}"
+        );
+        assert!(!err.contains("not a symbolic ref"), "{err}");
+    }
+    assert!(gate.contains("refusing to mark"), "{gate}");
+    assert_eq!(phase_json(plan.path())["status"], before);
+}
+
+/// A checkout that is on a branch, just not the registered one, keeps its
+/// own refusal: the detached message does not swallow a real mismatch.
+#[test]
+fn a_checkout_on_another_branch_is_still_refused_as_a_branch_change() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    let branch = current_branch(&wt);
+    git(&wt, &["switch", "-c", "scratch"]);
+
+    let gate = stderr_of(mark_reviewed_overriding(plan.path(), &wt).failure());
+    assert!(
+        gate.contains(&format!("registered on branch '{branch}'")) && gate.contains("'scratch'"),
+        "{gate}"
+    );
+    assert!(!gate.contains("detached"), "{gate}");
+
+    let report = stderr_of(review_source(plan.path(), src.path(), PHASE, &[]).failure());
+    assert!(
+        report.contains("registered branch differs from observed branch"),
+        "{report}"
+    );
+}
+
+/// The source repository comes from the project's `source.repo`, so the
+/// report is the same from inside the source repo, from an unrelated
+/// repository, and from a directory in no repository at all.
+#[test]
+fn review_source_reports_the_same_from_any_working_directory() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    add_worktree(plan.path(), src.path());
+    let unrelated = init_source_repo();
+    let nowhere = TempDir::new().unwrap();
+
+    let inside = stdout_json(review_source(plan.path(), src.path(), PHASE, &[]).success());
+    assert_eq!(inside["changedFiles"], serde_json::json!(["src/lib.rs"]));
+    for cwd in [unrelated.path(), nowhere.path()] {
+        let outside = stdout_json(review_source(plan.path(), cwd, PHASE, &[]).success());
+        assert_eq!(outside, inside, "from {}", cwd.display());
+    }
+}
+
+/// The status write's `--source` binding finds the repository the same
+/// way, so it agrees with the report that preceded it.
+#[test]
+fn a_source_bound_status_write_finds_the_source_repo_from_another_directory() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    let unrelated = init_source_repo();
+
+    rdm_ok(
+        plan.path(),
+        unrelated.path(),
+        &[
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "needs-review",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--source",
+            wt.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(phase_json(plan.path())["status"], "needs-review");
+}
+
+/// Removes the `source:` block [`set_project_source`] wrote.
+fn clear_project_source(plan: &Path) {
+    let path = plan.join("projects").join("demo").join("project.md");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let kept: Vec<&str> = content
+        .lines()
+        .filter(|line| *line != "source:" && !line.starts_with("  repo: "))
+        .collect();
+    assert_ne!(kept.len(), content.lines().count(), "no source block found");
+    std::fs::write(&path, format!("{}\n", kept.join("\n"))).unwrap();
+}
+
+/// Resolving from config does not invent a repository: with no
+/// `source.repo` and no checkout the report is refused saying so, and with
+/// one configured an item that has no registered checkout is still a miss.
+#[test]
+fn review_source_from_elsewhere_still_refuses_what_it_cannot_find() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    add_worktree(plan.path(), src.path());
+    let unrelated = init_source_repo();
+    let nowhere = TempDir::new().unwrap();
+
+    // `task/solo` has no registered checkout in the configured repository.
+    let err = stderr_of(review_source(plan.path(), unrelated.path(), "task/solo", &[]).failure());
+    assert!(err.contains("no matching registered checkout"), "{err}");
+
+    clear_project_source(plan.path());
+    let err = stderr_of(review_source(plan.path(), nowhere.path(), PHASE, &[]).failure());
+    assert!(err.contains("configures no source repo"), "{err}");
+}

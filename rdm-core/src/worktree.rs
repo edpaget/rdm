@@ -94,7 +94,8 @@ pub struct ReviewSourceRequest {
     /// default branch is used, and that fallback is reported in
     /// [`ReviewSource::base_note`].
     pub base: Option<String>,
-    /// Expected full HEAD; refusal on drift.
+    /// Expected full HEAD; refusal on drift, unless
+    /// [`report_moved_head`](Self::report_moved_head) is set.
     pub expected_head: Option<String>,
     /// Expected branch; refusal on drift.
     pub expected_branch: Option<String>,
@@ -116,6 +117,16 @@ pub struct ReviewSourceRequest {
     /// the merge-base with `default_branch` and reports it via
     /// [`ReviewSource::base_note`].
     pub started_head: Option<String>,
+    /// When `true`, an observed HEAD that differs from
+    /// [`expected_head`](Self::expected_head) is reported on the result as
+    /// [`ReviewSource::head_moved_from`] instead of refused.
+    ///
+    /// Only the read-only report command sets it, and only for a no-code
+    /// run: no committed range is under review there, so a head that moved
+    /// (a neighbouring phase committing in the shared roadmap worktree) is
+    /// information, not a wrong range. Defaults to `false`, the strict
+    /// behaviour every status write keeps.
+    pub report_moved_head: bool,
 }
 
 /// Canonical committed source identity shared by every review stage.
@@ -149,6 +160,13 @@ pub struct ReviewSource {
     /// set when the caller supplied an explicit `--base`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_note: Option<String>,
+    /// The pinned [`ReviewSourceRequest::expected_head`], set only when the
+    /// observed [`head`](Self::head) differs from it and the request asked
+    /// for a moved head to be reported rather than refused
+    /// ([`ReviewSourceRequest::report_moved_head`]). Absent when the head
+    /// did not move, so existing output is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_moved_from: Option<String>,
 }
 
 /// The single source-selection policy for probes and standalone reviews.
@@ -164,6 +182,12 @@ pub fn review_worktree_item(item: &ItemRef) -> Option<String> {
 
 /// Resolves and validates a source identity through the read-only port.
 ///
+/// A HEAD that differs from [`ReviewSourceRequest::expected_head`] is
+/// refused, unless the request sets
+/// [`ReviewSourceRequest::report_moved_head`]; then the pinned value is
+/// reported as [`ReviewSource::head_moved_from`] and resolution continues.
+/// The branch and empty-range checks run either way.
+///
 /// # Errors
 /// Returns `Error::Git` for unavailable, mismatched, moved or unexpectedly empty source.
 pub fn resolve_review_source(
@@ -178,16 +202,19 @@ pub fn resolve_review_source(
     if matches!(item, ItemRef::Task { .. }) && request.path.is_some() && request.base.is_none() {
         return Err(fail("explicit task checkout requires --base"));
     }
-    let source = probe.review_source(item, request)?;
+    let mut source = probe.review_source(item, request)?;
     if source.item != item.label() {
         return Err(fail("returned item differs from intended item"));
     }
-    if request
+    if let Some(expected) = request
         .expected_head
         .as_ref()
-        .is_some_and(|h| h != &source.head)
+        .filter(|h| *h != &source.head)
     {
-        return Err(fail("HEAD moved; restart review at the new commit"));
+        if !request.report_moved_head {
+            return Err(fail("HEAD moved; restart review at the new commit"));
+        }
+        source.head_moved_from = Some(expected.clone());
     }
     if request
         .expected_branch
@@ -221,11 +248,12 @@ pub trait WorktreeProbe {
     ///
     /// Returns [`crate::error::Error::ReviewSourceItemMismatch`] when the
     /// probe is bound to one item and asked about another (a caller bug),
-    /// and [`crate::error::Error::ReviewSourceBranchChanged`] when the
+    /// [`crate::error::Error::ReviewSourceBranchChanged`] when the
     /// registered checkout has been switched off the branch it was
-    /// registered on. Both are caller- or operator-visible conditions, not
-    /// query failures, which is why they are matchable apart from
-    /// [`crate::error::Error::Git`].
+    /// registered on, and [`crate::error::Error::ReviewSourceDetached`]
+    /// when it is on no branch at all. All three are caller- or
+    /// operator-visible conditions, not query failures, which is why they
+    /// are matchable apart from [`crate::error::Error::Git`].
     fn worktree_for(&self, item: &ItemRef) -> Result<Option<WorktreeCheck>>;
 
     /// Reads a registered source checkout and its committed range.
@@ -438,6 +466,97 @@ mod tests {
         assert_eq!(d.path, "/wt/dirty");
         assert_eq!(d.dirty, vec!["src/a.rs"]);
         assert!(probe.worktree_for(&broken).is_err());
+    }
+
+    /// A probe whose `review_source` reports a fixed head and branch.
+    struct FixedSource;
+
+    impl WorktreeProbe for FixedSource {
+        fn worktree_for(&self, _item: &ItemRef) -> Result<Option<WorktreeCheck>> {
+            Ok(None)
+        }
+
+        fn review_source(
+            &self,
+            item: &ItemRef,
+            request: &ReviewSourceRequest,
+        ) -> Result<ReviewSource> {
+            Ok(ReviewSource {
+                item: item.label(),
+                repository: "/src/.git".to_string(),
+                path: "/wt/x".to_string(),
+                branch: "task/x".to_string(),
+                base: "base".to_string(),
+                head: "new-head".to_string(),
+                changed_files: Vec::new(),
+                diff_text: String::new(),
+                no_code: request.no_code,
+                base_note: None,
+                head_moved_from: None,
+            })
+        }
+    }
+
+    fn task_x() -> ItemRef {
+        ItemRef::Task {
+            slug: "x".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_moved_head_is_refused_unless_the_request_asks_for_a_report() {
+        let strict = ReviewSourceRequest {
+            expected_head: Some("old-head".to_string()),
+            no_code: true,
+            ..Default::default()
+        };
+        let err = resolve_review_source(&FixedSource, &task_x(), &strict).unwrap_err();
+        assert!(err.to_string().contains("HEAD moved"), "{err}");
+
+        let reporting = ReviewSourceRequest {
+            report_moved_head: true,
+            ..strict
+        };
+        let source = resolve_review_source(&FixedSource, &task_x(), &reporting).unwrap();
+        assert_eq!(source.head, "new-head");
+        assert_eq!(source.head_moved_from.as_deref(), Some("old-head"));
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["headMovedFrom"], "old-head");
+    }
+
+    #[test]
+    fn an_unmoved_head_reports_nothing_and_serializes_no_key() {
+        let request = ReviewSourceRequest {
+            expected_head: Some("new-head".to_string()),
+            no_code: true,
+            report_moved_head: true,
+            ..Default::default()
+        };
+        let source = resolve_review_source(&FixedSource, &task_x(), &request).unwrap();
+        assert_eq!(source.head_moved_from, None);
+        let json = serde_json::to_value(&source).unwrap();
+        assert!(json.get("headMovedFrom").is_none(), "{json}");
+    }
+
+    #[test]
+    fn reporting_a_moved_head_does_not_relax_the_branch_or_empty_range_checks() {
+        let wrong_branch = ReviewSourceRequest {
+            expected_head: Some("old-head".to_string()),
+            expected_branch: Some("task/other".to_string()),
+            no_code: true,
+            report_moved_head: true,
+            ..Default::default()
+        };
+        let err = resolve_review_source(&FixedSource, &task_x(), &wrong_branch).unwrap_err();
+        assert!(err.to_string().contains("branch changed"), "{err}");
+
+        let empty_range = ReviewSourceRequest {
+            expected_head: Some("old-head".to_string()),
+            report_moved_head: true,
+            ..Default::default()
+        };
+        let err = resolve_review_source(&FixedSource, &task_x(), &empty_range).unwrap_err();
+        assert!(err.to_string().contains("empty committed range"), "{err}");
     }
 
     #[test]

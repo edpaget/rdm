@@ -463,6 +463,8 @@ pub fn run(
                     },
                     &default_branch,
                     Some(root),
+                    // A status write always refuses a moved head.
+                    false,
                 )?)
             } else {
                 None

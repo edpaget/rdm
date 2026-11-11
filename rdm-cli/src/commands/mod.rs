@@ -1305,6 +1305,19 @@ mod hook_timeout_tests {
 /// the [`rdm_core::ReviewSourceRequest`], so [`rdm_core::resolve_review_source`]
 /// can default an unset `--base` to it instead of the merge-base with
 /// `default_branch`. An explicit `--base` still overrides.
+///
+/// The source repository is the one
+/// [`crate::source_repo::discover_source_repo`] selects — the cwd's checkout
+/// when it is (or may be) the project's source, otherwise the project's
+/// local `source.repo` — so the command reads the same repository from any
+/// working directory. With `root` (the status-write callers), that
+/// repository is additionally refused when it is the plan repo itself.
+///
+/// `report_moved_head` is threaded into the request: `true` only for the
+/// read-only `review source --no-code` report, where a HEAD that differs
+/// from `--expected-head` is reported on the result instead of refused. A
+/// status write passes `false`, and the returned probe re-resolves with the
+/// same request, so a bound gate stays strict.
 #[cfg(feature = "git")]
 pub fn resolve_source_args(
     store: &AppStore,
@@ -1313,11 +1326,14 @@ pub fn resolve_source_args(
     item: &rdm_core::link::ItemRef,
     default_branch: &str,
     root: Option<&Path>,
+    report_moved_head: bool,
 ) -> Result<(GateProbe, rdm_core::ReviewSource)> {
-    let cwd = std::env::current_dir()?;
+    let selected = crate::source_repo::discover_source_repo(store, project)?
+        .root()
+        .to_path_buf();
     let repo = match root {
-        Some(root) => rdm_git::worktree::discover_distinct_project_repo(&cwd, root)?,
-        None => cwd,
+        Some(root) => rdm_git::worktree::discover_distinct_project_repo(&selected, root)?,
+        None => selected,
     };
     let started_head = match item {
         rdm_core::link::ItemRef::Phase { roadmap, stem } => {
@@ -1338,6 +1354,7 @@ pub fn resolve_source_args(
         default_branch: default_branch.to_string(),
         no_code: args.no_code,
         started_head,
+        report_moved_head,
     };
     let probe = GateProbe::new(repo);
     let identity = rdm_core::resolve_review_source(&probe, item, &request)?;

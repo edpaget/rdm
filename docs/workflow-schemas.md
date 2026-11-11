@@ -2499,7 +2499,10 @@ own checkout independently, and the bare roadmap-body unit gets no `sourceComman
 review source` requires a phase or task item and rejects a roadmap (`resolve_review_source` in
 `rdm-core/src/worktree.rs`). `--no-code` is always passed on the built command, unconditionally: plan
 review runs before implementation, so an empty committed diff between `base` and `head` is the
-expected, legitimate case, never a caller mistake the way it is in code mode.
+expected, legitimate case, never a caller mistake the way it is in code mode. A no-code call also
+reports a head that moved past `--expected-head` (the report's `headMovedFrom`) and exits 0 rather
+than failing, since a neighbouring phase committing in the shared roadmap worktree changes nothing a
+plan review reads.
 
 **The no-source fallback is the explicit, permanent default**, not a stopgap: omitting all four pin
 args makes every prompt render byte-identical to before this capability existed, reading from the

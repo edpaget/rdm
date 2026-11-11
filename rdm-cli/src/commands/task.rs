@@ -197,6 +197,8 @@ pub fn run(
                     &rdm_core::link::ItemRef::Task { slug: slug.clone() },
                     &default_branch,
                     Some(root),
+                    // A status write always refuses a moved head.
+                    false,
                 )?)
             } else {
                 None

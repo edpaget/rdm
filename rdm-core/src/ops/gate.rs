@@ -392,8 +392,9 @@ pub enum GateDecision {
 ///   changes;
 /// - [`Error::GateWorktreeUnobservable`] when the worktree could not be
 ///   inspected at all (fail-closed). Every probe error becomes this,
-///   including [`Error::ReviewSourceItemMismatch`] and
-///   [`Error::ReviewSourceBranchChanged`], whose text now names the real
+///   including [`Error::ReviewSourceItemMismatch`],
+///   [`Error::ReviewSourceBranchChanged`] and
+///   [`Error::ReviewSourceDetached`], whose text names the real
 ///   condition in the `cause`. A probe `Err` short-circuits (b)'s HEAD
 ///   comparison — nothing was observed — so it can never surface as a stale
 ///   refusal;
