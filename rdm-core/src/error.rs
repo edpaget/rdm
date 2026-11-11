@@ -1,5 +1,93 @@
 use crate::model::{ReviewState, RunStatus};
 
+/// Why a document's YAML frontmatter could not be read or written.
+///
+/// Carried by [`Error::FrontmatterParse`]. It names the document the
+/// frontmatter came from when the caller knew it — every document loaded
+/// from a store does; a bare string handed to
+/// [`Document::parse`](crate::document::Document::parse) does not — together
+/// with the problem and, when the YAML reader reported one, the position it
+/// was found at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontmatterError {
+    document: Option<String>,
+    problem: String,
+    position: Option<(u64, u64)>,
+}
+
+impl FrontmatterError {
+    /// Builds an error from the reader's (or writer's) description of the
+    /// problem and the 1-based `(line, column)` it reported, if any.
+    pub(crate) fn new(problem: impl Into<String>, position: Option<(u64, u64)>) -> Self {
+        FrontmatterError {
+            document: None,
+            problem: problem.into(),
+            position,
+        }
+    }
+
+    /// Names the document the frontmatter came from.
+    pub(crate) fn in_document(mut self, document: impl Into<String>) -> Self {
+        self.document = Some(document.into());
+        self
+    }
+
+    /// Shifts the reported line down by `lines`, the number of lines that
+    /// precede the frontmatter text in the file it was cut from, so the
+    /// line counts from the top of that file.
+    pub(crate) fn after_lines(mut self, lines: u64) -> Self {
+        if let Some((line, _)) = &mut self.position {
+            *line = line.saturating_add(lines);
+        }
+        self
+    }
+
+    /// The plan-repo-relative path of the document the frontmatter came
+    /// from, or `None` when a bare string was parsed.
+    pub fn document(&self) -> Option<&str> {
+        self.document.as_deref()
+    }
+
+    /// What is wrong, in the YAML reader's words, without the position.
+    pub fn problem(&self) -> &str {
+        &self.problem
+    }
+
+    /// The 1-based line the problem was found at, when the reader reported
+    /// one. It counts from the top of the parsed text — the whole file for a
+    /// document, delimiters included.
+    pub fn line(&self) -> Option<u64> {
+        self.position.map(|(line, _)| line)
+    }
+
+    /// The 1-based column the problem was found at, when the reader
+    /// reported one.
+    pub fn column(&self) -> Option<u64> {
+        self.position.map(|(_, column)| column)
+    }
+
+    /// Writes the problem followed by its position, the part of the message
+    /// that does not depend on the document.
+    fn fmt_problem(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.problem)?;
+        if let Some((line, column)) = self.position {
+            write!(f, " at line {line}, column {column}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for FrontmatterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(document) = &self.document {
+            write!(f, "{document}: ")?;
+        }
+        self.fmt_problem(f)
+    }
+}
+
+impl std::error::Error for FrontmatterError {}
+
 /// Errors that can occur in rdm-core operations.
 #[derive(Debug)]
 pub enum Error {
@@ -14,8 +102,10 @@ pub enum Error {
     },
     /// A source revision operand starts with a dash and could be a Git option.
     InvalidChangeRevisionInput(String),
-    /// Failed to parse YAML frontmatter.
-    FrontmatterParse(serde_yaml::Error),
+    /// A document's YAML frontmatter could not be read, or could not be
+    /// written. The payload names the document when one is known, the
+    /// problem, and where in the file it was found.
+    FrontmatterParse(FrontmatterError),
     /// The document is missing a frontmatter block.
     FrontmatterMissing,
     /// Failed to parse the config file.
@@ -743,7 +833,14 @@ impl std::fmt::Display for Error {
                 f,
                 "invalid change revision {value:?}: a revision must not start with '-'"
             ),
-            Error::FrontmatterParse(e) => write!(f, "failed to parse frontmatter: {e}"),
+            Error::FrontmatterParse(e) => {
+                f.write_str("failed to parse frontmatter")?;
+                if let Some(document) = e.document() {
+                    write!(f, " in {document}")?;
+                }
+                f.write_str(": ")?;
+                e.fmt_problem(f)
+            }
             Error::FrontmatterMissing => {
                 write!(f, "document is missing frontmatter delimiters (---)")
             }
@@ -1649,12 +1746,6 @@ impl std::error::Error for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Io(e)
-    }
-}
-
-impl From<serde_yaml::Error> for Error {
-    fn from(e: serde_yaml::Error) -> Self {
-        Error::FrontmatterParse(e)
     }
 }
 

@@ -8,7 +8,21 @@ use crate::config::Config;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, Plan, Project, Review, Roadmap, Run, Task};
-use crate::store::{Store, VersionedStore};
+use crate::store::{RelPath, Store, VersionedStore};
+
+/// Parses the text of the document stored at `path`, so a frontmatter
+/// failure names the document it came from.
+fn parse_stored<T>(path: &RelPath, content: &str) -> Result<Document<T>>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    Document::parse(content).map_err(|err| match err {
+        Error::FrontmatterParse(problem) => {
+            Error::FrontmatterParse(problem.in_document(path.as_str()))
+        }
+        other => other,
+    })
+}
 
 /// Loads and parses `rdm.toml` from the plan repo root.
 ///
@@ -62,7 +76,7 @@ pub fn load_project(store: &impl Store, name: &str) -> Result<Document<Project>>
         return Err(Error::ProjectNotFound(name.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads and parses a roadmap document from the store.
@@ -79,7 +93,7 @@ pub fn load_roadmap(store: &impl Store, project: &str, roadmap: &str) -> Result<
         return Err(Error::RoadmapNotFound(roadmap.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads and parses a phase document from the store.
@@ -101,7 +115,7 @@ pub fn load_phase(
         return Err(Error::PhaseNotFound(phase_stem.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads and parses a task document from the store.
@@ -118,7 +132,7 @@ pub fn load_task(store: &impl Store, project: &str, task_slug: &str) -> Result<D
         return Err(Error::TaskNotFound(task_slug.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads and parses an implementation-plan document from the store.
@@ -139,7 +153,7 @@ pub fn load_plan(store: &impl Store, project: &str, plan_slug: &str) -> Result<D
         return Err(Error::PlanNotFound(plan_slug.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads and parses a review document from the store.
@@ -164,7 +178,7 @@ pub fn load_review(store: &impl Store, project: &str, review_id: &str) -> Result
         return Err(Error::ReviewNotFound(review_id.to_string()));
     }
     let content = store.read(&path)?;
-    let doc: Document<Review> = Document::parse(&content)?;
+    let doc: Document<Review> = parse_stored(&path, &content)?;
     doc.frontmatter.target.validate_stored_identity()?;
     Ok(doc)
 }
@@ -201,7 +215,7 @@ pub fn load_run(store: &impl Store, project: &str, run_id: &str) -> Result<Docum
         return Err(Error::RunNotFound(run_id.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads and parses an archived roadmap document from the store.
@@ -222,7 +236,7 @@ pub fn load_archived_roadmap(
         return Err(Error::RoadmapNotFound(roadmap.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads and parses a phase document within an archived roadmap.
@@ -244,7 +258,7 @@ pub fn load_archived_phase(
         return Err(Error::PhaseNotFound(phase_stem.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    parse_stored(&path, &content)
 }
 
 /// Loads a roadmap document with its body read at a specific git revision.
@@ -271,7 +285,7 @@ pub fn load_roadmap_at(
     let mut doc = load_roadmap(store, project, roadmap)?;
     let path = crate::paths::roadmap_path(project, roadmap);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = Document::<Roadmap>::parse(&historical)?.body;
+    doc.body = parse_stored::<Roadmap>(&path, &historical)?.body;
     Ok(doc)
 }
 
@@ -299,7 +313,7 @@ pub fn load_phase_at(
     let mut doc = load_phase(store, project, roadmap, phase_stem)?;
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = Document::<Phase>::parse(&historical)?.body;
+    doc.body = parse_stored::<Phase>(&path, &historical)?.body;
     Ok(doc)
 }
 
@@ -326,7 +340,7 @@ pub fn load_task_at(
     let mut doc = load_task(store, project, task_slug)?;
     let path = crate::paths::task_path(project, task_slug);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = Document::<Task>::parse(&historical)?.body;
+    doc.body = parse_stored::<Task>(&path, &historical)?.body;
     Ok(doc)
 }
 
@@ -353,7 +367,7 @@ pub fn load_plan_at(
     let mut doc = load_plan(store, project, plan_slug)?;
     let path = crate::paths::plan_path(project, plan_slug);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = Document::<Plan>::parse(&historical)?.body;
+    doc.body = parse_stored::<Plan>(&path, &historical)?.body;
     Ok(doc)
 }
 
@@ -1077,5 +1091,119 @@ mod tests {
             matches!(err, Error::BodyAtRevisionMissing { .. }),
             "got {err:?}"
         );
+    }
+
+    // -- malformed frontmatter names the document and the problem --
+
+    const PHASE_FILE: &str = "projects/test/roadmaps/alpha/phase-1-one.md";
+
+    /// A phase whose `status` is not a phase status: a type error on line 4
+    /// of the file.
+    const MISTYPED_PHASE: &str = "---\nphase: 1\ntitle: One\nstatus: nearly\n---\n\nBody.\n";
+
+    /// A phase whose title opens a quote that never closes: a syntax error
+    /// the reader meets on line 4 of the file.
+    const UNTERMINATED_PHASE: &str = "---\nphase: 1\ntitle: \"One\nstatus: done\n---\n\nBody.\n";
+
+    fn write_phase_file(store: &mut MemoryStore, content: &str) {
+        store
+            .write(
+                &crate::paths::phase_path("test", "alpha", "phase-1-one"),
+                content.to_string(),
+            )
+            .unwrap();
+    }
+
+    fn frontmatter_error(err: Error) -> crate::error::FrontmatterError {
+        match err {
+            Error::FrontmatterParse(problem) => problem,
+            other => panic!("expected Error::FrontmatterParse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_mistyped_phase_names_its_document_the_problem_and_the_line() {
+        let mut store = setup_store();
+        write_phase_file(&mut store, MISTYPED_PHASE);
+
+        let err = load_phase(&store, "test", "alpha", "phase-1-one").unwrap_err();
+        let message = err.to_string();
+        let problem = frontmatter_error(err);
+
+        assert_eq!(problem.document(), Some(PHASE_FILE));
+        assert!(
+            problem.problem().contains("unknown variant `nearly`"),
+            "{problem:?}"
+        );
+        assert_eq!(problem.line(), Some(4));
+        assert_eq!(problem.column(), Some(9));
+        assert!(
+            message.starts_with(&format!("failed to parse frontmatter in {PHASE_FILE}: ")),
+            "{message}"
+        );
+        assert!(message.contains(problem.problem()), "{message}");
+        assert!(message.ends_with(" at line 4, column 9"), "{message}");
+    }
+
+    #[test]
+    fn a_phase_with_broken_yaml_names_its_document_the_problem_and_the_line() {
+        let mut store = setup_store();
+        write_phase_file(&mut store, UNTERMINATED_PHASE);
+
+        let err = load_phase(&store, "test", "alpha", "phase-1-one").unwrap_err();
+        let message = err.to_string();
+        let problem = frontmatter_error(err);
+
+        assert_eq!(problem.document(), Some(PHASE_FILE));
+        assert!(!problem.problem().is_empty());
+        assert_eq!(problem.line(), Some(4));
+        assert!(problem.column().is_some());
+        assert!(message.contains(PHASE_FILE), "{message}");
+        assert!(message.contains(problem.problem()), "{message}");
+        assert!(message.contains(" at line 4, column "), "{message}");
+    }
+
+    #[test]
+    fn a_bare_string_parse_names_no_document() {
+        for content in [MISTYPED_PHASE, UNTERMINATED_PHASE] {
+            let err = Document::<Phase>::parse(content).unwrap_err();
+            let message = err.to_string();
+            let problem = frontmatter_error(err);
+
+            assert_eq!(problem.document(), None);
+            assert_eq!(problem.line(), Some(4));
+            assert!(
+                message.starts_with("failed to parse frontmatter: "),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_historical_revision_names_its_document() {
+        let mut store = setup_store();
+        write_phase_file(&mut store, MISTYPED_PHASE);
+        store.commit().unwrap();
+        let broken = store.head_sha().unwrap();
+        seed_phase(&mut store, "repaired");
+        store.commit().unwrap();
+
+        let err = load_phase_at(&store, "test", "alpha", "phase-1-one", &broken).unwrap_err();
+        let problem = frontmatter_error(err);
+
+        assert_eq!(problem.document(), Some(PHASE_FILE));
+        assert!(
+            problem.problem().contains("unknown variant `nearly`"),
+            "{problem:?}"
+        );
+        assert_eq!(problem.line(), Some(4));
+    }
+
+    #[test]
+    fn a_frontmatter_line_counts_from_the_top_of_the_file() {
+        // Blank lines ahead of the opening delimiter push every line down.
+        let content = format!("\n\n{MISTYPED_PHASE}");
+        let problem = frontmatter_error(Document::<Phase>::parse(&content).unwrap_err());
+        assert_eq!(problem.line(), Some(6));
     }
 }

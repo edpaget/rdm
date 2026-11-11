@@ -4356,6 +4356,81 @@ mod tests {
             "{err}"
         );
     }
+
+    #[test]
+    fn resolving_a_comment_keeps_an_unrecognised_anchors_fields_and_values() {
+        use serde_json::json;
+
+        // A review as a newer rdm would have written it: its comment is
+        // anchored by a type this build has never heard of.
+        let mut store = setup_store_with_items();
+        let stored = r#"---
+id: r1
+author: future-rdm
+target:
+  kind: task
+  slug: fix-login
+state: submitted
+verdict: request-changes
+created: 2026-07-01T11:00:00Z
+submitted: 2026-07-01T11:01:00Z
+comments:
+  - id: 1
+    status: open
+    anchor:
+      anchor_type: heading-path
+      label: 'false'
+      depth: 3
+      weight: 0.5
+      parent: null
+      path:
+        - Intro
+        - Goals
+      span:
+        from: 2
+        to: 9
+    body: Anchored by a future anchor type.
+---
+
+Summary.
+"#;
+        let path = crate::paths::review_path("test", "r1");
+        store.write(&path, stored.to_string()).unwrap();
+
+        // This build resolves the comment, which rewrites the whole file.
+        update_comment(
+            &mut store,
+            UpdateComment {
+                project: "test",
+                review_id: "r1",
+                comment_id: 1,
+                status: Some(ReviewCommentStatus::Addressed),
+                reply: Some("Fixed."),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let rewritten = store.read(&path).unwrap();
+        assert_ne!(rewritten, stored, "the operation rewrote the file");
+        let doc: Document<Review> = Document::parse(&rewritten).unwrap();
+        let comment = &doc.frontmatter.comments[0];
+        assert_eq!(comment.status, ReviewCommentStatus::Addressed);
+        assert_eq!(comment.reply.as_deref(), Some("Fixed."));
+        let Some(Anchor::Unknown { anchor_type, raw }) = &comment.anchor else {
+            panic!("expected Anchor::Unknown, got {:?}", comment.anchor);
+        };
+        assert_eq!(anchor_type, "heading-path");
+        let fields = raw.as_object().expect("the anchor is a mapping");
+        assert_eq!(fields.len(), 7, "{raw}");
+        assert_eq!(fields.get("anchor_type"), Some(&json!("heading-path")));
+        assert_eq!(fields.get("label"), Some(&json!("false")));
+        assert_eq!(fields.get("depth"), Some(&json!(3)));
+        assert_eq!(fields.get("weight"), Some(&json!(0.5)));
+        assert_eq!(fields.get("parent"), Some(&serde_json::Value::Null));
+        assert_eq!(fields.get("path"), Some(&json!(["Intro", "Goals"])));
+        assert_eq!(fields.get("span"), Some(&json!({"from": 2, "to": 9})));
+    }
 }
 
 #[cfg(test)]

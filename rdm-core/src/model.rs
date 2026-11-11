@@ -1509,7 +1509,7 @@ pub struct CommentDoc {
 /// quoted span of a plan-repo document body, `line-range` for a range of
 /// that body's lines, `file-quote` for a file in the project's source
 /// repository (a `change/<sha>` review). Any other `anchor_type` written by a newer rdm
-/// round-trips losslessly as [`Anchor::Unknown`], so an older binary never
+/// round-trips as [`Anchor::Unknown`] with every field and value, so an older binary never
 /// corrupts reviews it does not fully understand; so does a `line-range`
 /// mapping whose fields are missing or malformed. Future variants
 /// (`heading-path`, `ast-node`) are non-breaking structural additions.
@@ -1543,8 +1543,8 @@ pub enum Anchor {
     ///
     /// Well-formed means all three fields are present and typed,
     /// `start_line >= 1` and `end_line >= start_line`; any other
-    /// `line-range` mapping loads as [`Anchor::Unknown`] and round-trips
-    /// verbatim.
+    /// `line-range` mapping loads as [`Anchor::Unknown`] and keeps every
+    /// field and value.
     LineRange {
         /// 1-based first line of the range.
         start_line: u32,
@@ -1586,15 +1586,15 @@ pub enum Anchor {
     },
     /// An anchor whose `anchor_type` this build does not recognize.
     ///
-    /// The full original YAML mapping (including the `anchor_type` key) is
-    /// preserved verbatim in `raw` and re-emitted on serialization, so no
-    /// data is lost when re-writing the review file.
+    /// The whole original mapping (including the `anchor_type` key) is kept
+    /// in `raw` and re-emitted on serialization, so every field and value
+    /// survives re-writing the review file. Key order is not preserved:
+    /// the keys are written back sorted.
     Unknown {
         /// The unrecognized `anchor_type` discriminator.
         anchor_type: String,
-        /// The complete original mapping, preserved for lossless
-        /// round-tripping.
-        raw: serde_yaml::Value,
+        /// The complete original mapping: every field with its value.
+        raw: serde_json::Value,
     },
 }
 
@@ -1670,8 +1670,8 @@ impl Serialize for Anchor {
                 }
                 .serialize(serializer)
             }
-            // Re-emit the original mapping verbatim (it already carries its
-            // own `anchor_type` key).
+            // Re-emit the original mapping (it already carries its own
+            // `anchor_type` key).
             Anchor::Unknown { raw, .. } => raw.serialize(serializer),
         }
     }
@@ -1684,9 +1684,9 @@ impl<'de> Deserialize<'de> for Anchor {
     {
         use serde::de::Error as _;
 
-        // Buffer the whole mapping first so an unrecognized variant can be
-        // preserved verbatim.
-        let value = serde_yaml::Value::deserialize(deserializer)?;
+        // Buffer the whole mapping first so an unrecognized variant keeps
+        // every field and value.
+        let value = serde_json::Value::deserialize(deserializer)?;
         let anchor_type = match value.get("anchor_type") {
             None => return Err(D::Error::missing_field("anchor_type")),
             Some(v) => v
@@ -1703,7 +1703,7 @@ impl<'de> Deserialize<'de> for Anchor {
                     suffix: String,
                 }
                 let fields: TextQuoteFields =
-                    serde_yaml::from_value(value).map_err(D::Error::custom)?;
+                    serde_json::from_value(value).map_err(D::Error::custom)?;
                 Ok(Anchor::TextQuote {
                     quote: fields.quote,
                     prefix: fields.prefix,
@@ -1713,14 +1713,14 @@ impl<'de> Deserialize<'de> for Anchor {
             "line-range" => {
                 // Unlike `text-quote`, a malformed `line-range` mapping is
                 // preserved as `Unknown` rather than rejected, so a review
-                // written with a different line-range shape stays lossless.
+                // written with a different line-range shape loses no field.
                 #[derive(Deserialize)]
                 struct LineRangeFields {
                     start_line: u32,
                     end_line: u32,
                     snippet: String,
                 }
-                match serde_yaml::from_value::<LineRangeFields>(value.clone()) {
+                match serde_json::from_value::<LineRangeFields>(value.clone()) {
                     Ok(f) if f.start_line >= 1 && f.end_line >= f.start_line => {
                         Ok(Anchor::LineRange {
                             start_line: f.start_line,
@@ -1744,7 +1744,7 @@ impl<'de> Deserialize<'de> for Anchor {
                     end_line: u32,
                 }
                 let fields: FileQuoteFields =
-                    serde_yaml::from_value(value).map_err(D::Error::custom)?;
+                    serde_json::from_value(value).map_err(D::Error::custom)?;
                 Ok(Anchor::FileQuote {
                     path: fields.path,
                     quote: fields.quote,
@@ -1778,8 +1778,9 @@ impl<'de> Deserialize<'de> for Anchor {
 /// `start-fallback`).
 ///
 /// Serialized as a flat kebab-case string. A value written by a newer rdm
-/// loads as [`Self::Unknown`] and re-serializes verbatim, exactly like
-/// [`Anchor::Unknown`], so an older binary never corrupts a newer review.
+/// loads as [`Self::Unknown`] and re-serializes verbatim, as
+/// [`Anchor::Unknown`] keeps its mapping, so an older binary never corrupts
+/// a newer review.
 /// [`FromStr`] deliberately rejects anything outside [`Self::KNOWN`], so
 /// [`Self::Unknown`] is reachable only by deserialization.
 ///
@@ -3880,16 +3881,16 @@ title: Fantasy Baseball Manager
             Anchor::Unknown { anchor_type, raw } => {
                 assert_eq!(anchor_type, "heading-path");
                 assert_eq!(
-                    raw.get("anchor_type").and_then(serde_yaml::Value::as_str),
+                    raw.get("anchor_type").and_then(serde_json::Value::as_str),
                     Some("heading-path")
                 );
                 assert_eq!(
-                    raw.get("start").and_then(serde_yaml::Value::as_i64),
+                    raw.get("start").and_then(serde_json::Value::as_i64),
                     Some(3)
                 );
-                assert_eq!(raw.get("end").and_then(serde_yaml::Value::as_i64), Some(7));
+                assert_eq!(raw.get("end").and_then(serde_json::Value::as_i64), Some(7));
                 assert_eq!(
-                    raw.get("extra").and_then(serde_yaml::Value::as_str),
+                    raw.get("extra").and_then(serde_json::Value::as_str),
                     Some("keep-me")
                 );
             }
@@ -3933,14 +3934,14 @@ title: Fantasy Baseball Manager
             match &parsed {
                 Anchor::Unknown { anchor_type, raw } => {
                     assert_eq!(anchor_type, "line-range", "{yaml}");
-                    let original: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+                    let original: serde_json::Value = serde_yaml::from_str(yaml).unwrap();
                     assert_eq!(raw, &original, "{yaml}");
                 }
                 other => panic!("expected Anchor::Unknown for {yaml:?}, got {other:?}"),
             }
             let reserialized = serde_yaml::to_string(&parsed).unwrap();
-            let original: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
-            let round: serde_yaml::Value = serde_yaml::from_str(&reserialized).unwrap();
+            let original: serde_json::Value = serde_yaml::from_str(yaml).unwrap();
+            let round: serde_json::Value = serde_yaml::from_str(&reserialized).unwrap();
             assert_eq!(round, original, "{yaml}");
         }
     }

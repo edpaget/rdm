@@ -1224,7 +1224,7 @@ mod tests {
     fn resolve_unknown_anchor_returns_none() {
         let anchor = Anchor::Unknown {
             anchor_type: "heading-path".to_string(),
-            raw: serde_yaml::Value::Null,
+            raw: serde_json::Value::Null,
         };
         assert_eq!(resolve("any body", &anchor), None);
     }
@@ -1613,7 +1613,7 @@ mod tests {
         let c = comment(
             Some(Anchor::Unknown {
                 anchor_type: "heading-path".to_string(),
-                raw: serde_yaml::Value::Null,
+                raw: serde_json::Value::Null,
             }),
             None,
         );

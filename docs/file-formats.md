@@ -433,8 +433,9 @@ every `rdm:` form.
 ### Anchors
 
 A comment's `anchor` is a tagged mapping keyed on `anchor_type`. An
-unrecognized type round-trips verbatim, so an older binary never corrupts a
-review it does not fully understand.
+unrecognized type keeps every field and value when the review is rewritten
+(key order is not preserved), so an older binary never corrupts a review it
+does not fully understand.
 
 | `anchor_type` | Fields | Used by |
 |---------------|--------|---------|
@@ -456,8 +457,8 @@ remapped** through later edits: it resolves only where the same-numbered lines
 still equal `snippet`, so any edit to or above the range reads as drifted, and
 the stored snippet is always shown. A `line-range` mapping with missing or
 malformed fields (`start_line` of 0, `end_line` before `start_line`, a
-different field shape) loads as an unrecognized anchor and round-trips
-verbatim.
+different field shape) loads as an unrecognized anchor and keeps every field
+and value (key order is not preserved).
 
 `file-quote` deliberately stores **no** surrounding context: the review file
 lives in the plan repo, and nothing from the source repository beyond the quote
@@ -511,7 +512,7 @@ anchorless comment means **not recorded** — it is never read as
 `whole-document` — and review JSON reports it as the reserved string
 `"not-recorded"`. An anchored comment never carries either field: its anchor is
 authoritative. A value this build does not recognize (written by a newer rdm)
-round-trips verbatim, exactly like an unrecognized `anchor_type`. Neither field
+round-trips verbatim, as an unrecognized `anchor_type` is kept. Neither field
 is a link: the read-time link every comment carries is review JSON's `target`
 object, derived on read (see `docs/change-reviews.md` § "Every comment carries a
 link").

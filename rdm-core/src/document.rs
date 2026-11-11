@@ -1,8 +1,32 @@
 /// Generic document wrapper combining YAML frontmatter with a markdown body.
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Error, FrontmatterError, Result};
 use crate::markdown;
+
+/// The number of lines of `content` that precede `part`, a slice cut out of
+/// it — what turns a line counted within the frontmatter into a line of the
+/// file.
+fn lines_before(content: &str, part: &str) -> u64 {
+    let offset = part.as_ptr().addr().saturating_sub(content.as_ptr().addr());
+    content
+        .get(..offset)
+        .map_or(0, |head| head.matches('\n').count() as u64)
+}
+
+/// Describes a failed frontmatter read, with the position kept apart from
+/// the problem so it can be reported against the file.
+fn read_error(err: &serde_yaml::Error) -> FrontmatterError {
+    let text = err.to_string();
+    let Some(location) = err.location() else {
+        return FrontmatterError::new(text, None);
+    };
+    let (line, column) = (location.line(), location.column());
+    let problem = text
+        .strip_suffix(&format!(" at line {line} column {column}"))
+        .unwrap_or(&text);
+    FrontmatterError::new(problem, Some((line as u64, column as u64)))
+}
 
 /// A document with typed frontmatter and a free-form markdown body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,10 +47,13 @@ where
     ///
     /// Returns [`Error::FrontmatterMissing`] if the content lacks frontmatter
     /// delimiters, or [`Error::FrontmatterParse`] if the YAML cannot be
-    /// deserialized into `T`.
+    /// deserialized into `T`. The reported line counts from the top of
+    /// `content`; no document is named, because a bare string has none.
     pub fn parse(content: &str) -> Result<Self> {
         let (yaml, body) = markdown::split_frontmatter(content)?;
-        let frontmatter: T = serde_yaml::from_str(yaml)?;
+        let frontmatter: T = serde_yaml::from_str(yaml).map_err(|err| {
+            Error::FrontmatterParse(read_error(&err).after_lines(lines_before(content, yaml)))
+        })?;
         Ok(Document {
             frontmatter,
             body: body.to_string(),
@@ -45,7 +72,8 @@ where
     /// Returns [`Error::FrontmatterParse`] if the frontmatter cannot be
     /// serialized to YAML.
     pub fn render(&self) -> Result<String> {
-        let yaml = serde_yaml::to_string(&self.frontmatter)?;
+        let yaml = serde_yaml::to_string(&self.frontmatter)
+            .map_err(|err| Error::FrontmatterParse(FrontmatterError::new(err.to_string(), None)))?;
         Ok(markdown::join_frontmatter(&yaml, &self.body))
     }
 }
@@ -393,10 +421,10 @@ Summary.
             Anchor::Unknown { anchor_type, raw } => {
                 assert_eq!(anchor_type, "heading-path");
                 assert_eq!(
-                    raw.get("start").and_then(serde_yaml::Value::as_i64),
+                    raw.get("start").and_then(serde_json::Value::as_i64),
                     Some(3)
                 );
-                assert_eq!(raw.get("end").and_then(serde_yaml::Value::as_i64), Some(7));
+                assert_eq!(raw.get("end").and_then(serde_json::Value::as_i64), Some(7));
             }
             other => panic!("expected Anchor::Unknown, got {other:?}"),
         }
@@ -405,6 +433,111 @@ Summary.
         let reparsed: Document<Review> = Document::parse(&rendered).unwrap();
         assert_eq!(reparsed.frontmatter, doc.frontmatter);
         assert_eq!(reparsed.body, doc.body);
+    }
+
+    /// A submitted review whose only comment carries `anchor`, a block of
+    /// YAML indented four spaces.
+    fn review_with_anchor(anchor: &str) -> String {
+        format!(
+            r#"---
+id: 2026-07-01-1100-abcd
+author: future-rdm
+target:
+  kind: task
+  slug: fix-login
+state: submitted
+verdict: approve
+created: 2026-07-01T11:00:00Z
+submitted: 2026-07-01T11:01:00Z
+comments:
+  - id: 1
+    status: open
+    anchor:
+{anchor}    body: Anchored by a shape this build does not know.
+---
+
+Summary.
+"#
+        )
+    }
+
+    /// Reads a review, writes it back and reads the result: the anchor of
+    /// its first comment as it stands after a read followed by a write.
+    fn anchor_after_read_then_write(content: &str) -> (String, serde_json::Value) {
+        let doc: Document<Review> = Document::parse(content).unwrap();
+        let rendered = doc.render().unwrap();
+        let reread: Document<Review> = Document::parse(&rendered).unwrap();
+        assert_eq!(reread.frontmatter, doc.frontmatter);
+        assert_eq!(reread.body, doc.body);
+        match reread.frontmatter.comments[0].anchor.clone() {
+            Some(Anchor::Unknown { anchor_type, raw }) => (anchor_type, raw),
+            other => panic!("expected Anchor::Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_anchor_keeps_every_field_and_value_through_read_then_write() {
+        use serde_json::json;
+
+        let content = review_with_anchor(
+            r#"      anchor_type: heading-path
+      label: 'true'
+      depth: 3
+      weight: 0.5
+      parent: null
+      path:
+        - Intro
+        - '12'
+      span:
+        from: 2
+        to: 9
+        note: kept
+"#,
+        );
+        let (anchor_type, raw) = anchor_after_read_then_write(&content);
+
+        assert_eq!(anchor_type, "heading-path");
+        let fields = raw.as_object().expect("the anchor is a mapping");
+        assert_eq!(fields.len(), 7, "{raw}");
+        assert_eq!(fields.get("anchor_type"), Some(&json!("heading-path")));
+        // A string that spells a boolean stays a string.
+        assert_eq!(fields.get("label"), Some(&json!("true")));
+        assert_eq!(fields.get("depth"), Some(&json!(3)));
+        assert_eq!(fields.get("weight"), Some(&json!(0.5)));
+        // A null value keeps its key.
+        assert_eq!(fields.get("parent"), Some(&serde_json::Value::Null));
+        // A string that spells a number stays a string, inside a list too.
+        assert_eq!(fields.get("path"), Some(&json!(["Intro", "12"])));
+        assert_eq!(
+            fields.get("span"),
+            Some(&json!({"from": 2, "to": 9, "note": "kept"}))
+        );
+    }
+
+    #[test]
+    fn a_malformed_line_range_anchor_keeps_every_field_and_value_through_read_then_write() {
+        use serde_json::json;
+
+        let content = review_with_anchor(
+            r#"      anchor_type: line-range
+      start_line: 0
+      end_line: 4
+      snippet: 'no'
+      context:
+        - before
+        - after
+"#,
+        );
+        let (anchor_type, raw) = anchor_after_read_then_write(&content);
+
+        assert_eq!(anchor_type, "line-range");
+        let fields = raw.as_object().expect("the anchor is a mapping");
+        assert_eq!(fields.len(), 5, "{raw}");
+        assert_eq!(fields.get("anchor_type"), Some(&json!("line-range")));
+        assert_eq!(fields.get("start_line"), Some(&json!(0)));
+        assert_eq!(fields.get("end_line"), Some(&json!(4)));
+        assert_eq!(fields.get("snippet"), Some(&json!("no")));
+        assert_eq!(fields.get("context"), Some(&json!(["before", "after"])));
     }
 
     #[test]
