@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, FrontmatterError, Result};
+use crate::frontmatter;
 use crate::markdown;
 
 /// The number of lines of `content` that precede `part`, a slice cut out of
@@ -12,20 +13,6 @@ fn lines_before(content: &str, part: &str) -> u64 {
     content
         .get(..offset)
         .map_or(0, |head| head.matches('\n').count() as u64)
-}
-
-/// Describes a failed frontmatter read, with the position kept apart from
-/// the problem so it can be reported against the file.
-fn read_error(err: &serde_yaml::Error) -> FrontmatterError {
-    let text = err.to_string();
-    let Some(location) = err.location() else {
-        return FrontmatterError::new(text, None);
-    };
-    let (line, column) = (location.line(), location.column());
-    let problem = text
-        .strip_suffix(&format!(" at line {line} column {column}"))
-        .unwrap_or(&text);
-    FrontmatterError::new(problem, Some((line as u64, column as u64)))
 }
 
 /// A document with typed frontmatter and a free-form markdown body.
@@ -51,9 +38,8 @@ where
     /// `content`; no document is named, because a bare string has none.
     pub fn parse(content: &str) -> Result<Self> {
         let (yaml, body) = markdown::split_frontmatter(content)?;
-        let frontmatter: T = serde_yaml::from_str(yaml).map_err(|err| {
-            Error::FrontmatterParse(read_error(&err).after_lines(lines_before(content, yaml)))
-        })?;
+        let frontmatter: T = frontmatter::from_str(yaml)
+            .map_err(|err| Error::FrontmatterParse(err.after_lines(lines_before(content, yaml))))?;
         Ok(Document {
             frontmatter,
             body: body.to_string(),
@@ -673,5 +659,254 @@ Still loads.
         assert!(!rendered.contains("verdict"));
         assert!(!rendered.contains("submitted"));
         assert!(!rendered.contains("created_commit"));
+    }
+
+    // -- what today's writer emits, the reader gives back --
+
+    /// Strings a YAML reader could take for something else: other types,
+    /// syntax, indentation, line breaks. None ends its document — the writer
+    /// drops the final line break of a document's last string, an old
+    /// quirk these tests leave alone.
+    fn awkward_strings() -> Vec<String> {
+        let mut strings: Vec<String> = [
+            "",
+            " ",
+            "plain",
+            // Other types' spellings.
+            "yes",
+            "No",
+            "on",
+            "OFF",
+            "y",
+            "n",
+            "true",
+            "False",
+            "null",
+            "~",
+            "0",
+            "-1",
+            "123",
+            "007",
+            "0755",
+            "0o17",
+            "0x1F",
+            "1_000",
+            "1.0",
+            ".5",
+            "1e3",
+            "1e999",
+            "12345e6789012345678901234567890123456789",
+            ".inf",
+            "-.inf",
+            ".nan",
+            "12:30:45",
+            "2026-03-13",
+            "2026-03-13T10:00:00Z",
+            "18446744073709551616",
+            // Syntax.
+            "- foo",
+            "-",
+            "---",
+            "...",
+            "a: b",
+            "x:",
+            "key: value # comment",
+            "#hash",
+            "@at",
+            "`tick`",
+            "!bang",
+            "!!str x",
+            "*star",
+            "&amp",
+            "%pct",
+            "'single",
+            "it's",
+            "\"double",
+            "a \"q\" b",
+            "\\back",
+            "?",
+            "|",
+            "> x",
+            "[a]",
+            "{a}",
+            "a, b",
+            "<<",
+            // Whitespace and line breaks.
+            " leading",
+            "trailing ",
+            "\ttab",
+            "a\tb",
+            "multi\nline",
+            "multi\n\nline\n",
+            "\nlead-nl",
+            "trail-nl\n",
+            "trail-nls\n\n",
+            "  indented first\nsecond",
+            "a\n  b\n c",
+            "trailing space \nnext",
+            "crlf\r\nline",
+            "nel\u{85}x",
+            "nul\u{0}x",
+            // Text.
+            "héllo",
+            "日本語",
+            "emoji 🎉",
+            "naïve—dash",
+            "## Acceptance Criteria",
+            "```rust\nfn x() {}\n```",
+            "rdm:phase/auth/phase-1-design",
+            "http://x.y/z?a=b#c",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        strings.push("word ".repeat(60));
+        strings.push(format!("{}\n{}", "long ".repeat(40), "second ".repeat(40)));
+        strings
+    }
+
+    /// Asserts that `doc`, written and read back, is the document written.
+    fn assert_written_then_read<T>(doc: &Document<T>, what: &str)
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let rendered = doc.render().unwrap();
+        let read = Document::<T>::parse(&rendered)
+            .unwrap_or_else(|err| panic!("{what}: {err}\n{rendered}"));
+        assert_eq!(&read, doc, "{what}\n{rendered}");
+    }
+
+    #[test]
+    fn a_task_with_awkward_strings_reads_back_as_written() {
+        for s in awkward_strings() {
+            let doc = Document {
+                frontmatter: Task {
+                    project: "p".to_string(),
+                    title: s.clone(),
+                    status: TaskStatus::Open,
+                    priority: Priority::High,
+                    created: NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
+                    tags: Some(vec![s.clone(), "z".to_string()]),
+                    completed: None,
+                    commit: Some("abc123".to_string()),
+                    review_sha: None,
+                    review_branch: None,
+                    started_head: None,
+                    close_reason: None,
+                    gate_override: None,
+                },
+                body: "Body.\n".to_string(),
+            };
+            assert_written_then_read(&doc, &format!("task title and tag {s:?}"));
+        }
+    }
+
+    #[test]
+    fn a_review_with_awkward_strings_reads_back_as_written() {
+        let comment =
+            |id: u32, anchor: Option<Anchor>, body: &str, reply: Option<&str>| ReviewComment {
+                anchor_state: None,
+                intended_path: None,
+                id,
+                doc: None,
+                status: ReviewCommentStatus::Open,
+                applied_commit: None,
+                anchor,
+                body: body.to_string(),
+                reply: reply.map(str::to_string),
+            };
+        for s in awkward_strings() {
+            let unknown = Anchor::Unknown {
+                anchor_type: "heading-path".to_string(),
+                raw: serde_json::json!({
+                    "anchor_type": "heading-path",
+                    "label": s,
+                    "path": [s, "z"],
+                    "depth": 3,
+                    "nested": {"values": [1, 2.5, null, true, s]},
+                }),
+            };
+            let anchors = [
+                Anchor::TextQuote {
+                    quote: s.clone(),
+                    prefix: s.clone(),
+                    suffix: s.clone(),
+                },
+                Anchor::LineRange {
+                    start_line: 3,
+                    end_line: 4,
+                    snippet: s.clone(),
+                },
+                Anchor::FileQuote {
+                    path: s.clone(),
+                    quote: s.clone(),
+                    occurrence: 1,
+                    start_line: 1,
+                    end_line: 2,
+                },
+                unknown,
+            ];
+            let mut comments: Vec<ReviewComment> = anchors
+                .into_iter()
+                .zip(1..)
+                .map(|(anchor, id)| comment(id, Some(anchor), &s, Some(&s)))
+                .collect();
+            comments.push(comment(5, None, "The last comment.", Some("Its reply.")));
+            let doc = Document {
+                frontmatter: Review {
+                    id: "2026-07-01-1430-a1b2".to_string(),
+                    author: s.clone(),
+                    target: ReviewTarget::Change {
+                        head: s.clone(),
+                        base: Some(s.clone()),
+                    },
+                    state: ReviewState::Submitted,
+                    verdict: Some(Verdict::RequestChanges),
+                    created: Utc.with_ymd_and_hms(2026, 7, 1, 14, 30, 0).unwrap(),
+                    submitted: Some(Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
+                    created_commit: Some(s.clone()),
+                    comments,
+                    implements: None,
+                    change_branch: Some(s.clone()),
+                },
+                body: "Summary.\n".to_string(),
+            };
+            assert_written_then_read(&doc, &format!("review strings {s:?}"));
+        }
+    }
+
+    #[test]
+    fn a_run_with_awkward_strings_reads_back_as_written() {
+        use crate::model::{Run, RunDriver, RunStatus, RunTarget, RunUnit};
+
+        let started = Utc.with_ymd_and_hms(2026, 9, 24, 15, 30, 12).unwrap();
+        let unit = |name: &str, outcome: &str| RunUnit {
+            unit: name.to_string(),
+            attempt: 1,
+            started,
+            ended: Some(started),
+            outcome: Some(outcome.to_string()),
+        };
+        for s in awkward_strings() {
+            for target in [RunTarget::Roadmap(s.clone()), RunTarget::Task(s.clone())] {
+                let doc = Document {
+                    frontmatter: Run {
+                        id: s.clone(),
+                        project: "rdm".to_string(),
+                        driver: RunDriver::Autopilot,
+                        target,
+                        session_uuid: Some(s.clone()),
+                        args: Some(s.clone()),
+                        status: RunStatus::Closed,
+                        started,
+                        ended: Some(started),
+                        stop_reason: Some(s.clone()),
+                        units: vec![unit(&s, &s), unit("phase-2-last", "reviewed")],
+                    },
+                    body: String::new(),
+                };
+                assert_written_then_read(&doc, &format!("run strings {s:?}"));
+            }
+        }
     }
 }

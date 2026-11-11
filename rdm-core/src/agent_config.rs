@@ -1621,7 +1621,7 @@ mod tests {
             assert_eq!(skills.len(), 4);
             for skill in skills {
                 let yaml = skill.content.split("---").nth(1).unwrap();
-                let meta: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+                let meta: serde_json::Value = crate::frontmatter::from_str(yaml).unwrap();
                 assert_eq!(
                     format!("{}/SKILL.md", meta["name"].as_str().unwrap()),
                     skill.relative_path

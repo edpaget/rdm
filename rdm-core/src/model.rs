@@ -2445,7 +2445,7 @@ mod tests {
             yaml.contains(&format!("head: {}", "a".repeat(40))),
             "{yaml}"
         );
-        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: ReviewTarget = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed, target);
 
         // A base-less target simply omits the key.
@@ -2455,7 +2455,10 @@ mod tests {
         };
         let yaml = serde_yaml::to_string(&bare).unwrap();
         assert!(!yaml.contains("base"), "{yaml}");
-        assert_eq!(serde_yaml::from_str::<ReviewTarget>(&yaml).unwrap(), bare);
+        assert_eq!(
+            crate::frontmatter::from_str::<ReviewTarget>(&yaml).unwrap(),
+            bare
+        );
     }
 
     #[test]
@@ -2555,7 +2558,10 @@ mod tests {
         // AC6: no surrounding context is ever persisted.
         assert!(!yaml.contains("prefix"), "{yaml}");
         assert!(!yaml.contains("suffix"), "{yaml}");
-        assert_eq!(serde_yaml::from_str::<Anchor>(&yaml).unwrap(), anchor);
+        assert_eq!(
+            crate::frontmatter::from_str::<Anchor>(&yaml).unwrap(),
+            anchor
+        );
     }
 
     #[test]
@@ -2570,7 +2576,7 @@ state: draft
 created: 2026-07-01T00:00:00Z
 comments: []
 ";
-        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        let review: Review = crate::frontmatter::from_str(yaml).unwrap();
         assert!(review.implements.is_none());
         assert!(review.change_branch.is_none());
         // …and round-trips back without gaining the keys.
@@ -2635,7 +2641,7 @@ comments: []
         assert!(yaml.contains("anchor_state: outside-hunk"), "{yaml}");
         assert!(yaml.contains("intended_path: src/lib.rs"), "{yaml}");
         assert_eq!(
-            serde_yaml::from_str::<ReviewComment>(&yaml).unwrap(),
+            crate::frontmatter::from_str::<ReviewComment>(&yaml).unwrap(),
             comment
         );
     }
@@ -2643,7 +2649,7 @@ comments: []
     #[test]
     fn a_pre_anchor_state_comment_loads_with_both_fields_absent() {
         let yaml = "id: 1\nstatus: open\nbody: legacy\n";
-        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        let comment: ReviewComment = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(comment.anchor_state, None);
         assert_eq!(comment.intended_path, None);
         // …and re-serializes without gaining either key.
@@ -2747,7 +2753,7 @@ comments: []
     #[test]
     fn an_unknown_stored_anchor_state_round_trips_verbatim() {
         let yaml = "id: 1\nstatus: open\nanchor_state: some-future-reason\nbody: b\n";
-        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        let comment: ReviewComment = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(
             comment.anchor_state,
             Some(AnchorState::Unknown("some-future-reason".to_string()))
@@ -3013,7 +3019,7 @@ comments: []
     fn frontier_tier_yaml_round_trip() {
         let yaml = serde_yaml::to_string(&ModelTier::Frontier).unwrap();
         assert_eq!(yaml.trim(), "frontier");
-        let parsed: ModelTier = serde_yaml::from_str("frontier").unwrap();
+        let parsed: ModelTier = crate::frontmatter::from_str("frontier").unwrap();
         assert_eq!(parsed, ModelTier::Frontier);
     }
 
@@ -3093,7 +3099,7 @@ comments: []
         for (variant, expected_yaml) in variants {
             let yaml = serde_yaml::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
-            let parsed: PhaseStatus = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: PhaseStatus = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
         }
     }
@@ -3112,7 +3118,7 @@ comments: []
         for (variant, expected_yaml) in variants {
             let yaml = serde_yaml::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
-            let parsed: TaskStatus = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: TaskStatus = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
         }
     }
@@ -3128,7 +3134,7 @@ comments: []
         for (variant, expected_yaml) in variants {
             let yaml = serde_yaml::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
-            let parsed: Priority = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: Priority = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
         }
     }
@@ -3142,7 +3148,7 @@ status: done
 completed: 2026-03-13
 commit: abc123def456
 "#;
-        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        let phase: Phase = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(phase.phase, 1);
         assert_eq!(phase.title, "Core valuation layer");
         assert_eq!(phase.status, PhaseStatus::Done);
@@ -3160,7 +3166,7 @@ phase: 2
 title: Keeper service threading
 status: not-started
 "#;
-        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        let phase: Phase = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(phase.phase, 2);
         assert_eq!(phase.status, PhaseStatus::NotStarted);
         assert_eq!(phase.completed, None);
@@ -3174,7 +3180,7 @@ phase: 2
 title: Keeper service threading
 status: not-started
 "#;
-        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        let phase: Phase = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(phase.difficulty, None);
         assert_eq!(phase.model, None);
     }
@@ -3222,7 +3228,7 @@ status: not-started
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(yaml.contains("difficulty: hard"));
         assert!(yaml.contains("model: large"));
-        let parsed: Phase = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: Phase = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed.difficulty, Some(Difficulty::Hard));
         assert_eq!(parsed.model, Some(ModelTier::Large));
     }
@@ -3246,7 +3252,7 @@ status: not-started
         };
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(yaml.contains("blocked_reason: ambiguous acceptance criterion"));
-        let parsed: Phase = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: Phase = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(
             parsed.blocked_reason.as_deref(),
             Some("ambiguous acceptance criterion")
@@ -3260,7 +3266,7 @@ phase: 2
 title: Keeper service threading
 status: not-started
 "#;
-        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        let phase: Phase = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(phase.started_head, None);
     }
 
@@ -3283,7 +3289,7 @@ status: not-started
         };
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(yaml.contains("started_head: deadbeefcafe"));
-        let parsed: Phase = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: Phase = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed.started_head.as_deref(), Some("deadbeefcafe"));
     }
 
@@ -3295,7 +3301,7 @@ title: Core valuation layer
 status: not-started
 tags: [infra, search]
 "#;
-        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        let phase: Phase = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(
             phase.tags,
             Some(vec!["infra".to_string(), "search".to_string()])
@@ -3309,7 +3315,7 @@ phase: 2
 title: Keeper service threading
 status: not-started
 "#;
-        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        let phase: Phase = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(phase.tags, None);
     }
 
@@ -3323,7 +3329,7 @@ phases:
   - phase-1-only
 tags: [api, cli]
 "#;
-        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        let roadmap: Roadmap = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(
             roadmap.tags,
             Some(vec!["api".to_string(), "cli".to_string()])
@@ -3339,7 +3345,7 @@ title: Solo Roadmap
 phases:
   - phase-1-only
 "#;
-        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        let roadmap: Roadmap = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(roadmap.tags, None);
     }
 
@@ -3353,7 +3359,7 @@ priority: high
 created: 2026-03-14
 tags: [data, statcast]
 "#;
-        let task: Task = serde_yaml::from_str(yaml).unwrap();
+        let task: Task = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(task.project, "fbm");
         assert_eq!(task.status, TaskStatus::Open);
         assert_eq!(task.priority, Priority::High);
@@ -3373,7 +3379,7 @@ status: in-progress
 priority: low
 created: 2026-01-01
 "#;
-        let task: Task = serde_yaml::from_str(yaml).unwrap();
+        let task: Task = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(task.tags, None);
     }
 
@@ -3386,7 +3392,7 @@ status: in-progress
 priority: low
 created: 2026-01-01
 "#;
-        let task: Task = serde_yaml::from_str(yaml).unwrap();
+        let task: Task = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(task.started_head, None);
     }
 
@@ -3409,7 +3415,7 @@ created: 2026-01-01
         };
         let yaml = serde_yaml::to_string(&task).unwrap();
         assert!(yaml.contains("started_head: deadbeefcafe"));
-        let parsed: Task = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: Task = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed.started_head.as_deref(), Some("deadbeefcafe"));
     }
 
@@ -3433,7 +3439,7 @@ created: 2026-01-01
         };
         let yaml = serde_yaml::to_string(&task).unwrap();
         assert!(yaml.contains("close_reason: superseded by task/survivor"));
-        let parsed: Task = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: Task = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(
             parsed.close_reason.as_deref(),
             Some("superseded by task/survivor")
@@ -3447,7 +3453,7 @@ created: 2026-01-01
         };
         let yaml = serde_yaml::to_string(&task).unwrap();
         assert!(!yaml.contains("close_reason"));
-        let parsed: Task = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: Task = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed.close_reason, None);
     }
 
@@ -3463,7 +3469,7 @@ phases:
 dependencies:
   - keeper-surplus-value
 "#;
-        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        let roadmap: Roadmap = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(roadmap.project, "fbm");
         assert_eq!(roadmap.roadmap, "two-way-players");
         assert_eq!(roadmap.phases.len(), 2);
@@ -3482,7 +3488,7 @@ title: Solo Roadmap
 phases:
   - phase-1-only
 "#;
-        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        let roadmap: Roadmap = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(roadmap.dependencies, None);
     }
 
@@ -3496,7 +3502,7 @@ phases:
   - phase-1-patch
 priority: high
 "#;
-        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        let roadmap: Roadmap = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(roadmap.priority, Some(Priority::High));
     }
 
@@ -3509,7 +3515,7 @@ title: Solo Roadmap
 phases:
   - phase-1-only
 "#;
-        let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
+        let roadmap: Roadmap = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(roadmap.priority, None);
     }
 
@@ -3549,12 +3555,12 @@ phases:
 name: fbm
 title: Fantasy Baseball Manager
 "#;
-        let project: Project = serde_yaml::from_str(yaml).unwrap();
+        let project: Project = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(project.name, "fbm");
         assert_eq!(project.title, "Fantasy Baseball Manager");
 
         let serialized = serde_yaml::to_string(&project).unwrap();
-        let parsed: Project = serde_yaml::from_str(&serialized).unwrap();
+        let parsed: Project = crate::frontmatter::from_str(&serialized).unwrap();
         assert_eq!(parsed, project);
     }
 
@@ -3625,7 +3631,7 @@ title: Fantasy Baseball Manager
         for (variant, expected_yaml) in variants {
             let yaml = serde_yaml::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
-            let parsed: ReviewState = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: ReviewState = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
         }
     }
@@ -3663,7 +3669,7 @@ title: Fantasy Baseball Manager
         for (variant, expected_yaml) in variants {
             let yaml = serde_yaml::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
-            let parsed: Verdict = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: Verdict = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
         }
     }
@@ -3701,7 +3707,7 @@ title: Fantasy Baseball Manager
         for (variant, expected_yaml) in variants {
             let yaml = serde_yaml::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
-            let parsed: ReviewCommentStatus = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: ReviewCommentStatus = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
         }
     }
@@ -3709,11 +3715,11 @@ title: Fantasy Baseball Manager
     #[test]
     fn comment_doc_round_trip() {
         let yaml = "kind: phase\nstem: phase-1-design\n";
-        let doc: CommentDoc = serde_yaml::from_str(yaml).unwrap();
+        let doc: CommentDoc = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(doc.kind, CommentDocKind::Phase);
         assert_eq!(doc.stem, "phase-1-design");
         let serialized = serde_yaml::to_string(&doc).unwrap();
-        let parsed: CommentDoc = serde_yaml::from_str(&serialized).unwrap();
+        let parsed: CommentDoc = crate::frontmatter::from_str(&serialized).unwrap();
         assert_eq!(parsed, doc);
     }
 
@@ -3725,7 +3731,7 @@ title: Fantasy Baseball Manager
         let yaml = serde_yaml::to_string(&target).unwrap();
         assert!(yaml.contains("kind: roadmap"));
         assert!(yaml.contains("roadmap: auth"));
-        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: ReviewTarget = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed, target);
     }
 
@@ -3739,7 +3745,7 @@ title: Fantasy Baseball Manager
         assert!(yaml.contains("kind: phase"));
         assert!(yaml.contains("roadmap: auth"));
         assert!(yaml.contains("stem: phase-1-design"));
-        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: ReviewTarget = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed, target);
     }
 
@@ -3751,7 +3757,7 @@ title: Fantasy Baseball Manager
         let yaml = serde_yaml::to_string(&target).unwrap();
         assert!(yaml.contains("kind: task"));
         assert!(yaml.contains("slug: fix-login"));
-        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: ReviewTarget = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed, target);
     }
 
@@ -3869,14 +3875,14 @@ title: Fantasy Baseball Manager
         assert!(yaml.contains("quote:"));
         assert!(yaml.contains("prefix:"));
         assert!(yaml.contains("suffix:"));
-        let parsed: Anchor = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: Anchor = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed, anchor);
     }
 
     #[test]
     fn anchor_unknown_type_preserves_raw_yaml() {
         let yaml = "anchor_type: heading-path\nstart: 3\nend: 7\nextra: keep-me\n";
-        let parsed: Anchor = serde_yaml::from_str(yaml).unwrap();
+        let parsed: Anchor = crate::frontmatter::from_str(yaml).unwrap();
         match &parsed {
             Anchor::Unknown { anchor_type, raw } => {
                 assert_eq!(anchor_type, "heading-path");
@@ -3898,7 +3904,7 @@ title: Fantasy Baseball Manager
         }
         // Serializing an Unknown anchor re-emits the original mapping verbatim.
         let reserialized = serde_yaml::to_string(&parsed).unwrap();
-        let reparsed: Anchor = serde_yaml::from_str(&reserialized).unwrap();
+        let reparsed: Anchor = crate::frontmatter::from_str(&reserialized).unwrap();
         assert_eq!(reparsed, parsed);
     }
 
@@ -3913,7 +3919,10 @@ title: Fantasy Baseball Manager
         assert!(yaml.contains("anchor_type: line-range"), "{yaml}");
         assert!(yaml.contains("start_line: 3"), "{yaml}");
         assert!(yaml.contains("end_line: 4"), "{yaml}");
-        assert_eq!(serde_yaml::from_str::<Anchor>(&yaml).unwrap(), anchor);
+        assert_eq!(
+            crate::frontmatter::from_str::<Anchor>(&yaml).unwrap(),
+            anchor
+        );
     }
 
     #[test]
@@ -3930,18 +3939,18 @@ title: Fantasy Baseball Manager
             // A mistyped field.
             "anchor_type: line-range\nstart_line: three\nend_line: 4\nsnippet: x\n",
         ] {
-            let parsed: Anchor = serde_yaml::from_str(yaml).unwrap();
+            let parsed: Anchor = crate::frontmatter::from_str(yaml).unwrap();
             match &parsed {
                 Anchor::Unknown { anchor_type, raw } => {
                     assert_eq!(anchor_type, "line-range", "{yaml}");
-                    let original: serde_json::Value = serde_yaml::from_str(yaml).unwrap();
+                    let original: serde_json::Value = crate::frontmatter::from_str(yaml).unwrap();
                     assert_eq!(raw, &original, "{yaml}");
                 }
                 other => panic!("expected Anchor::Unknown for {yaml:?}, got {other:?}"),
             }
             let reserialized = serde_yaml::to_string(&parsed).unwrap();
-            let original: serde_json::Value = serde_yaml::from_str(yaml).unwrap();
-            let round: serde_json::Value = serde_yaml::from_str(&reserialized).unwrap();
+            let original: serde_json::Value = crate::frontmatter::from_str(yaml).unwrap();
+            let round: serde_json::Value = crate::frontmatter::from_str(&reserialized).unwrap();
             assert_eq!(round, original, "{yaml}");
         }
     }
@@ -3952,7 +3961,7 @@ title: Fantasy Baseball Manager
         assert_eq!(state, AnchorState::LineOutOfRange);
         assert!(state.is_degradation());
         let yaml = "id: 1\nstatus: open\nanchor_state: line-out-of-range\nbody: b\n";
-        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        let comment: ReviewComment = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(comment.anchor_state, Some(AnchorState::LineOutOfRange));
         let out = serde_yaml::to_string(&comment).unwrap();
         assert!(out.contains("anchor_state: line-out-of-range"), "{out}");
@@ -3961,7 +3970,7 @@ title: Fantasy Baseball Manager
     #[test]
     fn anchor_missing_anchor_type_is_error() {
         let yaml = "quote: some text\nprefix: a\nsuffix: b\n";
-        let err = serde_yaml::from_str::<Anchor>(yaml).unwrap_err();
+        let err = crate::frontmatter::from_str::<Anchor>(yaml).unwrap_err();
         assert!(
             err.to_string().contains("anchor_type"),
             "error should mention the missing field, got: {err}"
@@ -3971,7 +3980,7 @@ title: Fantasy Baseball Manager
     #[test]
     fn anchor_non_string_anchor_type_is_type_error_not_missing() {
         let yaml = "anchor_type: 5\nquote: some text\nprefix: a\nsuffix: b\n";
-        let err = serde_yaml::from_str::<Anchor>(yaml).unwrap_err();
+        let err = crate::frontmatter::from_str::<Anchor>(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("anchor_type must be a string"),
@@ -4121,20 +4130,20 @@ title: Fantasy Baseball Manager
         let yaml = serde_yaml::to_string(&run).unwrap();
         assert!(yaml.contains("roadmap: auth"), "{yaml}");
         assert!(!yaml.contains("task:"), "{yaml}");
-        assert_eq!(serde_yaml::from_str::<Run>(&yaml).unwrap(), run);
+        assert_eq!(crate::frontmatter::from_str::<Run>(&yaml).unwrap(), run);
 
         let run = sample_run(RunTarget::Task("fix-bug".to_string()));
         let yaml = serde_yaml::to_string(&run).unwrap();
         assert!(yaml.contains("task: fix-bug"), "{yaml}");
         assert!(!yaml.contains("roadmap:"), "{yaml}");
-        assert_eq!(serde_yaml::from_str::<Run>(&yaml).unwrap(), run);
+        assert_eq!(crate::frontmatter::from_str::<Run>(&yaml).unwrap(), run);
     }
 
     #[test]
     fn run_timestamps_keep_sub_second_precision() {
         let run = sample_run(RunTarget::Roadmap("auth".to_string()));
         let yaml = serde_yaml::to_string(&run).unwrap();
-        let back: Run = serde_yaml::from_str(&yaml).unwrap();
+        let back: Run = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(back.started.timestamp_subsec_millis(), 345);
     }
 

@@ -43,6 +43,13 @@ key: value
 Markdown body starts here.
 ```
 
+When editing frontmatter by hand, give every required text field a value: a
+bare `null`, a `~` or nothing after the colon (`title:`) is an error, not an
+empty or literal string — write `title: ''` or `title: 'null'` if that is what
+you mean. An optional field may be left empty or removed. A file whose
+frontmatter cannot be read fails with its path and the line and column of the
+problem.
+
 ## `rdm.toml`
 
 Repo-level configuration. Lives at the plan repo root. All fields are optional.

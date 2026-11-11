@@ -30,6 +30,8 @@ pub mod display;
 pub mod document;
 /// Error types for rdm-core.
 pub mod error;
+/// The YAML frontmatter reader every document read goes through.
+mod frontmatter;
 /// Git hook helpers for parsing `Done:` directives from commit messages.
 pub mod hook;
 /// Document I/O primitives for plan repo data.
