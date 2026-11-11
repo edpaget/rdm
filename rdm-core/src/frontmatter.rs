@@ -11,14 +11,17 @@
 //!
 //! * [`options`] turns off the inference and strictness the old reader did
 //!   not have;
-//! * four text-level adjustments cover what no option reaches —
-//!   [`line_separators_as_breaks`], [`strip_unterminated_block_scalar`],
-//!   [`quote_strings_read_as_numbers`] and [`quote_non_finite_scalar`].
+//! * three text-level adjustments cover what no option reaches —
+//!   [`line_separators_as_breaks`], [`strip_unterminated_block_scalar`] and
+//!   [`quote_scalars_read_differently`].
 //!
 //! The reader is therefore handed a text that can differ from the one in the
 //! file. Each adjustment states its changes as [`Replacement`]s and
 //! [`Rewritten`] applies them, so a problem the reader finds is reported
-//! where it is in the file rather than in the adjusted text.
+//! where it is in the file rather than in the adjusted text. Each adjustment
+//! is one pass over the text and the reader reads it once, so the work
+//! grows with the length of the frontmatter and not with how much of it
+//! needs adjusting.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -45,16 +48,9 @@ pub(crate) fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Frontmatter
     let mut text = Rewritten::new(text);
     text.apply(line_separators_as_breaks(text.as_str()));
     text.apply(strip_unterminated_block_scalar(text.as_str()));
-    text.apply(quote_strings_read_as_numbers(text.as_str()));
-    loop {
-        match serde_saphyr::from_str_with_options::<T>(text.as_str(), options()) {
-            Ok(value) => return Ok(value),
-            Err(err) => match quote_non_finite_scalar(text.as_str(), &err) {
-                Some(quoted) => text.apply(Some(quoted)),
-                None => return Err(describe(&err, &text)),
-            },
-        }
-    }
+    text.apply(quote_scalars_read_differently(text.as_str()));
+    serde_saphyr::from_str_with_options::<T>(text.as_str(), options())
+        .map_err(|err| describe(&err, &text))
 }
 
 /// One change an adjustment makes to the text it is given: the bytes at
@@ -212,8 +208,8 @@ fn options() -> Options {
         ignore_binary_tag_for_string: true,
         // One-line messages: rdm reports the position itself.
         with_snippet: false,
-        // The default, stated because `quote_non_finite_scalar` relies on
-        // the error it produces.
+        // The default, stated because `quote_scalars_read_differently`
+        // tells a number that is not finite by the error it produces.
         non_finite_float_policy: NonFiniteFloatPolicy::Reject,
     }
 }
@@ -335,18 +331,25 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
     })
 }
 
-/// Quotes each bare scalar the old reader read as a string and the reader
-/// takes for a number, returning one replacement for each, in the order
-/// they occur in `text`.
+/// Quotes each bare scalar that has to reach rdm as its text and that the
+/// reader, where it guesses the type, would not read as text, returning
+/// one replacement for each, in the order they occur in `text`.
 ///
-/// Where it had to guess, the old reader called a bare scalar a number only
-/// if it spelled one its own way, and the old writer quoted a string only
-/// when that reader would have misread it. The reader knows more spellings:
-/// a radix prefix in capitals (`0X1F`, `-0O17`, `+0B101`), a signed `.nan`,
-/// and a decimal float too large to hold (`1e999`, or a commit id made of
-/// digits and a single `e`). Read as a number, such a string fails to load
-/// where a string is expected and silently becomes a number where anything
-/// is.
+/// There are two kinds. The first is a string the reader takes for a
+/// number. Where it had to guess, the old reader called a bare scalar a
+/// number only if it spelled one its own way, and the old writer quoted a
+/// string only when that reader would have misread it. The reader knows
+/// more spellings: a radix prefix in capitals (`0X1F`, `-0O17`, `+0B101`), a
+/// signed `.nan`, and a decimal float too large to hold (`1e999`, or a
+/// commit id made of digits and a single `e`). Read as a number, such a
+/// string fails to load where a string is expected and silently becomes a
+/// number where anything is.
+///
+/// The second is a number that is not finite — `.inf`, `.nan` — which the
+/// old reader took for a number too. Where the type is guessed the reader
+/// refuses it, and none of its policies returns the text as written.
+/// Quoted, it reads as that text there, and still as the number where a
+/// float is asked for.
 ///
 /// The two readers are asked rather than the spellings listed:
 /// [`old_reader_read_a_number`] restates the old reader's rule, and
@@ -355,37 +358,60 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
 /// asked about; over every other bare scalar the two agree under
 /// [`options`]. Quoting a scalar the old reader read as a string never
 /// changes what it holds.
-fn quote_strings_read_as_numbers(text: &str) -> Vec<Replacement> {
+///
+/// Every such scalar is found in this one walk, so the text is read once
+/// however many there are.
+fn quote_scalars_read_differently(text: &str) -> Vec<Replacement> {
+    // Each replacement, and whether the reader refuses the scalar.
     let mut quoted = Vec::new();
     for event in Parser::new_from_str(text) {
-        // A text that does not parse is the reader's to report, untouched.
+        // A text that does not parse is the reader's to report, as it was
+        // written — but for the scalars it refuses. It reads as it goes, so
+        // it would stop at one of those before it got to the problem.
         let Ok((event, span)) = event else {
-            return Vec::new();
+            quoted.retain(|&(_, refused)| refused);
+            break;
         };
         // A tag states the type, so nothing is guessed.
         let Event::Scalar(value, ScalarStyle::Plain, _, None) = event else {
             continue;
         };
-        if !value.starts_with(|first| matches!(first, '0'..='9' | '+' | '-' | '.'))
-            || old_reader_read_a_number(&value)
-            || serde_saphyr::from_str_with_options::<GuessedString>(&value, options()).is_ok()
-        {
+        if !value.starts_with(|first| matches!(first, '0'..='9' | '+' | '-' | '.')) {
+            continue;
+        }
+        // To the reader it is a string already, as it was to the old one.
+        let Err(guess) = serde_saphyr::from_str_with_options::<GuessedString>(&value, options())
+        else {
+            continue;
+        };
+        // A number the reader refuses for not being finite is quoted
+        // whatever the old reader made of it. Any other is left bare when
+        // it was a number to the old reader too.
+        let refused = matches!(
+            guess.without_snippet(),
+            serde_saphyr::Error::NonFiniteFloat { .. }
+        );
+        if !refused && old_reader_read_a_number(&value) {
             continue;
         }
         let (Some(start), Some(end)) = (span.start.byte_offset(), span.end.byte_offset()) else {
-            return Vec::new();
+            continue;
         };
         // A scalar folded over several lines is not its own source text; its
         // value has a space in it, which no number does.
         if text.get(start..end) != Some(&*value) {
             continue;
         }
-        quoted.push(Replacement {
+        let replacement = Replacement {
             at: start..end,
             with: format!("'{}'", value.replace('\'', "''")),
-        });
+        };
+        quoted.push((replacement, refused));
     }
     quoted
+        .into_iter()
+        .map(|(replacement, _)| replacement)
+        .collect()
 }
 
 /// Whether the old reader, `serde_yaml` 0.9, read the bare scalar `scalar`
@@ -448,29 +474,6 @@ impl<'de> Deserialize<'de> for GuessedString {
 
         deserializer.deserialize_any(StringOnly)
     }
-}
-
-/// Quotes the bare scalar `err` rejected as a number that is not finite,
-/// returning the replacement, or `None` when `err` is any other failure.
-///
-/// [`quote_strings_read_as_numbers`] has already quoted the strings that
-/// spell such a number. What reaches here is one the old reader took for a
-/// number too — `.inf`, `.nan` — in a place where the type is guessed, and
-/// none of the reader's policies returns the text. Quoting that one scalar
-/// and reading again does.
-fn quote_non_finite_scalar(text: &str, err: &serde_saphyr::Error) -> Option<Replacement> {
-    let serde_saphyr::Error::NonFiniteFloat { value, location } = err.without_snippet() else {
-        return None;
-    };
-    let start = usize::try_from(location.span().byte_offset()?).ok()?;
-    let end = start.checked_add(value.len())?;
-    if text.get(start..end)? != value {
-        return None;
-    }
-    Some(Replacement {
-        at: start..end,
-        with: format!("'{value}'"),
-    })
 }
 
 /// Words a reader failure for someone editing a plan file: the library's
@@ -696,7 +699,7 @@ mod tests {
     #[test]
     fn a_commit_id_of_digits_and_one_e_reads_back_as_itself() {
         // Forty characters that spell a float far too large to hold. Both
-        // ends of the range do, so the reader has to recover twice.
+        // ends of the range do, so two scalars have to be quoted.
         let head = "12345e6789012345678901234567890123456789";
         let base = "9e87654321098765432109876543210987654321";
         let yaml = format!("kind: change\nhead: {head}\nbase: {base}\n");
@@ -738,6 +741,72 @@ mod tests {
         assert_eq!(raw.get("depth"), Some(&json!(3)));
         assert_eq!(raw.get("weight"), Some(&json!(1.5)));
         assert_eq!(raw.get("hex"), Some(&json!(31)));
+    }
+
+    // -- numbers that are not finite --
+
+    /// The spellings the old reader read as a number that is not finite.
+    const NON_FINITE: [&str; 9] = [
+        ".inf", ".Inf", ".INF", "+.inf", "-.inf", "-.INF", ".nan", ".NaN", ".NAN",
+    ];
+
+    #[test]
+    fn thousands_of_non_finite_numbers_under_an_unknown_key_leave_the_known_fields_readable() {
+        let junk: String = NON_FINITE
+            .iter()
+            .cycle()
+            .take(6000)
+            .map(|number| format!("- {number}\n"))
+            .collect();
+        let yaml = format!("{}junk:\n{junk}tags:\n- z\n", task_titled("T"));
+        let task: Task = from_str(&yaml).unwrap();
+        assert_eq!(task.project, "p");
+        assert_eq!(task.title, "T");
+        assert_eq!(task.status, crate::model::TaskStatus::Open);
+        assert_eq!(task.priority, crate::model::Priority::High);
+        assert_eq!(task.tags, Some(vec!["z".to_string()]));
+    }
+
+    #[test]
+    fn thousands_of_non_finite_numbers_are_each_kept_as_their_text_where_the_type_is_guessed() {
+        let marks: Vec<&str> = NON_FINITE.iter().copied().cycle().take(6000).collect();
+        let yaml = format!(
+            "anchor_type: heading-path\nmarks: [{}]\nafter: 3\n",
+            marks.join(", ")
+        );
+        let anchor: Anchor = from_str(&yaml).unwrap();
+        let Anchor::Unknown { raw, .. } = anchor else {
+            panic!("expected Anchor::Unknown, got {anchor:?}");
+        };
+        assert_eq!(raw.get("marks"), Some(&json!(marks)));
+        assert_eq!(raw.get("after"), Some(&json!(3)));
+    }
+
+    #[test]
+    fn a_non_finite_number_is_still_a_number_where_a_float_is_asked_for() {
+        #[derive(Deserialize)]
+        struct Weighted {
+            weight: f64,
+            limits: Vec<f64>,
+        }
+
+        let weighted: Weighted = from_str("weight: -.inf\nlimits: [.inf, .NaN]\n").unwrap();
+        assert_eq!(weighted.weight, f64::NEG_INFINITY);
+        assert_eq!(weighted.limits[0], f64::INFINITY);
+        assert!(weighted.limits[1].is_nan());
+    }
+
+    #[test]
+    fn a_non_finite_number_does_not_hide_a_syntax_error_after_it() {
+        // The reader reads as it goes and, where the type is guessed, it
+        // refuses such a number: left bare, the number would be the problem
+        // reported, though it is the open quote that keeps the file from
+        // loading.
+        let broken = "phase: 1\ntitle: \"T\nstatus: done\n";
+        let err = from_str::<Phase>(&format!("junk: [.inf, .nan, 1e999]\n{broken}")).unwrap_err();
+        let twin = from_str::<Phase>(&format!("junk: [abcd, abcd, abcde]\n{broken}")).unwrap_err();
+        assert_eq!(err, twin);
+        assert_eq!(err.line(), Some(4));
     }
 
     // -- mappings keep the old reader's rules --
