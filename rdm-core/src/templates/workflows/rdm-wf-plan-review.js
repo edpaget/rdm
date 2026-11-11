@@ -624,7 +624,7 @@ function reviewSourceCommand(item, pin, rdmBin, projFlag, opts) {
 //|code|   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
 //|plan|   concern: <coherence|architectural-fit|restraint|unit-of-work>
 //|code|   location: <path>:<line>
-//|code|   path: <repo-relative source path with NO line suffix, e.g. path/to/file.ext, never path/to/file.ext:line — required whenever quote is given>
+//|code|   path: <repo-relative source path with NO line suffix, e.g. path/to/file.ext, never path/to/file.ext:line — required whenever quote is given; for a finding about the item document or the implementation plan itself, that document's ref as the review target names it (or plan/<slug>), with quote omitted>
 //|plan|   location: <section/heading or phase stem>
 //|code|   quote: <verbatim excerpt of the reviewed text this finding is about; omit for a whole-document finding>
 //|plan|   start_line / end_line: <the span this finding is about, copied from the line numbers printed beside the document under review (never counted, never from another document); omit both for a whole-document finding>
@@ -634,6 +634,16 @@ function reviewSourceCommand(item, pin, rdmBin, projFlag, opts) {
 //|   why: <root cause / which rule or AC it violates>
 //|   recommendation: <concrete fix>
 //| ```
+// DOCUMENT_FINDING_PATH — the one sentence both code-mode finder prompts carry
+// about a finding that is not about source at all. A code reviewer (mostly
+// `ac`) raises findings about the phase or task document itself — a criterion's
+// wording, a stale sentence — or about the implementation plan. Naming that
+// document's ref as `path` is what lets the persist writer record the finding
+// as a comment about the document (see `persistDocumentFor`) instead of a
+// source anchor that was lost.
+const DOCUMENT_FINDING_PATH =
+  'A finding about the item document or the implementation plan itself — its wording, its acceptance criteria, a stale or missing section — rather than about a source file sets `path` to that document\'s ref exactly as the review target names it (or `plan/<slug>` for the plan) and omits `quote`.';
+
 function findPrompt(mode, dim, context) {
   const target = reviewTargetBlock(mode, context);
   const diffHint =
@@ -657,6 +667,7 @@ function findPrompt(mode, dim, context) {
         'criterion, status (PASS|FAIL|PARTIAL), and evidence (file:line, test name) — plus an OPTIONAL ' +
         '`findings` array (same shape as the FINDINGS schema) for narrative notes that do not reduce to a ' +
         "single criterion's status.",
+      DOCUMENT_FINDING_PATH,
       'Take the criterion identities from the target item\'s own acceptance-criteria section, verbatim, in the order they appear there — return exactly one `ac` row per criterion.',
       'Only leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
       'Severity contract (code mode only): a criterion is honored as scoped only when the body you read above declares the deferral OUTSIDE the criterion itself — e.g. an Approach or Out-of-scope note — and the criterion\'s own wording already excludes the deferred part; rate it PASS as scoped. A caveat or exception written INSIDE the criterion text itself ("supports all operators except regex, deferred to phase 2") is still unmet, whether or not it is also named as a deferral elsewhere. A criterion caveated or deferred for the first time in the implementation diff or its commentary, with no antecedent in the body, is likewise unmet: report it as a `blocking` findings-array entry (concern: "ac"), never as PASS in the ac table, even if partially implemented.',
@@ -696,6 +707,7 @@ function findPrompt(mode, dim, context) {
     lines.push(
       'A finding that carries `quote` MUST also carry `path`: the repo-relative source file the quote was taken from (e.g. `path/to/file.ext`, with NO trailing `:line` — that shape belongs to `location`, not `path`) — a STRUCTURED field, distinct from the free-text `location` above (which may carry a line range plus extra human-readable detail). Omit `quote` and `path` together for a finding about the change as a whole.'
     );
+    lines.push(DOCUMENT_FINDING_PATH);
   }
   lines.push('Return an empty `findings` array if the dimension is clean.');
   return lines.join('\n');
@@ -2349,6 +2361,60 @@ function linkableIntendedPath(p) {
   return /[@#]/.test(p) ? null : p;
 }
 
+// persistPhaseRefMatches(a, b) — do two `phase/<roadmap>/<x>` refs name the
+// same phase when one spells it by NUMBER and the other by STEM? The dispatch
+// passes whichever the caller gave it (`phase/auth/2` or
+// `phase/auth/phase-2-login`), and a finder copies the ref the review target
+// printed, so the two spellings must meet. Same roadmap, and one last segment
+// is a bare number `N` while the other starts with `phase-N-`. Pure and total.
+function persistPhaseRefMatches(a, b) {
+  const parse = (ref) => /^phase\/([^/]+)\/([^/]+)$/.exec(ref);
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb || pa[1] !== pb[1]) return false;
+  const numbered = (n, stem) => /^\d+$/.test(n) && stem.indexOf('phase-' + n + '-') === 0;
+  return numbered(pa[2], pb[2]) || numbered(pb[2], pa[2]);
+}
+
+// persistDocumentFor(finding, opts) — the plan-repo document a code-mode
+// finding is ABOUT, or null: the `opts.documents` entry its path names.
+//
+// A code reviewer raises findings about the item document itself (a
+// criterion's wording, a stale sentence) and about the implementation plan,
+// and gives that document's ref as the finding's path. That is something the
+// finder said on purpose, not an anchor that failed: a `change/` review anchors
+// only into source files, so the ref can never be a `--path`. The consumer
+// passes the refs it already holds (`opts.documents`: the reviewed item's ref
+// and the plan the change implements); a finding that names one is persisted
+// as a comment ABOUT that document (`review comment --document`).
+//
+// The candidate is `finding.path` when it is a non-blank string, otherwise
+// `finding.location`: trimmed, a leading `rdm:` dropped, a trailing `:<line>` /
+// `:<a>-<b>` dropped (`stripPathLineSuffix`). It matches an entry when the two
+// are equal, or when both name the same phase by number and by stem
+// (`persistPhaseRefMatches`). The matching ENTRY is returned — the consumer's
+// own ref, never the finder's text — so it is what reaches the command line.
+//
+// A path that names neither a document entry nor a usable file is untouched by
+// this: it stays a lost anchor (`path-missing`, systemic), as before.
+//
+// Default-off (no `opts.documents`, no match). Pure and total: never throws.
+function persistDocumentFor(finding, opts) {
+  const documents = opts && Array.isArray(opts.documents) ? opts.documents : [];
+  if (documents.length === 0) return null;
+  const f = finding || {};
+  const raw = typeof f.path === 'string' && f.path.trim() !== '' ? f.path : f.location;
+  if (typeof raw !== 'string') return null;
+  const candidate = stripPathLineSuffix(raw.trim().replace(/^rdm:/, ''));
+  if (candidate === '') return null;
+  for (let i = 0; i < documents.length; i++) {
+    const entry = documents[i];
+    if (typeof entry !== 'string') continue;
+    if (entry === candidate || persistPhaseRefMatches(entry, candidate)) return entry;
+  }
+  return null;
+}
+
 // persistAnchorFor(finding, target, opts) — the SINGLE decision of how one
 // finding gets anchored, shared by the command writer, the prompt builder's
 // pre-degradation report, and the comment-header `anchor` marker so none of
@@ -2398,13 +2464,24 @@ function linkableIntendedPath(p) {
 // and `quote: false`. A change target ignores the span entirely (core refuses
 // `--line` there), so every change-target decision is exactly what it was
 // before spans existed. `line` is null in every other result.
+//
+// DOCUMENT FINDINGS. On a change target a finding whose path names one of
+// `opts.documents` (`persistDocumentFor`) is asked about FIRST and wins over
+// everything else — whether or not it carries a quote, and whether or not the
+// reviewed range is empty. The result then has `document: <entry>` and requests
+// no anchor at all (`quote: false`, `reason: null`): it is a comment about that
+// plan-repo document, not a source anchor, so it is never a build-time drop.
+// `document` is null in every other result.
 function persistAnchorFor(finding, target, opts) {
   const o = opts || {};
-  if (!isChangeTarget(target)) {
+  if (isChangeTarget(target)) {
+    const document = persistDocumentFor(finding, o);
+    if (document !== null) return { quote: false, path: null, reason: null, intendedPath: null, line: null, document: document };
+  } else {
     const span = findingLineSpan(finding);
-    if (span !== null) return { quote: false, path: null, reason: null, intendedPath: null, line: span };
+    if (span !== null) return { quote: false, path: null, reason: null, intendedPath: null, line: span, document: null };
   }
-  if (!persistHasQuote(finding)) return { quote: false, path: null, reason: null, intendedPath: null, line: null };
+  if (!persistHasQuote(finding)) return { quote: false, path: null, reason: null, intendedPath: null, line: null, document: null };
   // An EMPTY COMMITTED RANGE has no hunks, so no `--path` anchor can ever land.
   const emptyRange = !!(o.source && o.source.noCode === true);
   let candidate = null;
@@ -2414,21 +2491,21 @@ function persistAnchorFor(finding, target, opts) {
     candidate = declared !== '' && isRepoRelativePath(declared) ? declared : pathFromLocation(f.location);
   }
   const path = emptyRange ? null : candidate;
-  if (!isChangeTarget(target)) return { quote: true, path: path, reason: null, intendedPath: null, line: null };
-  if (path !== null) return { quote: true, path: path, reason: null, intendedPath: candidate, line: null };
+  if (!isChangeTarget(target)) return { quote: true, path: path, reason: null, intendedPath: null, line: null, document: null };
+  if (path !== null) return { quote: true, path: path, reason: null, intendedPath: candidate, line: null, document: null };
   // `outside-hunk` when the range is empty (every hunk is missing, which is
   // what the emptyRange prose already calls it); `path-missing` when no usable
   // repo-relative path could be derived from either `finding.path` or
   // `finding.location`.
   return emptyRange
-    ? { quote: false, path: null, reason: 'outside-hunk', intendedPath: linkableIntendedPath(candidate), line: null }
-    : { quote: false, path: null, reason: 'path-missing', intendedPath: null, line: null };
+    ? { quote: false, path: null, reason: 'outside-hunk', intendedPath: linkableIntendedPath(candidate), line: null, document: null }
+    : { quote: false, path: null, reason: 'path-missing', intendedPath: null, line: null, document: null };
 }
 
 // PERSIST_ANCHOR_STATES — the closed vocabulary for a persisted comment's
 // `anchor` header value (see `persistAnchorState` below and § "Persisted
 // review comment body" in docs/workflow-schemas.md).
-const PERSIST_ANCHOR_STATES = ['path', 'quote', 'line', 'wholeDocumentIntended', 'degraded'];
+const PERSIST_ANCHOR_STATES = ['path', 'quote', 'line', 'wholeDocumentIntended', 'degraded', 'document'];
 
 // persistAnchorState(finding, target, opts) — the `anchor` header value for
 // ONE finding, derived from the SAME `persistAnchorFor` decision the writer
@@ -2442,6 +2519,9 @@ const PERSIST_ANCHOR_STATES = ['path', 'quote', 'line', 'wholeDocumentIntended',
 //   'degraded'              — a `quote` was requested but the anchor it asked
 //                              for was dropped at build time
 //                              (`persistAnchorFor`'s `reason`)
+//   'document'              — change target, the finding is about one of the
+//                              consumer's plan-repo documents and
+//                              `--document <ref>` is emitted
 //
 // A `'path'` or `'line'` request core refuses at run time keeps its header:
 // the comment's stored `anchor_state` field, not this header, is
@@ -2449,8 +2529,9 @@ const PERSIST_ANCHOR_STATES = ['path', 'quote', 'line', 'wholeDocumentIntended',
 //
 // Pure and total.
 function persistAnchorState(finding, target, opts) {
-  if (!persistRequestsAnchor(finding, target)) return 'wholeDocumentIntended';
   const decision = persistAnchorFor(finding, target, opts);
+  if (decision.document !== null) return 'document';
+  if (!persistRequestsAnchor(finding, target, opts)) return 'wholeDocumentIntended';
   if (decision.line !== null) return 'line';
   if (decision.reason !== null) return 'degraded';
   return decision.path !== null ? 'path' : 'quote';
@@ -2491,7 +2572,7 @@ function persistPreDegradedAnchors(result, target, opts) {
 function persistDegradationClause(result, target, opts) {
   const degraded = persistPreDegradedAnchors(result, target, opts);
   if (degraded.length === 0) return '';
-  const requested = persistReviewSurvivors(result).filter((f) => persistRequestsAnchor(f, target)).length;
+  const requested = persistReviewSurvivors(result).filter((f) => persistRequestsAnchor(f, target, opts)).length;
   const counts = {};
   for (let i = 0; i < degraded.length; i++) {
     const reason = degraded[i].reason;
@@ -2515,7 +2596,8 @@ function persistDegradationClause(result, target, opts) {
 // counterpart to `persistDegradationClause`'s prose: `{ requested, degraded,
 // all }`, where `requested` is how many survivors asked for an anchor
 // (`persistRequestsAnchor` — a `--quote`, or a line span on a plan-repo
-// document target), `degraded` is how many of those were dropped at build time (the
+// document target; a finding about one of `opts.documents` asks for none and
+// is in neither count), `degraded` is how many of those were dropped at build time (the
 // same `persistPreDegradedAnchors` count the clause composes), and `all` is
 // true ONLY when at least one anchor was requested AND every single one
 // degraded — AC4's "the all-anchors-failed signal still escalates" caller
@@ -2525,7 +2607,7 @@ function persistDegradationClause(result, target, opts) {
 // `persistAnchorFor` decision the writer and the prose clause both use, so
 // none of the three can ever disagree.
 function persistDegradedSummary(result, target, opts) {
-  const requested = persistReviewSurvivors(result).filter((f) => persistRequestsAnchor(f, target)).length;
+  const requested = persistReviewSurvivors(result).filter((f) => persistRequestsAnchor(f, target, opts)).length;
   const degraded = persistPreDegradedAnchors(result, target, opts).length;
   return { requested: requested, degraded: degraded, all: requested > 0 && degraded === requested };
 }
@@ -2642,6 +2724,31 @@ function persistReviewCommands(result, target, cfg, opts) {
           JSON.stringify(target)
       );
     }
+    if (o.documents) {
+      throw new Error(
+        'review: opts.documents names the plan-repo documents a CHANGE review finding may be about (--document only applies to a change review) — it cannot accompany the plan-repo document target ' +
+          JSON.stringify(target) +
+          ', whose comments are already about that document'
+      );
+    }
+  }
+  // `opts.documents` — the plan-repo document refs a finding's path may name
+  // (see persistDocumentFor). Each is the CONSUMER's own, already-well-formed
+  // ref and is emitted verbatim (shell-quoted) as a `--document` value, so a
+  // malformed one is refused here rather than at run time: `--document` takes a
+  // roadmap, phase, task or plan, never a `change/` ref.
+  if (o.documents !== undefined && o.documents !== null) {
+    const documents = Array.isArray(o.documents) ? o.documents : [null];
+    for (let i = 0; i < documents.length; i++) {
+      const entry = documents[i];
+      if (typeof entry !== 'string' || entry.trim() === '' || entry.indexOf('/') === -1 || /^change\//.test(entry.trim())) {
+        throw new Error(
+          'review: opts.documents must be a list of plan-repo document refs — "phase/<roadmap-slug>/<stem-or-number>", "task/<slug>", "plan/<slug>" or "roadmap/<slug>", never a "change/" ref (got ' +
+            JSON.stringify(o.documents) +
+            ')'
+        );
+      }
+    }
   }
   const IND = '  ';
   // EVERY LINE THAT CAN FAIL CARRIES `|| exit 1`, AND THE ONLY UNGUARDED LINE IS
@@ -2754,7 +2861,15 @@ function persistReviewCommands(result, target, cfg, opts) {
     // path-anchored request degraded at run time is recorded by core in the
     // comment's stored `anchor_state`, not in this header.
     let cmd = persistCapture('RDM_PERSIST_BODY', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
-    if (anchor.line !== null) {
+    if (anchor.document !== null) {
+      // DOCUMENT COMMENT (change target only — see persistDocumentFor). The
+      // finding is about a plan-repo document the consumer named, so core
+      // stores which one and gives the comment a `plan-item` target linking
+      // it. It is whole-document on purpose: no anchor is requested, nothing
+      // is tallied, and it can never seed a park. The `--document` value is
+      // the consumer's own entry, never the finder's text.
+      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --document ' + shellQuote(anchor.document) + ' --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
+    } else if (anchor.line !== null) {
       // LINE-ANCHORED COMMENT (plan-repo document target only — see
       // persistAnchorFor). The `--line` value is built from the normalized
       // safe integers `findingLineSpan` returned, so it is plain digits and no
@@ -2801,10 +2916,25 @@ function persistReviewCommands(result, target, cfg, opts) {
     }
     cmds.push(cmd);
   }
-  // correctness-1: the REAL, post-run degradation total — computed HERE,
-  // BEFORE `review submit`, rather than only after the review is already
-  // closed, so the whole-document note comment two steps below can still be
-  // added to the SAME (still-draft) review this computation describes. The
+  // A REWORK WITH NOTHING TO ACT ON still gets one comment (see
+  // persistGateFinding): the acceptance table gated, no finding survived, and a
+  // `request-changes` review with zero comments leaves triage nothing to
+  // resolve. It is written like every other persisted comment — headered
+  // through formatCommentBody, whole-document on purpose — so it requests no
+  // anchor and is not counted below.
+  const gateFinding = persistGateFinding(result);
+  if (gateFinding !== null) {
+    cmds.push(
+      persistCapture('RDM_PERSIST_BODY', formatCommentBody(gateFinding, 'wholeDocumentIntended')) +
+        '\n' +
+        IND +
+        bin +
+        ' review comment "$RDM_REVIEW_ID" --anchor-state whole-document --body "$RDM_PERSIST_BODY" --no-edit' +
+        proj +
+        ' < /dev/null || exit 1'
+    );
+  }
+  // The REAL, post-run degradation total: the
   // BUILD-TIME half (`persistDegradedSummary`, computed purely from the
   // survivor list and opts, nothing about it depends on what the shell above
   // actually does) PLUS the RUN-TIME half (RDM_PERSIST_RUNTIME_DEGRADED,
@@ -2814,6 +2944,13 @@ function persistReviewCommands(result, target, cfg, opts) {
   // `partial` covers 1..N-1 of N; `none` covers zero degraded (including the
   // common case of zero anchors requested at all). See `persistDegradedSummary`
   // and docs/workflow-schemas.md § "Persisting a review".
+  //
+  // The total is printed, never written into the review: a lost anchor is a
+  // fact about the review that core derives from each comment's stored
+  // `anchor_state` and reports as `anchors_degraded` in `rdm review show`. The
+  // ladder used to append a `persist-note: anchors-degraded` comment here, an
+  // ordinary open comment that had to be resolved before the review could
+  // close and said nothing a reader could act on.
   const degradedSummary = persistDegradedSummary(result, target, o);
   cmds.push(
     'RDM_PERSIST_TOTAL_DEGRADED=$((' +
@@ -2842,51 +2979,6 @@ function persistReviewCommands(result, target, cfg, opts) {
   // trailing `anchorsParkRequired=` line for the caller — see
   // docs/workflow-schemas.md § "The anchor-degraded park signal (AC1)".
   cmds.push('if [ "$RDM_PERSIST_PARK_REQUIRED" -gt 0 ]; then\n' + 'RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes\n' + 'else\n' + 'RDM_PERSIST_ANCHORS_PARK_REQUIRED=no\n' + 'fi');
-  // correctness-1: a review whose REAL degraded total is nonzero must never
-  // persist as ordinary clean persistence. The build-time-only
-  // `persistDegradationClause` folded into `summary` above cannot see a
-  // run-time refusal — it has not happened yet when `summary` is built — so
-  // until now the only trace of an all-degraded RUN was a per-comment
-  // `anchor: degraded` header and a stdout line the ladder never wrote back
-  // into the document. One whole-document NOTE comment, added here (before
-  // `review submit`, while the review is still a draft), closes that gap: it
-  // names the real total against the number requested, in the exact wording
-  // `persistDegradationNoteBody` defines, with the run-time-only-known count
-  // filled in through `printf` rather than `persistCapture` — `persistCapture`
-  // emits a static single-quoted string via `shellQuote` and cannot expand
-  // `$RDM_PERSIST_TOTAL_DEGRADED` at all, so this run-time interpolation needs
-  // `printf` regardless. Both this call site and `persistCapture` now share
-  // the same heredoc-free strategy (a quoted `shellQuote`/`printf` argument,
-  // never a heredoc nested in `$(...)`) — see task
-  // persist-capture-bash32-heredoc-apostrophe for the defect that motivated
-  // dropping heredocs from both.
-  //
-  // GATED ON "a change target, OR at least one survivor requests a line
-  // anchor", not merely appended unconditionally behind its own runtime `if`:
-  // against a plan-repo document target `persistAnchorFor` never reports a
-  // build-time degraded reason (a bare `--quote` is the normal, correct anchor
-  // there — see its own comment), and the only run-time fallback reachable on
-  // such a target is the line-anchored one. So for a plan-repo ladder with no
-  // line anchor `RDM_PERSIST_TOTAL_DEGRADED` is PROVABLY always `0`, and
-  // emitting this step's text anyway would be dead weight — and would
-  // silently double what a caller counting `review comment` invocations in
-  // the emitted text expects to see, even though it can never actually run.
-  // A plan ladder whose survivors carry no span is therefore unchanged.
-  const anyLineAnchor = survivors.some((f) => persistAnchorFor(f || {}, target, o).line !== null);
-  if (isChangeTarget(target) || anyLineAnchor) {
-    cmds.push(
-      'if [ "$RDM_PERSIST_TOTAL_DEGRADED" -gt 0 ]; then\n' +
-        'RDM_PERSIST_DEGRADED_NOTE=$(printf ' +
-        shellQuote(persistDegradationNoteBody('%s', degradedSummary.requested)) +
-        ' "$RDM_PERSIST_TOTAL_DEGRADED") || exit 1\n' +
-        IND +
-        bin +
-        ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_DEGRADED_NOTE" --no-edit' +
-        proj +
-        ' < /dev/null || exit 1\n' +
-        'fi'
-    );
-  }
   cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj + ' < /dev/null || exit 1');
   // Session-scoped by the changeset model, so a concurrent dispatch's staged
   // work is never swept in. NEVER `--all`, and never `rdm discard`.
@@ -2917,34 +3009,72 @@ function persistHasQuote(finding) {
 // so none of them can disagree. On a plan-repo document target a valid line
 // span (`findingLineSpan`) or a quote requests one; on a change target only a
 // quote does, because core refuses `--line` there and the writer ignores the
-// span. Pure and total.
-function persistRequestsAnchor(finding, target) {
-  if (!isChangeTarget(target) && findingLineSpan(finding) !== null) return true;
+// span. A finding about one of `opts.documents` (`persistDocumentFor`, change
+// target only) requests NO anchor, quote or not: it is a comment about a
+// plan-repo document, so it is in neither the `requested` nor the `degraded`
+// count and can never seed a park. Pure and total.
+function persistRequestsAnchor(finding, target, opts) {
+  if (!isChangeTarget(target)) return findingLineSpan(finding) !== null || persistHasQuote(finding);
+  if (persistDocumentFor(finding, opts) !== null) return false;
   return persistHasQuote(finding);
 }
 
-// persistDegradationNoteBody(totalDegraded, requested) — the exact text of the
-// whole-document NOTE comment `persistReviewCommands` appends, once, whenever
-// the REAL (build-time-plus-run-time) degraded count is greater than zero
-// (correctness-1). Distinct from a finding comment: it carries none of
-// `PERSIST_HEADER_KEYS` (there is no severity/dimension/finding-id to give it
-// — it describes the REVIEW, not a survivor), so `parseCommentHeader` correctly
-// reports it as unheadered rather than forcing finding-shaped fields onto a
-// review-level note.
+// PERSIST_GATE_FINDING_ID — the fixed finding id of the gate comment
+// `persistGateFinding` builds. It is the comment's `finding-id` header value,
+// so triage can tell the gate comment from a reviewer's finding.
+const PERSIST_GATE_FINDING_ID = 'review-gate';
+
+// persistGateFinding(result) — the finding-shaped object for a `rework` that
+// has NOTHING to act on, or null.
 //
-// Pure and exported so `review-driver.test.mjs` can assert the exact wording
-// without re-deriving it, and so the `printf` format string the emitted ladder
-// uses (which can only ever fill in the run-time-only-known total — see the
-// call site below) is produced by this SAME function, called with `'%s'` as
-// `totalDegraded`, rather than a hand-duplicated copy of the sentence.
-function persistDegradationNoteBody(totalDegraded, requested) {
-  return (
-    'persist-note: anchors-degraded\n' +
-    totalDegraded +
-    ' of ' +
-    requested +
-    ' requested anchor(s) could not be placed; see the stored anchor_state on each comment above.'
-  );
+// A code review can return `rework` with no surviving finding: the gate came
+// from the acceptance table (`acTableHasGap` — a FAIL/PARTIAL row forces rework
+// without ever becoming a finding), not from a finding. Persisted as it stood,
+// that was a `request-changes` review with zero comments — nothing for triage
+// to resolve, and no way to add an explanation once the review was submitted.
+// So `persistReviewCommands` writes this as ONE ordinary comment, and every
+// `request-changes` review reads the same way to triage.
+//
+// Returns null unless `result.outcome === 'rework'` and there are no survivors.
+// It names every FAIL / PARTIAL row of `result.evidence.acTable` — criterion,
+// status and the row's evidence. With no such row it says the review evidence
+// is incomplete when `reviewEvidenceComplete(result.evidence)` is false, and
+// otherwise that the outcome was `rework` with no finding or unmet criterion
+// supplied. `what_fails` is ONE line (`persistHeaderValue`), so a row's
+// multi-line evidence cannot break the comment body's `What fails: ` line.
+//
+// `escalated` is deliberately not covered: the shipped code consumer never
+// persists an incomplete-evidence escalation at all. Pure and total.
+function persistGateFinding(result) {
+  const r = result || {};
+  if (r.outcome !== 'rework' || persistReviewSurvivors(r).length > 0) return null;
+  const evidence = r.evidence || null;
+  const table = evidence && Array.isArray(evidence.acTable) ? evidence.acTable : [];
+  const unmet = table.filter((row) => row && (row.status === 'FAIL' || row.status === 'PARTIAL'));
+  let what;
+  if (unmet.length > 0) {
+    what =
+      'The review returned rework with no surviving finding: ' +
+      unmet.length +
+      ' acceptance criteri' +
+      (unmet.length === 1 ? 'on is' : 'a are') +
+      ' unmet. ' +
+      unmet
+        .map((row) => '[' + row.status + '] ' + String(row.criterion) + ' — evidence: ' + String(row.evidence === undefined || row.evidence === null ? '' : row.evidence))
+        .join('; ');
+  } else if (!reviewEvidenceComplete(evidence)) {
+    what =
+      'The review returned rework with no surviving finding and no unmet acceptance criterion: the review evidence is incomplete (a complete acceptance-criteria table and reviewer coverage record were not supplied).';
+  } else {
+    what = 'The review returned rework, but no finding and no unmet acceptance criterion was supplied.';
+  }
+  return {
+    id: PERSIST_GATE_FINDING_ID,
+    concern: 'ac',
+    severity: 'blocking',
+    confidence: 100,
+    what_fails: persistHeaderValue(what),
+  };
 }
 
 // persistDegradationGateLines() — arch-1, keyed as of phase-46
@@ -2967,7 +3097,7 @@ function persistDegradationNoteBody(totalDegraded, requested) {
 function persistDegradationGateLines() {
   return [
     'if [ "${RDM_PERSIST_ANCHORS_PARK_REQUIRED:-no}" = "yes" ]; then',
-    '  echo "review-refute-fix: refusing to write reviewed - an anchor was lost for a systemic cause (RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes); park blocked and see the review own note comment and the stored anchor_state on each comment instead" >&2',
+    '  echo "review-refute-fix: refusing to write reviewed - an anchor was lost for a systemic cause (RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes); park blocked and see anchors_degraded in review show and the stored anchor_state on each comment instead" >&2',
     '  exit 1',
     'fi',
   ].join('\n');

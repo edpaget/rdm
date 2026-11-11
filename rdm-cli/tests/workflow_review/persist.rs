@@ -1361,7 +1361,12 @@ fn refused_line_anchor_lands_whole_document_and_is_counted() {
         let id = review_id(&out).ok_or_else(|| Failure::Check(format!("no reviewId: {stdout}")))?;
         let review = repo.review(PROJECT, &id)?;
         let cs = comments(&review);
-        check_eq!(cs.len(), 2, "the finding plus the degraded note");
+        check_eq!(cs.len(), 1, "the finding, and no note comment beside it");
+        check_eq!(
+            review["anchors_degraded"],
+            json!(1),
+            "the lost anchor is a review-level count"
+        );
         let finding = cs
             .iter()
             .find(|c| {
@@ -1380,10 +1385,10 @@ fn refused_line_anchor_lands_whole_document_and_is_counted() {
             "with core's reason"
         );
         check!(
-            cs.iter().any(|c| c["body"]
+            !cs.iter().any(|c| c["body"]
                 .as_str()
-                .is_some_and(|b| b.starts_with("persist-note: anchors-degraded"))),
-            "the degraded note is recorded in the review: {review}"
+                .is_some_and(|b| b.starts_with("persist-note"))),
+            "no note comment is written: {review}"
         );
         Ok(())
     });
@@ -1549,6 +1554,534 @@ fn plan_target_span_beats_quote() {
             build(&mut js, &quote_only)?,
             "an invalid span persists exactly as the quote-only survivor"
         );
+        Ok(())
+    });
+}
+
+// --- Document-directed findings -------------------------------------------------
+
+const PHASE_DOC: &str = "phase/rm/phase-2-dirty";
+const PLAN_DOC: &str = "plan/my-plan";
+
+fn document_opts() -> Value {
+    json!({ "pathAnchors": true, "documents": [PHASE_DOC, PLAN_DOC] })
+}
+
+#[test]
+fn persist_document_for_matches_the_consumers_refs() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let opts = document_opts();
+        let numbered = json!({ "documents": ["phase/rm/2"] });
+        let cases: Vec<(Value, Value, Value, &str)> = vec![
+            (
+                json!({ "path": PHASE_DOC }),
+                opts.clone(),
+                json!(PHASE_DOC),
+                "an exact item ref",
+            ),
+            (
+                json!({ "path": "rdm:phase/rm/phase-2-dirty" }),
+                opts.clone(),
+                json!(PHASE_DOC),
+                "a leading rdm: is dropped",
+            ),
+            (
+                json!({ "path": "phase/rm/phase-2-dirty:12" }),
+                opts.clone(),
+                json!(PHASE_DOC),
+                "a line suffix is dropped",
+            ),
+            (
+                json!({ "path": "  rdm:phase/rm/phase-2-dirty:3-9  " }),
+                opts.clone(),
+                json!(PHASE_DOC),
+                "trimmed, prefix and range suffix dropped",
+            ),
+            (
+                json!({ "path": "phase/rm/2" }),
+                opts.clone(),
+                json!(PHASE_DOC),
+                "a phase number matches the entry's stem",
+            ),
+            (
+                json!({ "path": PHASE_DOC }),
+                numbered.clone(),
+                json!("phase/rm/2"),
+                "a stem matches a numbered entry, and the ENTRY is returned",
+            ),
+            (
+                json!({ "path": "phase/rm/phase-20-later" }),
+                numbered.clone(),
+                Value::Null,
+                "phase-20- is not phase 2",
+            ),
+            (
+                json!({ "path": "phase/rm/22" }),
+                opts.clone(),
+                Value::Null,
+                "another number",
+            ),
+            (
+                json!({ "path": "phase/rm/phase-1-clean" }),
+                opts.clone(),
+                Value::Null,
+                "another phase of the same roadmap",
+            ),
+            (
+                json!({ "path": "phase/other/phase-2-dirty" }),
+                opts.clone(),
+                Value::Null,
+                "the same stem in another roadmap",
+            ),
+            (
+                json!({ "path": "phase/other/2" }),
+                opts.clone(),
+                Value::Null,
+                "the same number in another roadmap",
+            ),
+            (
+                json!({ "path": PLAN_DOC }),
+                opts.clone(),
+                json!(PLAN_DOC),
+                "the plan ref",
+            ),
+            (
+                json!({ "path": "rdm:plan/my-plan" }),
+                opts.clone(),
+                json!(PLAN_DOC),
+                "the plan ref as an rdm: link",
+            ),
+            (
+                json!({ "path": "plan/another-plan" }),
+                opts.clone(),
+                Value::Null,
+                "another plan",
+            ),
+            (
+                json!({ "path": "src/lib.rs" }),
+                opts.clone(),
+                Value::Null,
+                "an ordinary source path",
+            ),
+            (
+                json!({ "path": 42 }),
+                opts.clone(),
+                Value::Null,
+                "a non-string path and no location",
+            ),
+            (
+                json!({ "location": "phase/rm/phase-2-dirty:4" }),
+                opts.clone(),
+                json!(PHASE_DOC),
+                "no path: the location is the candidate",
+            ),
+            (
+                json!({ "path": "   ", "location": PLAN_DOC }),
+                opts.clone(),
+                json!(PLAN_DOC),
+                "a blank path falls to the location",
+            ),
+            (
+                json!({ "path": "src/lib.rs", "location": PHASE_DOC }),
+                opts.clone(),
+                Value::Null,
+                "a non-blank path wins over the location",
+            ),
+            (
+                json!({ "location": "the acceptance criteria section" }),
+                opts.clone(),
+                Value::Null,
+                "prose",
+            ),
+            (
+                json!({ "path": PHASE_DOC }),
+                json!({ "pathAnchors": true }),
+                Value::Null,
+                "no documents option",
+            ),
+            (
+                json!({ "path": PHASE_DOC }),
+                json!({ "documents": "phase/rm/phase-2-dirty" }),
+                Value::Null,
+                "documents that is not a list",
+            ),
+            (
+                json!({ "path": PHASE_DOC }),
+                json!({ "documents": [42, null] }),
+                Value::Null,
+                "non-string entries",
+            ),
+            (Value::Null, opts.clone(), Value::Null, "no finding at all"),
+        ];
+        for (finding, opts, want, why) in cases {
+            check_eq!(
+                js.call("persistDocumentFor", vec![finding.clone(), opts])?,
+                want,
+                "{why}: {finding}"
+            );
+        }
+        check_eq!(
+            js.call("persistDocumentFor", vec![json!({ "path": PHASE_DOC })])?,
+            Value::Null,
+            "no opts at all"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn a_document_finding_is_not_a_requested_anchor() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let target = json!("change/abc123");
+        let opts = document_opts();
+        let about_doc = json!({ "id": "d1", "concern": "ac", "severity": "concern", "confidence": 90,
+                                "what_fails": "the criterion is vague", "path": PHASE_DOC,
+                                "quote": "- AC1: it works" });
+        let lost = json!({ "id": "l1", "concern": "tests", "severity": "concern", "confidence": 90,
+                           "what_fails": "x", "location": "throughout", "quote": "shipped" });
+
+        let states = js.get("PERSIST_ANCHOR_STATES")?;
+        check!(
+            states
+                .as_array()
+                .is_some_and(|a| a.contains(&json!("document"))),
+            "document is in the closed header vocabulary: {states}"
+        );
+        for noisy in [opts.clone(), {
+            // An empty reviewed range changes nothing for a document finding.
+            let mut o = opts.clone();
+            o["source"] = json!({ "noCode": true });
+            o
+        }] {
+            let decision = js.call(
+                "persistAnchorFor",
+                vec![about_doc.clone(), target.clone(), noisy.clone()],
+            )?;
+            check_eq!(
+                decision,
+                json!({ "quote": false, "path": null, "reason": null, "intendedPath": null,
+                        "line": null, "document": PHASE_DOC }),
+                "a document decision"
+            );
+            check_eq!(
+                js.call(
+                    "persistAnchorState",
+                    vec![about_doc.clone(), target.clone(), noisy.clone()]
+                )?,
+                json!("document"),
+                "the header records the request"
+            );
+            check_eq!(
+                js.call(
+                    "persistRequestsAnchor",
+                    vec![about_doc.clone(), target.clone(), noisy]
+                )?,
+                json!(false),
+                "a document finding requests no source anchor"
+            );
+        }
+        // Without the option the same finding is an ordinary anchor request.
+        check_eq!(
+            js.call(
+                "persistRequestsAnchor",
+                vec![about_doc.clone(), target.clone()]
+            )?,
+            json!(true),
+            "default-off"
+        );
+        check_eq!(
+            js.call(
+                "persistAnchorFor",
+                vec![lost.clone(), target.clone(), opts.clone()]
+            )?["document"],
+            Value::Null,
+            "every other decision carries document: null"
+        );
+        // A plan-repo document target never consults the option.
+        check_eq!(
+            js.call(
+                "persistAnchorFor",
+                vec![
+                    about_doc.clone(),
+                    json!("task/x"),
+                    json!({ "documents": [PHASE_DOC] })
+                ]
+            )?["document"],
+            Value::Null,
+            "only a change target has document findings"
+        );
+
+        let only = json!({ "mode": "code", "outcome": "rework", "survivors": [about_doc] });
+        check_eq!(
+            js.call(
+                "persistDegradedSummary",
+                vec![only.clone(), target.clone(), opts.clone()]
+            )?,
+            json!({ "requested": 0, "degraded": 0, "all": false }),
+            "left out of requested and degraded"
+        );
+        check_eq!(
+            js.call(
+                "persistPreDegradedAnchors",
+                vec![only.clone(), target.clone(), opts.clone()]
+            )?,
+            json!([]),
+            "not a build-time drop"
+        );
+        check_eq!(
+            js.call(
+                "persistDegradationClause",
+                vec![only, target.clone(), opts.clone()]
+            )?,
+            json!(""),
+            "no degradation clause"
+        );
+        let mixed = json!({ "mode": "code", "outcome": "rework",
+                            "survivors": [{ "id": "d1", "path": PLAN_DOC, "quote": "q" }, lost] });
+        check_eq!(
+            js.call("persistDegradedSummary", vec![mixed, target, opts])?,
+            json!({ "requested": 1, "degraded": 1, "all": true }),
+            "only the real anchor request is counted"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn a_document_finding_emits_one_document_comment_naming_the_consumers_ref() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let cfg = json!({ "rdmBin": "/fake/bin/rdm", "project": "demo" });
+        // The finder spells the ref its own way; the ladder passes the
+        // consumer's entry.
+        let survivors = json!([{ "id": "d1", "concern": "ac", "severity": "blocking", "confidence": 90,
+                                 "what_fails": "x", "path": "rdm:phase/rm/2:14", "quote": "- AC1: it works" }]);
+        let cmds = js.call(
+            "persistReviewCommands",
+            vec![
+                json!({ "mode": "code", "outcome": "rework", "survivors": survivors }),
+                json!("change/abc123"),
+                cfg,
+                document_opts(),
+            ],
+        )?;
+        let lines: Vec<String> = cmds
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .flat_map(|c| c.lines().map(str::to_owned).collect::<Vec<_>>())
+            .collect();
+        let comment_lines: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains(" review comment "))
+            .collect();
+        check_eq!(comment_lines.len(), 1, "one comment command: {lines:?}");
+        check_eq!(
+            comment_lines[0].trim(),
+            "/fake/bin/rdm review comment \"$RDM_REVIEW_ID\" --document 'phase/rm/phase-2-dirty' --body \"$RDM_PERSIST_BODY\" --no-edit --project demo < /dev/null || exit 1",
+            "the document comment line"
+        );
+        check!(
+            lines.iter().any(|l| l == "RDM_PERSIST_PARK_REQUIRED=0"),
+            "a document finding never seeds a park: {lines:?}"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn documents_are_refused_on_a_document_target_and_for_bad_entries() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let cfg = json!({ "rdmBin": "/fake/bin/rdm", "project": "demo" });
+        let result = json!({ "mode": "code", "outcome": "reviewed", "survivors": [] });
+        let on_task = js.try_call(
+            "persistReviewCommands",
+            vec![
+                result.clone(),
+                json!("task/x"),
+                cfg.clone(),
+                json!({ "documents": ["task/x"] }),
+            ],
+        )?;
+        check!(
+            on_task
+                .as_ref()
+                .is_err_and(|e| e.message.contains("opts.documents")),
+            "documents on a plan-repo document target throws: {on_task:?}"
+        );
+        for bad in [
+            json!([""]),
+            json!([42]),
+            json!(["no-slash"]),
+            json!(["change/abc123"]),
+            json!([PHASE_DOC, "  "]),
+            json!("phase/rm/phase-2-dirty"),
+        ] {
+            let r = js.try_call(
+                "persistReviewCommands",
+                vec![
+                    result.clone(),
+                    json!("change/abc123"),
+                    cfg.clone(),
+                    json!({ "documents": bad }),
+                ],
+            )?;
+            check!(
+                r.as_ref()
+                    .is_err_and(|e| e.message.contains("opts.documents")),
+                "documents {bad} throws: {r:?}"
+            );
+        }
+        let ok = js.try_call(
+            "persistReviewCommands",
+            vec![
+                result,
+                json!("change/abc123"),
+                cfg,
+                json!({ "documents": [PHASE_DOC, PLAN_DOC] }),
+            ],
+        )?;
+        check!(ok.is_ok(), "well-formed documents are accepted: {ok:?}");
+        Ok(())
+    });
+}
+
+// --- The gate comment of a rework with nothing to act on -------------------------
+
+fn complete_evidence(ac: Value) -> Value {
+    json!({ "coverage": { "complete": true, "acDimensionRan": true }, "budget": {},
+            "acTable": ac, "survivors": [] })
+}
+
+#[test]
+fn persist_gate_finding_names_what_gated() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let pass =
+            json!({ "criterion": "AC1: it works", "status": "PASS", "evidence": "tests cover it" });
+        let fail = json!({ "criterion": "AC2: it is documented", "status": "FAIL",
+                           "evidence": "no entry in\nCHANGELOG.md" });
+        let partial = json!({ "criterion": "AC3: both flavors render", "status": "PARTIAL",
+                              "evidence": "markdown only" });
+        let rework = |evidence: Value| json!({ "mode": "code", "outcome": "rework", "survivors": [], "evidence": evidence });
+
+        let g = js.call(
+            "persistGateFinding",
+            vec![rework(complete_evidence(json!([pass, fail])))],
+        )?;
+        check_eq!(g["severity"], json!("blocking"), "blocking");
+        check_eq!(g["concern"], json!("ac"), "an acceptance-criteria gate");
+        check!(
+            g["id"].as_str().is_some_and(|s| !s.is_empty()),
+            "a fixed id: {g}"
+        );
+        let what = g["what_fails"].as_str().unwrap_or_default().to_owned();
+        check!(
+            what.contains("AC2: it is documented") && what.contains("FAIL"),
+            "names the unmet criterion and its status: {what}"
+        );
+        check!(
+            what.contains("no entry in CHANGELOG.md"),
+            "carries the row's evidence on one line: {what}"
+        );
+        check!(!what.contains('\n'), "one line: {what}");
+        check!(
+            !what.contains("AC1: it works"),
+            "a PASS row is not named: {what}"
+        );
+
+        let g = js.call(
+            "persistGateFinding",
+            vec![rework(complete_evidence(json!([pass, partial, fail])))],
+        )?;
+        let what = g["what_fails"].as_str().unwrap_or_default().to_owned();
+        check!(
+            what.contains("AC3: both flavors render")
+                && what.contains("PARTIAL")
+                && what.contains("markdown only")
+                && what.contains("AC2: it is documented"),
+            "every FAIL and PARTIAL row is named: {what}"
+        );
+
+        // No gap in the table, and evidence that is not complete.
+        let g = js.call(
+            "persistGateFinding",
+            vec![rework(json!({ "acTable": [pass] }))],
+        )?;
+        check!(
+            g["what_fails"]
+                .as_str()
+                .is_some_and(|s| s.contains("evidence is incomplete")),
+            "an evidence gap is named: {g}"
+        );
+        // No gap and complete evidence: nothing more specific to say.
+        let g = js.call(
+            "persistGateFinding",
+            vec![rework(complete_evidence(json!([pass])))],
+        )?;
+        check!(
+            g["what_fails"]
+                .as_str()
+                .is_some_and(|s| !s.contains("evidence is incomplete") && s.contains("rework")),
+            "the bare outcome is stated: {g}"
+        );
+
+        for none in [
+            json!({ "mode": "code", "outcome": "reviewed", "survivors": [],
+                    "evidence": complete_evidence(json!([pass, fail])) }),
+            json!({ "mode": "code", "outcome": "escalated", "survivors": [],
+                    "evidence": complete_evidence(json!([pass, fail])) }),
+            json!({ "mode": "code", "outcome": "rework",
+                    "survivors": [{ "id": "s1", "severity": "blocking", "what_fails": "x" }],
+                    "evidence": complete_evidence(json!([pass, fail])) }),
+            Value::Null,
+        ] {
+            check_eq!(
+                js.call("persistGateFinding", vec![none.clone()])?,
+                Value::Null,
+                "no gate finding for {none}"
+            );
+        }
+        Ok(())
+    });
+}
+
+/// A plan-mode rework with no survivors closes the same way: the gate comment
+/// is an ordinary headered whole-document comment, written before submit.
+#[test]
+fn a_survivorless_rework_lands_one_gate_comment() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let repo = seeded()?;
+        let script = ladder(&mut js, "plan", "rework", json!([]), "task/persist-target")?;
+        let review = repo.review(PROJECT, &land(&repo, &script, "gate")?)?;
+        check_eq!(review["verdict"], json!("request-changes"), "the verdict");
+        let cs = comments(&review);
+        check_eq!(cs.len(), 1, "exactly the gate comment: {review}");
+        check_eq!(
+            cs[0]["anchor_state"],
+            json!("whole-document"),
+            "whole-document on purpose"
+        );
+        check_eq!(review["anchors_degraded"], json!(0), "and not counted");
+        let h = js.call("parseCommentHeader", vec![cs[0]["body"].clone()])?;
+        check_eq!(h["severity"], json!("blocking"), "headered like a finding");
+        check_eq!(h["anchor"], json!("wholeDocumentIntended"), "no anchor");
+
+        // A reviewed outcome with no survivors still carries no comment.
+        let script = ladder(
+            &mut js,
+            "plan",
+            "reviewed",
+            json!([]),
+            "task/persist-target",
+        )?;
+        let clean = repo.review(PROJECT, &land(&repo, &script, "clean")?)?;
+        check_eq!(comments(&clean).len(), 0, "a clean review has no comment");
         Ok(())
     });
 }

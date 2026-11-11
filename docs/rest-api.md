@@ -34,6 +34,20 @@ review. Its JSON body takes `body` (required), `doc`, and one way of anchoring:
 a text-quote `anchor` mapping, an anchorless `anchor_state` (plus
 `intended_path` on a `change/` review), or `line`.
 
+On a `change/` review, `document` records the plan-repo document a comment is
+about — `phase/<roadmap>/<stem-or-number>`, `task/<slug>`, `plan/<slug>` or
+`roadmap/<slug>`, the grammar of `rdm review comment --document` — for a
+finding about the item document or its plan rather than a source file. The
+comment is stored whole-document; the response carries its `document` as
+`rdm:<kind>/<id>` and gives it a `plan-item` `target` linking that document.
+Every review response also carries the review-level `anchors_degraded` count.
+
+| Request | Status |
+|---------|--------|
+| `document` that is not an item reference | `422` |
+| `document` naming a roadmap, phase, task or plan that does not exist | `404` |
+| `document` on a review that is not a `change/` review, alongside `anchor`, `line`, `intended_path` or a lost-anchor `anchor_state`, or naming a `change/` reference | `400` |
+
 `line` is `"N"` or `"N-M"`, the grammar of `rdm review comment --line`: 1-based
 lines of the document body as it was at the review's `created_commit` (see
 [`file-formats.md`](file-formats.md#anchors)). rdm captures the lines' text as

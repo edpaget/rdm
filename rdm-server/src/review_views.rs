@@ -623,6 +623,7 @@ mod tests {
                 anchor: None,
                 anchor_state: None,
                 intended_path: None,
+                document: None,
                 body: "Finding.".to_string(),
                 reply: None,
             }],

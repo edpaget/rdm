@@ -635,17 +635,23 @@ meant in `intended_path`); the body header keeps the requested anchor; and it is
 `anchorsDegraded=` line. There is nothing for you to re-run by hand for that case. If `review start`
 itself is refused, **park** — never invent a different target. A nonzero exit anywhere else is a park.
 
+A finding whose path is the item's own ref or the plan's ref is recorded as a **document comment**
+(`review comment --document <ref>`): it is about that plan-repo document, not about a source file. It
+is not counted in `anchorsDegraded=` and never raises `anchorsParkRequired=yes`. A `rework` with no
+surviving finding carries **one** comment naming what gated — the unmet acceptance criterion, or the
+evidence gap — so a `request-changes` review always has something to resolve.
+
 **Check the ladder's own printed `anchorsParkRequired=<yes|no>` line before treating the run as
 ordinary persistence** — not `anchorsDegraded`, and not `result.persistDegraded` (a build-time-only
 preview that can under-report a run whose anchors degraded at run time). When `anchorsParkRequired=yes`
 — an anchor was lost for a systemic cause (any reason other than `outside-hunk`), whatever the
 finding's severity — **park** `blocked` with `[code] a comment anchor was lost for a systemic cause;
-see the review's own note comment and each comment's \`anchor_state\``, even though the ladder itself
-exited 0. Whenever any anchor degrades, the
-persist ladder appends one whole-document note comment stating how many of how many requested anchors
-could not be placed, so the review can never read as clean persistence merely because
-`outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
-"Persisting a review"). Checking `anchorsParkRequired` is a **separate step you take yourself** after
+see \`anchors_degraded\` in \`review show\` and each comment's \`anchor_state\``, even though the
+ladder itself exited 0. The number of lost anchors is a fact about the review, not a comment on it:
+`review show` reports it as `anchors_degraded`, so the review never reads as clean persistence merely
+because `outcome`/`classifyOutcome` stay independent of anchor plumbing (see
+`docs/workflow-schemas.md` § "Persisting a review"), and there is nothing extra to resolve before the
+review can close. Checking `anchorsParkRequired` is a **separate step you take yourself** after
 running the ladder — the write it gates has already happened by the time you read it.
 
 **Benign vs. systemic, for a run-time refusal of a `--path`+`--quote` line:** a quote sitting on a
@@ -719,8 +725,9 @@ Per comment, run this numbered checklist:
 1. **Declare** the decision, the route, and the reply text you intend to record.
 2. **Classify and act:**
    - **SOURCE comment** — it carries an anchor `path` (a file-quote anchor into the diff), **or** its
-     `target.level` is `range` or `file`, **or** it has an `intended_path`. These levels and fields
-     exist only on a `change/` review, so a plan-document comment (level `plan-item`) never matches.
+     `target.level` is `range` or `file`, **or** it has an `intended_path`. A comment whose
+     `target.level` is `plan-item` never matches: it is a plan-document comment (below), on a
+     `change/` review as much as on any other.
      Dispatch an implementer `Agent` subagent with `subagent_type:
      rdm:rdm-effort-<profiles.implement.effort>` and `model: <profiles.implement.model>` in
      `identity.path` with the comment body, the file (`anchor.path`, else `intended_path`) and the
@@ -728,8 +735,16 @@ Per comment, run this numbered checklist:
      also pass its `anchor_state` and say "the evidence sits outside the diff; the defect may be in
      the changed code or in this file". Require a commit and its SHA. **You MUST NOT route a source comment to
      `revise`**: that skill edits plan-repo document bodies, never source files.
-   - **PLAN-DOCUMENT comment** (on a plan-repo document target): run the `revise` loop, which
-     edits the document body in the plan repo.
+   - **PLAN-DOCUMENT comment** — its `target.level` is `plan-item`:
+     - on a `change/` review, it is about the document `target.link` names (the comment's
+       `document`: the item, or its plan). Edit that document's body in the plan repo through the
+       CLI, `rdm commit` that edit on its own, and resolve the comment `addressed` with that
+       plan-repo SHA as `--applied-commit`. It does not move the source head.
+     - on a review whose own target is a plan-repo document: run the `revise` loop, which edits
+       the document body in the plan repo.
+   - **Gate comment** — the one comment of a `rework` that had no surviving finding (its header's
+     `finding-id` is `review-gate`). Handle it like a whole-change source comment: give the
+     implementer the criterion it names and require a commit, or resolve it `wont-fix` with a reason.
    - **`wont-fix`**: a reasoned `--reply` is mandatory, not optional.
    - **Ungraded finding** — the comment's header carries `unrefutedReason: budget`, meaning it was
      never refuted because the per-unit refutation budget ran out: its reply MUST say so explicitly

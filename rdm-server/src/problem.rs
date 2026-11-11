@@ -170,6 +170,11 @@ impl From<&Error> for ProblemDetail {
             // quote/path pairing rules above.
             | Error::CommentAnchorStateWithAnchor
             | Error::CommentPathNotApplicable(_)
+            // A comment's `document` on a review that cannot carry one,
+            // combined with an anchor, or naming a change.
+            | Error::CommentDocumentNotApplicable(_)
+            | Error::CommentDocumentWithAnchor
+            | Error::CommentDocumentIsChange(_)
             // Line-anchor usage errors: `line` on a change review, `line`
             // alongside a quote, or a caller-built line-range anchor.
             | Error::LineAnchorNotApplicable(_)

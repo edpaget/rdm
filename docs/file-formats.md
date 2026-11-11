@@ -459,6 +459,7 @@ Each entry in `comments` is a mapping:
 | `anchor` | no | mapping | Where the comment points (see [Anchors](#anchors)) |
 | `anchor_state` | no | enum | Why an anchorless comment has no anchor (below). Never present on an anchored comment |
 | `intended_path` | no | string | The repo-relative source file an anchorless `change` review comment was about. Never present on an anchored comment or on another review kind |
+| `document` | no | string | The plan-repo document an anchorless `change` review comment is about, as an `rdm:<kind>/<id>` reference (`rdm:phase/<roadmap>/<stem>`, `rdm:task/<slug>`, `rdm:plan/<slug>`, `rdm:roadmap/<slug>`). Such a comment's `anchor_state` is `whole-document`. Never present on an anchored comment or on another review kind; an absent key means none, and every review written before the field existed loads unchanged |
 | `body` | yes | string | The comment text (Markdown) |
 | `reply` | no | string | Agent note set when the comment is addressed or needs clarification |
 

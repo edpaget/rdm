@@ -354,6 +354,14 @@ pub struct AddCommentRequest {
     /// The repo-relative source path an anchorless `change/` review comment
     /// is about. Refused alongside `anchor` and on any other review kind.
     intended_path: Option<String>,
+    /// The plan-repo document an anchorless `change/` review comment is
+    /// about: `phase/<roadmap>/<stem-or-number>`, `task/<slug>`,
+    /// `plan/<slug>` or `roadmap/<slug>` — the same grammar as
+    /// `rdm review comment --document`. An unparsable reference is a 422; a
+    /// reference to a missing item is a 404; `document` alongside `anchor`,
+    /// `line`, `intended_path` or a lost-anchor `anchor_state`, on any other
+    /// review kind, or naming a `change/` reference is a 400.
+    document: Option<String>,
 }
 
 /// `POST /projects/:project/reviews/:review_id/comments` — add a comment to
@@ -383,6 +391,22 @@ pub async fn add_comment(
                 .map_err(|e| validation_error(e.to_string()))?,
         ),
     };
+    let mut store = state.store();
+    // Parsed here so a phase number is stored as its stem; every refusal
+    // about where a document may appear is core's.
+    let document = match req.document.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            rdm_core::ops::reviews::parse_review_target_ref(&store, &project, raw).map_err(
+                |e| match e {
+                    rdm_core::error::Error::InvalidReviewTargetRef(_) => {
+                        validation_error(e.to_string())
+                    }
+                    other => core_error(other),
+                },
+            )?,
+        ),
+    };
     let comment = AddComment {
         project: &project,
         review_id: &review_id,
@@ -391,8 +415,8 @@ pub async fn add_comment(
         anchor: req.anchor,
         anchor_state,
         intended_path: req.intended_path.as_deref(),
+        document,
     };
-    let mut store = state.store();
     // A line anchor is captured at the review's `created_commit` (not
     // against the rendered current body, as a browser selection is): a line
     // number names a line of the version under review. With no `line`, the
@@ -1287,6 +1311,111 @@ mod tests {
         assert_eq!(response.status(), 201);
         let json = json_body(response).await;
         assert_eq!(json["comments"][0]["anchor_state"], "whole-document");
+    }
+
+    #[tokio::test]
+    async fn add_comment_document_stores_the_plan_document_and_targets_it() {
+        let (_dir, state) = setup();
+        let head = "a".repeat(40);
+        let id = create_draft(&state, &format!("change/{head}"), "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        // A phase named by number is stored as its stem.
+        let body = serde_json::json!({
+            "body": "The second criterion contradicts the first.",
+            "document": "phase/alpha/1",
+        });
+        let response = send(&state, post_json(&uri, &body.to_string())).await;
+        assert_eq!(response.status(), 201);
+        let json = json_body(response).await;
+        let comment = &json["comments"][0];
+        assert_eq!(comment["document"], "rdm:phase/alpha/phase-1-one");
+        assert_eq!(comment["anchor_state"], "whole-document");
+        assert_eq!(comment["target"]["level"], "plan-item");
+        assert_eq!(comment["target"]["link"], "rdm:phase/alpha/phase-1-one");
+        assert_eq!(json["anchors_degraded"], 0);
+
+        // The count is carried by every response of the shared review JSON.
+        let lost = serde_json::json!({
+            "body": "Dropped before asking.",
+            "anchor_state": "outside-hunk",
+            "intended_path": "src/lib.rs",
+        });
+        let response = send(&state, post_json(&uri, &lost.to_string())).await;
+        assert_eq!(response.status(), 201);
+        assert_eq!(json_body(response).await["anchors_degraded"], 1);
+        let fetched = send(&state, get_req(&format!("/projects/demo/reviews/{id}"))).await;
+        let fetched = json_body(fetched).await;
+        assert_eq!(fetched["anchors_degraded"], 1);
+        assert_eq!(
+            fetched["comments"][0]["document"],
+            "rdm:phase/alpha/phase-1-one"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_comment_unparsable_document_returns_422() {
+        let (_dir, state) = setup();
+        let head = "a".repeat(40);
+        let id = create_draft(&state, &format!("change/{head}"), "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let response = send(
+            &state,
+            post_json(&uri, r#"{"body":"x","document":"not-a-ref"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), 422);
+        let json = json_body(response).await;
+        assert!(
+            json["detail"].as_str().unwrap().contains("not-a-ref"),
+            "{json}"
+        );
+    }
+
+    /// Core's refusal of a `document` on a review that is not a change
+    /// review surfaces as a 400, like the other comment-field usage errors.
+    #[tokio::test]
+    async fn add_comment_document_on_a_task_review_returns_400() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let response = send(
+            &state,
+            post_json(&uri, r#"{"body":"x","document":"phase/alpha/1"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), 400);
+        let json = json_body(response).await;
+        let detail = json["detail"].as_str().unwrap();
+        assert!(detail.contains("task/fix-login"), "{detail}");
+        assert!(detail.contains("--doc"), "{detail}");
+        // Nothing was stored.
+        let fetched = send(&state, get_req(&format!("/projects/demo/reviews/{id}"))).await;
+        assert_eq!(
+            json_body(fetched).await["comments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn add_comment_document_naming_a_change_or_an_intended_path_returns_400() {
+        let (_dir, state) = setup();
+        let head = "a".repeat(40);
+        let id = create_draft(&state, &format!("change/{head}"), "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        for body in [
+            serde_json::json!({ "body": "x", "document": format!("change/{head}") }),
+            serde_json::json!({
+                "body": "x",
+                "document": "task/fix-login",
+                "intended_path": "src/lib.rs",
+            }),
+        ] {
+            let response = send(&state, post_json(&uri, &body.to_string())).await;
+            assert_eq!(response.status(), 400, "{body}");
+        }
     }
 
     #[tokio::test]

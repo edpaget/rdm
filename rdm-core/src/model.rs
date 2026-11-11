@@ -1976,6 +1976,17 @@ pub struct ReviewComment {
     /// comment and on every other review kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intended_path: Option<String>,
+    /// The plan-repo document an anchorless `change/` review comment is
+    /// about — the reviewed item's own document or its implementation plan,
+    /// for a finding about that document rather than a source file. Stored
+    /// as an `rdm:<kind>/<id>` reference. `None` on an anchored comment and
+    /// on every other review kind.
+    #[serde(
+        default,
+        with = "crate::model::plan_ref::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub document: Option<ReviewTarget>,
     /// The comment text (Markdown).
     pub body: String,
     /// Agent note set when the comment is addressed or needs clarification.
@@ -2054,6 +2065,57 @@ pub struct Review {
     pub change_branch: Option<String>,
     /// The inline comments attached to this review.
     pub comments: Vec<ReviewComment>,
+}
+
+impl Review {
+    /// The number of comments whose anchor was lost: comments with no anchor
+    /// whose stored [`ReviewComment::anchor_state`] is a degradation
+    /// ([`AnchorState::is_degradation`], so a value this build does not
+    /// recognize counts).
+    ///
+    /// An anchored comment, a deliberate [`AnchorState::WholeDocument`]
+    /// comment and an anchorless comment with no recorded state (a review
+    /// written before the field existed) do not count.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::model::Review;
+    ///
+    /// let review: Review = serde_yaml::from_str(
+    ///     "id: r1
+    /// author: a
+    /// target:
+    ///   kind: task
+    ///   slug: t
+    /// state: draft
+    /// created: 2026-07-01T00:00:00Z
+    /// comments:
+    /// - id: 1
+    ///   status: open
+    ///   anchor_state: quote-not-found
+    ///   body: lost its anchor
+    /// - id: 2
+    ///   status: open
+    ///   anchor_state: whole-document
+    ///   body: whole-document on purpose
+    /// ",
+    /// )
+    /// .unwrap();
+    /// assert_eq!(review.degraded_anchor_count(), 1);
+    /// ```
+    #[must_use]
+    pub fn degraded_anchor_count(&self) -> usize {
+        self.comments
+            .iter()
+            .filter(|c| {
+                c.anchor.is_none()
+                    && c.anchor_state
+                        .as_ref()
+                        .is_some_and(AnchorState::is_degradation)
+            })
+            .count()
+    }
 }
 
 /// Which lane driver opened a [`Run`].
@@ -2469,6 +2531,7 @@ comments: []
             anchor: None,
             anchor_state: Some(AnchorState::OutsideHunk),
             intended_path: Some("src/lib.rs".to_string()),
+            document: None,
             body: "b".to_string(),
             reply: None,
         };
@@ -2491,6 +2554,98 @@ comments: []
         let out = serde_yaml::to_string(&comment).unwrap();
         assert!(!out.contains("anchor_state"), "{out}");
         assert!(!out.contains("intended_path"), "{out}");
+    }
+
+    #[test]
+    fn a_comment_document_round_trips_as_an_rdm_reference() {
+        let yaml = "id: 1\nstatus: open\nanchor_state: whole-document\ndocument: rdm:phase/auth/phase-2-login\nbody: b\n";
+        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            comment.document,
+            Some(ReviewTarget::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-2-login".to_string(),
+            })
+        );
+        let out = serde_yaml::to_string(&comment).unwrap();
+        assert!(
+            out.contains("document: rdm:phase/auth/phase-2-login"),
+            "{out}"
+        );
+        assert_eq!(
+            serde_yaml::from_str::<ReviewComment>(&out).unwrap(),
+            comment
+        );
+    }
+
+    #[test]
+    fn a_comment_without_a_document_loads_as_none_and_does_not_gain_the_key() {
+        let yaml = "id: 1\nstatus: open\nbody: legacy\n";
+        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(comment.document, None);
+        let out = serde_yaml::to_string(&comment).unwrap();
+        assert!(!out.contains("document"), "{out}");
+    }
+
+    #[test]
+    fn degraded_anchor_count_counts_only_anchorless_degraded_comments() {
+        let yaml = "id: r1
+author: a
+target:
+  kind: change
+  head: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+state: draft
+created: 2026-07-01T00:00:00Z
+comments:
+- id: 1
+  status: open
+  anchor_state: outside-hunk
+  intended_path: src/lib.rs
+  body: degraded
+- id: 2
+  status: open
+  anchor_state: path-missing
+  body: degraded
+- id: 3
+  status: open
+  anchor_state: some-future-reason
+  body: an unknown reason is still a lost anchor
+- id: 4
+  status: open
+  anchor_state: whole-document
+  body: on purpose
+- id: 5
+  status: open
+  body: not recorded
+- id: 6
+  status: open
+  anchor:
+    anchor_type: file-quote
+    path: src/lib.rs
+    quote: fn main
+    occurrence: 1
+    start_line: 1
+    end_line: 1
+  body: anchored
+";
+        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(review.comments.len(), 6);
+        assert_eq!(review.degraded_anchor_count(), 3);
+    }
+
+    #[test]
+    fn degraded_anchor_count_is_zero_for_a_review_without_comments() {
+        let yaml = "id: r1
+author: a
+target:
+  kind: task
+  slug: t
+state: draft
+created: 2026-07-01T00:00:00Z
+comments: []
+";
+        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(review.degraded_anchor_count(), 0);
     }
 
     #[test]

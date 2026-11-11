@@ -1095,6 +1095,12 @@ pub struct ReviewCommentJson {
     /// was about, as stored. Absent when none was recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intended_path: Option<String>,
+    /// The plan-repo document an anchorless `change/` review comment is
+    /// about, as the canonical `rdm:<kind>/<id>` URI. Absent when none was
+    /// recorded; when present, [`Self::target`] links the same document at
+    /// the `plan-item` level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document: Option<String>,
     /// The comment text (Markdown).
     pub body: String,
     /// Agent reply note, if any.
@@ -1138,6 +1144,9 @@ pub struct CommentTargetJson {
     /// plan item's `rdm:<kind>/…` URI. Always present.
     pub link: String,
     /// `range`, `file`, `commit` or `plan-item`. Always present.
+    /// `plan-item` is the level of every comment of a plan-document review,
+    /// and of a `change/` review comment about a plan-repo document (its
+    /// stored `document`).
     pub level: &'static str,
     /// Why the target is coarser than an intact anchor: the stored
     /// `anchor_state` (e.g. `whole-document`, `outside-hunk`,
@@ -1300,6 +1309,11 @@ pub struct ReviewJson {
     /// contract as `link check`'s `path_verification_skipped`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_verification_skipped: Option<String>,
+    /// How many comments lost their anchor
+    /// ([`Review::degraded_anchor_count`]): anchorless comments whose stored
+    /// `anchor_state` is anything but `whole-document`. Always present, `0`
+    /// when none did.
+    pub anchors_degraded: usize,
     /// The overall review summary (Markdown body).
     pub body: String,
     /// The inline comments with their resolution states.
@@ -1494,6 +1508,7 @@ pub fn review_to_json(
         implements: fm.implements.as_ref().map(|r| format!("rdm:{}", r.label())),
         change_branch: fm.change_branch.clone(),
         source_verification_skipped: None,
+        anchors_degraded: fm.degraded_anchor_count(),
         body: doc.body.clone(),
         comments: fm
             .comments
@@ -1512,6 +1527,7 @@ pub fn review_to_json(
                     anchor: c.anchor.clone(),
                     anchor_state: comment_anchor_state(c),
                     intended_path: c.intended_path.clone(),
+                    document: c.document.as_ref().map(|d| format!("rdm:{}", d.label())),
                     body: c.body.clone(),
                     reply: c.reply.clone(),
                     resolution: resolution_to_json(resolutions.get(i).unwrap_or(&unresolved)),
@@ -2730,6 +2746,7 @@ mod tests {
                 comments: vec![ReviewComment {
                     anchor_state: None,
                     intended_path: None,
+                    document: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,
@@ -2850,6 +2867,62 @@ mod tests {
         assert!(v.get("submitted").is_none());
         assert!(v.get("created_commit").is_none());
         assert_eq!(v["state"], "draft");
+    }
+
+    #[test]
+    fn review_json_reports_a_comment_document_and_its_plan_item_target() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: Some("b".repeat(40)),
+        };
+        let comment = &mut doc.frontmatter.comments[0];
+        comment.anchor = None;
+        comment.anchor_state = Some(crate::model::AnchorState::WholeDocument);
+        comment.document = Some(ReviewTarget::Phase {
+            roadmap: "auth".to_string(),
+            stem: "phase-2-login".to_string(),
+        });
+        let json = review_to_json("id", &doc, &[], &[], &[]);
+        let v: serde_json::Value = serde_json::to_value(&json).unwrap();
+        let c = &v["comments"][0];
+        assert_eq!(c["document"], "rdm:phase/auth/phase-2-login");
+        assert_eq!(c["target"]["level"], "plan-item");
+        assert_eq!(c["target"]["link"], "rdm:phase/auth/phase-2-login");
+        assert_eq!(c["target"]["reason"], "whole-document");
+        assert_eq!(c["target"]["unverified"], false);
+        assert_eq!(c["anchor_state"], "whole-document");
+        assert_eq!(v["anchors_degraded"], 0);
+    }
+
+    #[test]
+    fn review_json_omits_document_when_none_is_stored() {
+        let doc = make_review_doc();
+        let json = review_to_json("id", &doc, &[], &[], &[]);
+        let v: serde_json::Value = serde_json::to_value(&json).unwrap();
+        assert!(v["comments"][0].get("document").is_none(), "{v}");
+    }
+
+    #[test]
+    fn review_json_counts_degraded_anchors_at_the_review_level() {
+        let mut doc = make_review_doc();
+        // Always present, zero for a review whose anchors are intact.
+        let json = review_to_json("id", &doc, &[], &[], &[]);
+        let v: serde_json::Value = serde_json::to_value(&json).unwrap();
+        assert_eq!(v["anchors_degraded"], 0);
+
+        let mut degraded = doc.frontmatter.comments[0].clone();
+        degraded.id = 2;
+        degraded.anchor = None;
+        degraded.anchor_state = Some(crate::model::AnchorState::QuoteNotFound);
+        let mut whole = degraded.clone();
+        whole.id = 3;
+        whole.anchor_state = Some(crate::model::AnchorState::WholeDocument);
+        doc.frontmatter.comments.push(degraded);
+        doc.frontmatter.comments.push(whole);
+        let json = review_to_json("id", &doc, &[], &[], &[]);
+        let v: serde_json::Value = serde_json::to_value(&json).unwrap();
+        assert_eq!(v["anchors_degraded"], 1);
     }
 
     /// A comment whose `comment_notes` entry is `Some` (a stored anchor

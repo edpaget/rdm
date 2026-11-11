@@ -456,6 +456,7 @@ Still loads.
                     ReviewComment {
                         anchor_state: None,
                         intended_path: None,
+                        document: None,
                         id: 1,
                         doc: None,
                         status: ReviewCommentStatus::Open,
@@ -472,6 +473,9 @@ Still loads.
                     ReviewComment {
                         anchor_state: None,
                         intended_path: None,
+                        document: Some(ReviewTarget::Plan {
+                            slug: "review-model-plan".to_string(),
+                        }),
                         id: 2,
                         doc: Some(CommentDoc {
                             kind: CommentDocKind::Phase,
@@ -495,6 +499,16 @@ Still loads.
             rendered.contains("applied_commit_repo: source"),
             "{rendered}"
         );
+        // A comment's document is written as an `rdm:` reference, and only
+        // on the comment that has one.
+        assert_eq!(
+            rendered
+                .matches("document: rdm:plan/review-model-plan")
+                .count(),
+            1,
+            "{rendered}"
+        );
+        assert_eq!(rendered.matches("document:").count(), 1, "{rendered}");
         let parsed: Document<Review> = Document::parse(&rendered).unwrap();
         assert_eq!(parsed.frontmatter, original.frontmatter);
         assert_eq!(parsed.body, original.body);

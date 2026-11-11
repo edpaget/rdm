@@ -441,6 +441,18 @@ pub enum Error {
     /// whose target is not a `change/` review; the payload is the target's
     /// label (e.g. `task/fix-login`).
     CommentPathNotApplicable(String),
+    /// A comment named the plan-repo document it is about (`--document`) on
+    /// a review whose target is not a `change/` review; the payload is the
+    /// target's label (e.g. `task/fix-login`).
+    CommentDocumentNotApplicable(String),
+    /// A comment named the plan-repo document it is about together with an
+    /// anchor, an intended path, or a lost-anchor state. A document comment
+    /// is a deliberate whole-document comment on that document, so none of
+    /// them may accompany it.
+    CommentDocumentWithAnchor,
+    /// A comment's document named a `change/` reference; the payload is that
+    /// reference's label. A document is a roadmap, phase, task or plan.
+    CommentDocumentIsChange(String),
     /// A `--path`/`--quote` anchor was requested on a `change/` review, but
     /// no source repository was supplied to derive it against.
     ChangeAnchorNeedsSource,
@@ -1238,6 +1250,24 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "--path only applies to a change review — this review targets {label}, whose quotes are located in the plan-repo document itself"
+                )
+            }
+            Error::CommentDocumentNotApplicable(label) => {
+                write!(
+                    f,
+                    "--document only applies to a change review — this review targets {label}, so its comments are already about that plan-repo document; on a roadmap review, point a comment at one of its phases with --doc phase/<stem-or-number>"
+                )
+            }
+            Error::CommentDocumentWithAnchor => {
+                write!(
+                    f,
+                    "a comment about a plan-repo document is a whole-document comment on that document — pass --document without --quote, --path, --line, --intended-path or a lost-anchor --anchor-state"
+                )
+            }
+            Error::CommentDocumentIsChange(label) => {
+                write!(
+                    f,
+                    "'{label}' names a change, not a plan-repo document — --document takes phase/<roadmap>/<stem-or-number>, task/<slug>, plan/<slug> or roadmap/<slug>"
                 )
             }
             Error::ChangeAnchorNeedsSource => {

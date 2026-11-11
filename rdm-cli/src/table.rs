@@ -338,6 +338,7 @@ mod tests {
                     ReviewComment {
                         anchor_state: None,
                         intended_path: None,
+                        document: None,
                         id: 1,
                         doc: None,
                         status: ReviewCommentStatus::Open,
@@ -350,6 +351,7 @@ mod tests {
                     ReviewComment {
                         anchor_state: None,
                         intended_path: None,
+                        document: None,
                         id: 2,
                         doc: None,
                         status: ReviewCommentStatus::Addressed,

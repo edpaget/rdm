@@ -394,6 +394,7 @@ pub fn run(
             doc,
             anchor_state,
             intended_path,
+            document,
             on_anchor_failure,
             body,
             no_edit,
@@ -425,6 +426,15 @@ pub fn run(
                     }
                 },
             };
+            // Parsed here so a phase number is stored as its stem; where a
+            // document may appear is core's to refuse.
+            let document = document
+                .as_deref()
+                .map(|reference| {
+                    rdm_core::ops::reviews::parse_review_target_ref(store, &project, reference)
+                        .context("failed to resolve --document")
+                })
+                .transpose()?;
             let Some(body) = resolve_review_body(body, no_edit)?.filter(|b| !b.trim().is_empty())
             else {
                 bail!("comment body must not be empty — pass --body <text>");
@@ -448,6 +458,7 @@ pub fn run(
                         anchor: None,
                         anchor_state,
                         intended_path: intended_path.as_deref(),
+                        document,
                     },
                     AnchorRequest {
                         quote: quote.as_deref(),

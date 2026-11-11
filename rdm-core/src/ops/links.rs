@@ -2351,6 +2351,7 @@ mod tests {
                 comments: vec![ReviewComment {
                     anchor_state: None,
                     intended_path: None,
+                    document: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,
@@ -2529,6 +2530,7 @@ mod tests {
                 comments: vec![ReviewComment {
                     anchor_state: None,
                     intended_path: None,
+                    document: None,
                     id: 3,
                     doc: Some(CommentDoc {
                         kind: CommentDocKind::Phase,
@@ -2601,6 +2603,7 @@ mod tests {
                 comments: vec![ReviewComment {
                     anchor_state: None,
                     intended_path: None,
+                    document: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,
@@ -3211,6 +3214,7 @@ mod tests {
         ReviewComment {
             anchor_state: None,
             intended_path: None,
+            document: None,
             id,
             doc: None,
             status: if applied_commit.is_some() {
@@ -3623,6 +3627,7 @@ mod tests {
         ReviewComment {
             anchor_state: None,
             intended_path: None,
+            document: None,
             id,
             doc: None,
             status: ReviewCommentStatus::Open,
@@ -3644,6 +3649,7 @@ mod tests {
         ReviewComment {
             anchor_state: Some(state),
             intended_path: intended.map(str::to_string),
+            document: None,
             id,
             doc: None,
             status: ReviewCommentStatus::Open,
@@ -3871,6 +3877,42 @@ mod tests {
                     unverified: false,
                 },
             ]
+        );
+    }
+
+    /// A comment about a plan-repo document targets that document, not the
+    /// reviewed commit, so a commit query does not list it.
+    #[test]
+    fn commit_query_does_not_list_a_comment_about_a_plan_document() {
+        let mut store = setup();
+        let mut about_document = anchorless_comment(1, AnchorState::WholeDocument, None);
+        about_document.document = Some(ReviewTarget::Task {
+            slug: "floating".to_string(),
+        });
+        write_review_with(
+            &mut store,
+            "2026-07-02-1100-rvw2",
+            ReviewTarget::Change {
+                head: H2.to_string(),
+                base: None,
+            },
+            vec![
+                about_document,
+                anchorless_comment(2, AnchorState::WholeDocument, None),
+            ],
+        );
+        let entries = code_annotations(&store, &code_source(), "demo", &commit_target(H2)).unwrap();
+        let comments: Vec<Option<u32>> = entries
+            .iter()
+            .filter_map(|e| match &e.document {
+                DocRef::Review { comment, .. } => Some(*comment),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(comments, vec![None, Some(2)], "{entries:?}");
+        assert!(
+            entries.iter().all(|e| e.level == TargetLevel::Commit),
+            "{entries:?}"
         );
     }
 

@@ -336,6 +336,7 @@ mod tests {
             anchor,
             anchor_state: state,
             intended_path: None,
+            document: None,
             body: "finding".to_string(),
             reply: None,
         }

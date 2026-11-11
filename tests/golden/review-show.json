@@ -12,6 +12,7 @@
   "created": "<DATETIME>",
   "submitted": "<DATETIME>",
   "created_commit": "<SHA>",
+  "anchors_degraded": 0,
   "body": "",
   "comments": [
     {

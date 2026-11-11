@@ -7121,6 +7121,7 @@ fn sample_review_doc(id: &str) -> Document<Review> {
             comments: vec![ReviewComment {
                 anchor_state: None,
                 intended_path: None,
+                document: None,
                 id: 1,
                 doc: None,
                 status: ReviewCommentStatus::Open,

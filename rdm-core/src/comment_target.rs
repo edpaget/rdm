@@ -11,6 +11,8 @@
 //!
 //! The rungs, for a `change/` review with head `H`:
 //!
+//! 0. a comment that stores the plan-repo `document` it is about → that
+//!    **plan item** (`rdm:<kind>/<id>`), with no source repository consulted;
 //! 1. an [`Anchor::FileQuote`] whose path is a file at `H` → the line
 //!    **range** (`rdm:src/<path>@H#L<a>-L<b>`);
 //! 2. an anchorless comment whose stored `intended_path` is a file at `H` →
@@ -18,7 +20,9 @@
 //! 3. otherwise → the **commit** (`rdm:src@H`).
 //!
 //! A plan-document review (roadmap, phase, task, plan) always targets the
-//! **plan item** itself: it has no source commit to fall back to.
+//! **plan item** itself: it has no source commit to fall back to. Rung 0 is
+//! the same level for a change-review comment about the reviewed item's
+//! document or its implementation plan.
 //!
 //! A target is **never inferred from the change's diff** — nothing here
 //! reads [`SourceRepo::unified_diff`]. When the source repository cannot say
@@ -48,7 +52,9 @@ pub enum TargetLevel {
     File,
     /// The reviewed head commit itself.
     Commit,
-    /// The plan item a plan-document review is about.
+    /// The plan-repo document a comment is about: the target of a
+    /// plan-document review (or the phase a roadmap review's comment is
+    /// scoped to), or the document a `change/` review comment stores.
     PlanItem,
 }
 
@@ -96,7 +102,8 @@ pub struct CommentTarget {
     pub level: TargetLevel,
     /// Why the target is not an intact anchor. `None` only for an intact
     /// [`TargetLevel::Range`] or an anchored [`TargetLevel::PlanItem`]
-    /// comment.
+    /// comment. A change-review comment about a stored document carries its
+    /// stored state (`whole-document`).
     pub reason: Option<TargetReason>,
     /// `true` only when the rung was chosen fail-open, because the source
     /// repository could not say whether the path exists at the head.
@@ -150,6 +157,7 @@ enum Existence {
 ///     anchor: None,
 ///     anchor_state: Some(AnchorState::OutsideHunk),
 ///     intended_path: Some("src/lib.rs".to_string()),
+///     document: None,
 ///     body: "a finding".to_string(),
 ///     reply: None,
 /// };
@@ -244,6 +252,16 @@ fn change_target(
         reason: Some(reason),
         unverified: false,
     };
+    // Rung 0: the comment says which plan-repo document it is about. That is
+    // a deliberate target, not a fallback, and no path existence bears on it.
+    if let Some(document) = &comment.document {
+        return CommentTarget {
+            link: Link::Item(document.clone()),
+            level: TargetLevel::PlanItem,
+            reason: Some(stored_reason(comment)),
+            unverified: false,
+        };
+    }
     if let Some(anchor) = &comment.anchor
         && let Anchor::FileQuote { path, .. } = anchor
         && let Some(permalink) = permalink_for(head, anchor)
@@ -351,9 +369,66 @@ mod tests {
             anchor,
             anchor_state,
             intended_path: intended_path.map(str::to_string),
+            document: None,
             body: "b".to_string(),
             reply: None,
         }
+    }
+
+    fn document_comment(document: ReviewTarget) -> ReviewComment {
+        let mut c = comment(None, Some(AnchorState::WholeDocument), None);
+        c.document = Some(document);
+        c
+    }
+
+    fn phase_document() -> ReviewTarget {
+        ReviewTarget::Phase {
+            roadmap: "auth".to_string(),
+            stem: "phase-2-login".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_change_comment_about_a_document_targets_that_plan_item() {
+        let c = document_comment(phase_document());
+        let t = comment_target(&seeded(), &change_review(), &c);
+        assert_eq!(t.level, TargetLevel::PlanItem);
+        assert_eq!(t.link, Link::Item(phase_document()));
+        assert_eq!(t.link.to_string(), "rdm:phase/auth/phase-2-login");
+        assert_eq!(
+            t.reason,
+            Some(TargetReason::Stored(AnchorState::WholeDocument))
+        );
+        assert!(!t.unverified);
+    }
+
+    #[test]
+    fn a_change_comment_about_a_document_targets_it_without_a_source_repository() {
+        let mut review = change_review();
+        review.comments = vec![document_comment(ReviewTarget::Plan {
+            slug: "impl-login".to_string(),
+        })];
+        let targets = comment_targets(None::<&MemorySourceRepo>, &review);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].level, TargetLevel::PlanItem);
+        assert_eq!(targets[0].link.to_string(), "rdm:plan/impl-login");
+        assert_eq!(
+            targets[0].reason,
+            Some(TargetReason::Stored(AnchorState::WholeDocument))
+        );
+        assert!(
+            !targets[0].unverified,
+            "a document target asks nothing of the source repository"
+        );
+    }
+
+    #[test]
+    fn a_change_comment_about_a_document_ignores_a_missing_head() {
+        let source = seeded().with_missing_rev(HEAD);
+        let c = document_comment(phase_document());
+        let t = comment_target(&source, &change_review(), &c);
+        assert_eq!(t.level, TargetLevel::PlanItem);
+        assert!(!t.unverified);
     }
 
     fn file_quote(path: &str) -> Anchor {

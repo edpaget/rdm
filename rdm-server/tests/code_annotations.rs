@@ -132,6 +132,7 @@ fn comment(id: u32, anchor: Option<Anchor>, state: Option<AnchorState>) -> Revie
         anchor,
         anchor_state: state,
         intended_path: None,
+        document: None,
         body: format!("Finding {id}."),
         reply: None,
     }

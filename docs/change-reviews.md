@@ -144,7 +144,7 @@ range also makes the permalink derivable with no checkout present.
 
 ## Degraded and whole-document comments
 
-A comment with no anchor says why, in two stored fields (format and
+A comment with no anchor says why, in three stored fields (format and
 compatibility rule: [`file-formats.md`](file-formats.md#comment-fields)):
 
 - `anchor_state` — `whole-document` for a comment written without a quote on
@@ -154,6 +154,9 @@ compatibility rule: [`file-formats.md`](file-formats.md#comment-fields)):
   `start-fallback`). The vocabulary is one Rust enum,
   `rdm_core::model::AnchorState`.
 - `intended_path` — the source file the comment was about, when it named one.
+- `document` — the plan-repo document the comment is about, when it is about
+  one rather than about source (see
+  [Comments about a plan document](#comments-about-a-plan-document)).
 
 A comment added with neither an anchor nor a reason is stamped
 `whole-document` by core, not by the caller. An absent field on an older
@@ -168,6 +171,50 @@ rdm review comment <id> --anchor-state outside-hunk --intended-path src/lib.rs -
 `--intended-path` alone is a deliberate whole-file comment
 (`whole-document` plus the path). Both flags conflict with `--quote`, and an
 unknown `--anchor-state` is refused with the list of accepted values.
+
+### Comments about a plan document
+
+A code review raises findings that are not about source at all: a criterion in
+the phase document is worded so it cannot be checked, the task body has a stale
+sentence, the implementation plan names a file that does not exist. Such a
+comment stays on the change review, and says which document it is about:
+
+```
+rdm review comment <id> --document phase/auth/2 --body "…"
+rdm review comment <id> --document plan/auth-login --body "…"
+```
+
+`--document <ref>` takes `phase/<roadmap>/<stem-or-number>`, `task/<slug>`,
+`plan/<slug>` or `roadmap/<slug>`. A phase number is stored as its stem. The
+comment is stored whole-document (`anchor_state: whole-document`) with
+`document: rdm:<kind>/<id>`. It is a deliberate comment about that document,
+not a lost anchor, so it is not counted in `anchors_degraded`.
+
+Core refuses it when the review does not target a change (a plan-document
+review's comments are already about its document; on a roadmap review use
+`--doc phase/<stem-or-number>`), when it is combined with an anchor, an
+intended path or a lost-anchor `--anchor-state`, when the ref is a `change/`
+ref, and when the named roadmap, phase, task or plan does not exist. The flag
+conflicts with `--quote`, `--path`, `--line`, `--intended-path` and
+`--on-anchor-failure`. Core checks that the document exists; it does not try to
+prove the document belongs to the reviewed change. Setting an anchor on the
+comment later clears its `document`.
+
+The fix for such a comment is a plan-repo commit, which `review update
+--applied-commit` accepts on a change review (see
+[Commit references are links](#commit-references-are-links)).
+
+### The degraded-anchor count
+
+`rdm review show <id> --format json` reports `anchors_degraded`: the number of
+comments with no anchor whose stored `anchor_state` is anything but
+`whole-document`. It is always present (`0` when none) and is derived on read,
+so it is correct for every existing review. A comment with no recorded state
+(written before `anchor_state` existed) is not counted. The human views print
+`Anchors degraded: <n>` in the metadata block when the count is above zero.
+
+The count is how a reader sees that anchors were lost. Nothing writes a comment
+to say so, and so nothing extra has to be resolved before the review can close.
 
 ### The fall-back mode
 
@@ -213,9 +260,10 @@ failing — which is environmental and review-wide, and which `review start`
 already required to succeed. The mapping and the fall-back live in core
 (`ops::reviews::{anchor_refusal_reason, add_comment_with_anchor}`), because
 only core knows its own refusal variants. `POST
-/projects/<p>/reviews/<id>/comments` accepts the same optional `anchor_state`
-and `intended_path` fields; an unknown `anchor_state` is a 422 naming the
-accepted values. Its `line` field is `--line` (see
+/projects/<p>/reviews/<id>/comments` accepts the same optional `anchor_state`,
+`intended_path` and `document` fields; an unknown `anchor_state` is a 422
+naming the accepted values, and an unparsable `document` is a 422. Its `line`
+field is `--line` (see
 [`rest-api.md`](rest-api.md#review-comments)).
 
 ## The coarsest true target
@@ -226,9 +274,17 @@ and per-comment links build on. For a `change/` review with head `H`:
 
 | Comment | Target | `level` |
 |---------|--------|---------|
+| a stored `document` | `rdm:<kind>/<id>` (that document) | `plan-item` |
 | `file-quote` anchor whose path is a file at `H` | `rdm:src/<path>@H#L<a>-L<b>` | `range` |
 | anchorless, `intended_path` a file at `H` | `rdm:src/<path>@H` | `file` |
 | anything else (no intended path, a path absent at `H`, an anchor on a directory or submodule) | `rdm:src@H` | `commit` |
+
+The first row is checked first and consults no source repository: a comment
+that stores the document it is about targets that document, with reason
+`whole-document`, never `unverified`. It is the same `plan-item` level a
+plan-document review's comments have, so triage matches on one level for "this
+comment is about a plan-repo document". Because it is not a `commit`-level
+target, `rdm backlinks rdm:src@H` does not list it.
 
 A plan-document review (roadmap, phase, task, plan) always targets the item
 itself — a roadmap review comment scoped to a phase targets that phase — because
@@ -267,7 +323,7 @@ plan-document comments included:
 | Field | Presence | Meaning |
 |-------|----------|---------|
 | `link` | always | The target as an `rdm:` link `rdm link resolve` accepts: `rdm:src/<path>@H#L…`, `rdm:src/<path>@H`, `rdm:src@H`, or the plan item's `rdm:<kind>/…` |
-| `level` | always | `range`, `file`, `commit` or `plan-item` |
+| `level` | always | `range`, `file`, `commit` or `plan-item` (`plan-item` on a change review means the comment stores a `document`) |
 | `reason` | when coarser than an intact anchor | The stored `anchor_state` (`whole-document`, `outside-hunk`, `path-missing`, …), `not-recorded`, or `ineligible` |
 | `reason_note` | with `reason: "ineligible"` only | The read-time ineligibility note |
 | `unverified` | always | `true` when the rung was chosen fail-open |
@@ -276,6 +332,13 @@ The vocabulary is `rdm backlinks --format json`'s, so one reader handles both.
 A deliberately whole-document comment and a lost anchor differ by
 `target.reason` (`whole-document` vs. e.g. `outside-hunk` or `path-missing`),
 never by a null.
+
+Two more keys came with document comments and the degraded count:
+
+| Key | Where | Presence | Meaning |
+|-----|-------|----------|---------|
+| `document` | each comment | when one is stored | The plan-repo document the comment is about, as `rdm:<kind>/<id>`; `target.link` is the same link |
+| `anchors_degraded` | the review | always | How many comments lost their anchor (`0` when none) |
 
 **Reverse lookup consumes it.** `rdm backlinks rdm:src/<path>` returns the
 `range`- and `file`-level comments on that path, and `rdm backlinks

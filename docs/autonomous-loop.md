@@ -132,9 +132,16 @@ never block this item's terminal write.
 it. A comment carrying a `path`, a `range`/`file` `target`, or an `intended_path` is a SOURCE
 comment — so a finding whose anchor fell back to whole-document still reaches an implementer:
 an implementer subagent fixes it in the pinned worktree and its commit SHA becomes the
-`--applied-commit`, with a pinned `rdm:src/<path>@<sha>[#L<n>]` permalink in the reply. A comment on a plan-repo document goes
+`--applied-commit`, with a pinned `rdm:src/<path>@<sha>[#L<n>]` permalink in the reply. A comment
+whose `target.level` is `plan-item` is a PLAN-DOCUMENT comment. On a `change/` review it is a code
+reviewer's finding about the item document or its plan (the comment stores which, as `document`):
+the orchestrator edits that document's body in the plan repo through the CLI, commits the edit on
+its own, and resolves the comment `addressed` with that plan-repo SHA; the source head does not
+move. On a review whose own target is a plan-repo document it goes
 through `rdm-revise`, which edits the document body in the plan repo — the reason SOURCE comments
-may not go there: that skill never edits source files. Either route records the commit that made
+may not go there: that skill never edits source files. The one comment of a `rework` that had no
+surviving finding (the gate comment, naming the unmet criterion) is handled like a whole-change
+source comment. Every route records the commit that made
 the fix: `--applied-commit` accepts a source-repo or a plan-repo SHA and stores which repository
 it resolved in. A finding marked `unrefutedReason: budget` was never
 graded, so its reply says so explicitly on either branch.

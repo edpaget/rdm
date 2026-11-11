@@ -179,13 +179,18 @@ fn persist_args(pin: &Pin) -> Value {
 /// never refute, and whose consolidator resolves `null` (so the pipeline
 /// fails open to singletons, the pre-consolidation behaviour).
 fn fleet(findings: Vec<Value>) -> Agent {
+    fleet_with_ac(
+        json!([{ "criterion": "AC1: it works", "status": "PASS", "evidence": "the tests cover it" }]),
+        findings,
+    )
+}
+
+/// [`fleet`] whose `ac` finder reports the rows `ac` instead of one PASS row.
+fn fleet_with_ac(ac: Value, findings: Vec<Value>) -> Agent {
     Agent::scripted(move |call| {
         let label = call.label.as_str();
         if label == "find:code:ac" {
-            return Reply::Value(json!({
-                "ac": [{ "criterion": "AC1: it works", "status": "PASS", "evidence": "the tests cover it" }],
-                "findings": []
-            }));
+            return Reply::Value(json!({ "ac": ac, "findings": [] }));
         }
         for (dim, f) in DIMS.iter().zip(&findings) {
             if label == format!("find:code:{dim}") {
@@ -252,16 +257,80 @@ fn comment_with(review: &Value, needle: &str) -> Result<Value, Failure> {
         .ok_or_else(|| Failure::Check(format!("no comment carries {needle}: {review}")))
 }
 
-/// The ladder's own degradation note comment, if any.
-fn note(review: &Value) -> Result<Value, Failure> {
-    comments(review)
-        .into_iter()
-        .find(|c| {
-            c["body"]
-                .as_str()
-                .is_some_and(|b| b.starts_with("persist-note: anchors-degraded"))
-        })
-        .ok_or_else(|| Failure::Check(format!("the review carries a degradation note: {review}")))
+/// The lost anchors are a review-level count, never a comment: the review
+/// reports `degraded` of them and holds no `persist-note` comment.
+fn assert_degraded_count(review: &Value, degraded: u32) -> Outcome {
+    check_eq!(
+        review["anchors_degraded"],
+        json!(degraded),
+        "the review-level degraded-anchor count"
+    );
+    check!(
+        !comments(review).iter().any(|c| c["body"]
+            .as_str()
+            .is_some_and(|b| b.starts_with("persist-note"))),
+        "no note comment is written: {review}"
+    );
+    Ok(())
+}
+
+/// Resolves every comment of `review` (`wont-fix`, with a reply) and then
+/// closes it, as triage does; returns the review re-read.
+fn close(fx: &Fx, review: &Value) -> Result<Value, Failure> {
+    let id = review["id"].as_str().unwrap_or_default().to_owned();
+    for c in comments(review) {
+        let n = c["id"].to_string();
+        let out = fx.repo.rdm(
+            "triage",
+            &[
+                "review",
+                "update",
+                &id,
+                "--comment",
+                &n,
+                "--status",
+                "wont-fix",
+                "--reply",
+                "Recorded.",
+                "--project",
+                PROJECT,
+            ],
+        )?;
+        check!(
+            out.status.success(),
+            "resolving comment {n} of {id}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = fx.repo.rdm(
+        "triage",
+        &[
+            "review",
+            "update",
+            &id,
+            "--state",
+            "addressed",
+            "--project",
+            PROJECT,
+        ],
+    )?;
+    check!(
+        out.status.success(),
+        "closing {id} once every comment is terminal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fx.repo.review(PROJECT, &id)
+}
+
+/// [`close`], asserting the review then reads `addressed`.
+fn assert_closes(fx: &Fx, review: &Value) -> Outcome {
+    let closed = close(fx, review)?;
+    check_eq!(
+        closed["state"],
+        json!("addressed"),
+        "the review closes once each finding comment is resolved"
+    );
+    Ok(())
 }
 
 fn no_anchor(c: &Value) -> bool {
@@ -272,13 +341,6 @@ fn no_anchor(c: &Value) -> bool {
 fn header_anchor(js: &mut Js, c: &Value) -> Result<Value, Failure> {
     let h = js.call("parseCommentHeader", vec![c["body"].clone()])?;
     Ok(h.get("anchor").cloned().unwrap_or(Value::Null))
-}
-
-fn note_body(js: &mut Js, degraded: u32, requested: u32) -> Result<Value, Failure> {
-    js.call(
-        "persistDegradationNoteBody",
-        vec![json!(degraded), json!(requested)],
-    )
 }
 
 fn finding(id: &str, severity: &str, extra: Value) -> Value {
@@ -574,11 +636,7 @@ fn persist_ladder_records_change_review_anchors() {
             json!("change"),
             "the reviewed artifact is the pinned change"
         );
-        check_eq!(
-            comments(&review).len(),
-            4,
-            "each survivor once, plus one degradation note"
-        );
+        check_eq!(comments(&review).len(), 3, "each survivor once");
 
         let anchored = comment_with(&review, "anchored-bug")?;
         check_eq!(
@@ -617,13 +675,7 @@ fn persist_ladder_records_change_review_anchors() {
             "stored as whole-document on purpose"
         );
 
-        let n = note(&review)?;
-        check!(no_anchor(&n), "the note is whole-document");
-        check_eq!(
-            n["body"],
-            note_body(&mut js, 1, 2)?,
-            "the note names the real total against what was requested"
-        );
+        assert_degraded_count(&review, 1)?;
         check!(
             review["body"].as_str().is_some_and(|b| b.contains(
                 "1 of 2 requested anchor(s) could not be placed at persist time (path-missing x1); see the stored `anchor_state` on each comment."
@@ -640,7 +692,7 @@ fn persist_ladder_records_change_review_anchors() {
             has_line(&out, "anchorsDegraded=partial"),
             "the ladder prints the partial disposition: {out}"
         );
-        Ok(())
+        assert_closes(&fx, &review)
     });
 }
 
@@ -822,7 +874,7 @@ fn runtime_refusal_outside_hunk_blocking_reworks_without_park() {
             has_line(&out, "anchorsParkRequired=no"),
             "an outside-hunk refusal never parks, even for a blocking finding: {out}"
         );
-        check_eq!(comments(&review).len(), 2, "the finding plus the note");
+        check_eq!(comments(&review).len(), 1, "the finding alone");
         assert_whole_doc_degraded(
             &mut js,
             &review,
@@ -854,16 +906,14 @@ fn runtime_refusal_outside_hunk_blocking_reworks_without_park() {
             json!("request-changes"),
             "the persisted verdict still requests changes"
         );
-        check_eq!(
-            note(&review)?["body"],
-            note_body(&mut js, 1, 1)?,
-            "the note reports the run-time result"
-        );
+        // The run-time result is the review's own count, not a comment.
+        assert_degraded_count(&review, 1)?;
         check_eq!(
             r["persistDegraded"],
             json!({ "requested": 1, "degraded": 0, "all": false }),
             "the build-time preview cannot see a run-time refusal"
         );
+        assert_closes(&fx, &review)?;
         fx.repo
             .run_ok(&strict(), r["gateScript"].as_str().unwrap_or_default())?;
         check_eq!(
@@ -901,6 +951,8 @@ fn runtime_refusal_systemic_parks_at_every_severity() {
                 "a {severity} path-missing refusal parks: {out}"
             );
             assert_whole_doc_degraded(&mut js, &review, &id, "path-missing", &absent)?;
+            assert_degraded_count(&review, 1)?;
+            assert_closes(&fx, &review)?;
 
             // A quote that occurs twice in a touched file.
             let dup = format!("systemic-ambiguous-{severity}.txt");
@@ -921,6 +973,7 @@ fn runtime_refusal_systemic_parks_at_every_severity() {
                 "a {severity} ambiguous refusal parks: {out}"
             );
             assert_whole_doc_degraded(&mut js, &review, &id, "ambiguous", &dup)?;
+            assert_degraded_count(&review, 1)?;
         }
         Ok(())
     });
@@ -953,7 +1006,8 @@ fn runtime_refusal_outside_hunk_suggestion_no_park() {
             "outside-hunk-suggestion",
             "outside-hunk",
             "outside-hunk-suggestion.txt",
-        )
+        )?;
+        assert_degraded_count(&review, 1)
     });
 }
 
@@ -988,7 +1042,9 @@ fn runtime_refusal_quote_not_found_parks() {
             "quote-does-not-exist",
             "quote-not-found",
             "missing-quote.txt",
-        )
+        )?;
+        assert_degraded_count(&review, 1)?;
+        assert_closes(&fx, &review)
     });
 }
 
@@ -1046,7 +1102,8 @@ fn runtime_refusal_unmodified_file_benign() {
             "whole-file-untouched",
             "outside-hunk",
             "never-modified.txt",
-        )
+        )?;
+        assert_degraded_count(&review, 1)
     });
 }
 
@@ -1077,7 +1134,8 @@ fn runtime_refusal_path_absent_at_head_parks() {
             "path-does-not-exist-at-head",
             "path-missing",
             "this-path-was-never-committed.txt",
-        )
+        )?;
+        assert_degraded_count(&review, 1)
     });
 }
 
@@ -1117,7 +1175,7 @@ fn mixed_anchor_run_reports_partial() {
             has_line(&out, "anchorsParkRequired=no"),
             "the benign untouched-file cause is not a park signal: {out}"
         );
-        check_eq!(comments(&review).len(), 3, "two findings plus the note");
+        check_eq!(comments(&review).len(), 2, "the two findings");
         let landed = comment_with(&review, "lands-fine")?;
         check_eq!(
             landed["anchor"]["anchor_type"],
@@ -1136,13 +1194,15 @@ fn mixed_anchor_run_reports_partial() {
             "outside-hunk",
             "untouched.txt",
         )?;
-        check_eq!(note(&review)?["body"], note_body(&mut js, 1, 2)?, "1 of 2");
+        // AC3: one path-anchored comment fell back, and the count says so.
+        assert_degraded_count(&review, 1)?;
         check_eq!(
             r["persistDegraded"],
             json!({ "requested": 2, "degraded": 0, "all": false }),
             "the build-time preview sees neither run-time outcome"
         );
-        Ok(())
+        // AC4: the review closes once each finding comment is terminal.
+        assert_closes(&fx, &review)
     });
 }
 
@@ -1237,12 +1297,210 @@ fn all_anchors_degraded_sets_all() {
             has_line(&out, "anchorsParkRequired=yes"),
             "a build-time degradation is systemic: {out}"
         );
-        check_eq!(comments(&review).len(), 3, "both findings plus the note");
+        check_eq!(comments(&review).len(), 2, "both findings");
         for id in ["first-degraded", "second-degraded"] {
             assert_build_time_degraded(&mut js, &review, id)?;
         }
-        check_eq!(note(&review)?["body"], note_body(&mut js, 2, 2)?, "2 of 2");
+        assert_degraded_count(&review, 2)?;
+        assert_closes(&fx, &review)
+    });
+}
+
+// --- Findings about the item document or its plan --------------------------------
+
+/// A persisted comment about a plan-repo document: it stores `document`,
+/// targets it at the `plan-item` level, and is not a lost anchor.
+fn assert_document_comment(js: &mut Js, review: &Value, id: &str, document: &str) -> Outcome {
+    let c = comment_with(review, id)?;
+    check_eq!(c["document"], json!(document), "the stored document: {c}");
+    check_eq!(
+        c["target"]["level"],
+        json!("plan-item"),
+        "a document-level target: {c}"
+    );
+    for source_level in ["commit", "file", "range"] {
+        check!(
+            c["target"]["level"] != json!(source_level),
+            "distinct from the {source_level} level: {c}"
+        );
+    }
+    check_eq!(
+        c["target"]["link"],
+        json!(document),
+        "the target links that document"
+    );
+    check!(no_anchor(&c), "whole-document: {c}");
+    check_eq!(
+        c["anchor_state"],
+        json!("whole-document"),
+        "on purpose, not a lost anchor"
+    );
+    check!(
+        c.get("intended_path").is_none(),
+        "no source path is recorded: {c}"
+    );
+    check_eq!(
+        header_anchor(js, &c)?,
+        json!("document"),
+        "the header records the request"
+    );
+    Ok(())
+}
+
+/// One finding persisted against `args`; asserts the document outcome and
+/// returns the review.
+fn document_run(
+    lib: &Lib,
+    fx: &Fx,
+    args: Value,
+    path: &str,
+    document: &str,
+) -> Result<Value, Failure> {
+    let mut js = Js::open(lib)?;
+    let (r, _) = drive(
+        lib,
+        args,
+        vec![finding(
+            "about-the-document",
+            "concern",
+            json!({ "concern": "tests", "location": "the acceptance criteria", "path": path,
+                    "quote": "AC1: it works" }),
+        )],
+    )?;
+    let (review, out) = land(fx, &r)?;
+    check_eq!(comments(&review).len(), 1, "one comment: {review}");
+    assert_document_comment(&mut js, &review, "about-the-document", document)?;
+    check!(
+        has_line(&out, "anchorsDegraded=none"),
+        "a document finding is not a degraded anchor: {out}"
+    );
+    check!(
+        has_line(&out, "anchorsParkRequired=no"),
+        "and never parks: {out}"
+    );
+    check_eq!(
+        r["persistDegraded"],
+        json!({ "requested": 0, "degraded": 0, "all": false }),
+        "left out of the requested and degraded counts"
+    );
+    assert_degraded_count(&review, 0)?;
+    Ok(review)
+}
+
+#[test]
+fn item_document_finding_persists_as_a_document_comment() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let item = format!("phase/{ROADMAP}/phase-2-dirty");
+        let review = document_run(
+            lib,
+            &fx,
+            persist_args(&fx.roadmap_pin),
+            &item,
+            &format!("rdm:{item}"),
+        )?;
+        assert_closes(&fx, &review)
+    });
+}
+
+#[test]
+fn plan_document_finding_persists_as_a_document_comment() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        document_run(
+            lib,
+            &fx,
+            persist_args(&fx.roadmap_pin),
+            &format!("rdm:plan/{PLAN}"),
+            &format!("rdm:plan/{PLAN}"),
+        )?;
         Ok(())
+    });
+}
+
+#[test]
+fn item_document_finding_matches_a_phase_given_by_number() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        // The dispatch names the phase by number; the finder names its stem.
+        // The comment stores the stem either way.
+        document_run(
+            lib,
+            &fx,
+            merge(&[persist_args(&fx.roadmap_pin), json!({ "phase": "2" })]),
+            &format!("phase/{ROADMAP}/phase-2-dirty:3"),
+            &format!("rdm:phase/{ROADMAP}/phase-2-dirty"),
+        )?;
+        Ok(())
+    });
+}
+
+#[test]
+fn a_path_naming_another_phase_is_still_a_lost_anchor() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let (r, _) = drive(
+            lib,
+            persist_args(&fx.roadmap_pin),
+            vec![finding(
+                "about-another-phase",
+                "concern",
+                json!({ "concern": "tests", "location": "the acceptance criteria",
+                        "path": format!("phase/{ROADMAP}/phase-1-clean"), "quote": "AC1: it works" }),
+            )],
+        )?;
+        let (review, out) = land(&fx, &r)?;
+        let c = comment_with(&review, "about-another-phase")?;
+        check!(c.get("document").is_none(), "not a document comment: {c}");
+        check_eq!(
+            c["anchor_state"],
+            json!("path-missing"),
+            "neither a file at the reviewed head nor one of the item's documents"
+        );
+        check!(
+            has_line(&out, "anchorsParkRequired=yes"),
+            "which stays systemic: {out}"
+        );
+        assert_degraded_count(&review, 1)
+    });
+}
+
+// --- A rework with nothing to act on ---------------------------------------------
+
+#[test]
+fn rework_without_a_surviving_finding_carries_one_gate_comment() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let criterion = "AC1: it works";
+        let agent = fleet_with_ac(
+            json!([{ "criterion": criterion, "status": "FAIL",
+                     "evidence": "no test exercises the shipped path" }]),
+            vec![],
+        );
+        let r = run_driver(lib, REVIEW_ENGINE, persist_args(&fx.roadmap_pin), &agent)?
+            .map_err(Failure::Js)?;
+        check_eq!(r["outcome"], json!("rework"), "an unmet criterion reworks");
+        check_eq!(r["findings"], json!([]), "with no surviving finding");
+        let (review, _) = land(&fx, &r)?;
+        check_eq!(
+            review["verdict"],
+            json!("request-changes"),
+            "persisted as request-changes"
+        );
+        let cs = comments(&review);
+        check_eq!(cs.len(), 1, "exactly one comment: {review}");
+        let body = cs[0]["body"].as_str().unwrap_or_default();
+        check!(
+            body.contains(criterion) && body.contains("no test exercises the shipped path"),
+            "the comment names the criterion that gated and its evidence: {body}"
+        );
+        check_eq!(
+            cs[0]["anchor_state"],
+            json!("whole-document"),
+            "an ordinary whole-document comment"
+        );
+        assert_degraded_count(&review, 0)?;
+        assert_closes(&fx, &review)
     });
 }
 

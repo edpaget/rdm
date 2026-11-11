@@ -1614,6 +1614,11 @@ pub(crate) enum ReviewCommand {
     /// `--on-anchor-failure whole-document`, a refused anchor is stored
     /// whole-document with core's reason instead of failing, and stdout is
     /// one JSON line describing what was stored.
+    ///
+    /// On a `change/` review, `--document <ref>` records that the comment is
+    /// about a plan-repo document — the reviewed item or its implementation
+    /// plan — rather than a source file. It is a whole-document comment on
+    /// that document, not a lost anchor.
     #[command(group(
         clap::ArgGroup::new("anchor_request")
             .multiple(false)
@@ -1663,6 +1668,16 @@ pub(crate) enum ReviewCommand {
         /// `--path` itself.
         #[arg(long, value_name = "PATH", conflicts_with = "quote")]
         intended_path: Option<String>,
+        /// On a `change/` review: the plan-repo document this comment is
+        /// about (`phase/<roadmap>/<stem-or-number>`, `task/<slug>`,
+        /// `plan/<slug>` or `roadmap/<slug>`), for a finding about the item
+        /// document or its plan rather than a source file.
+        #[arg(
+            long,
+            value_name = "REF",
+            conflicts_with_all = ["quote", "path", "line", "intended_path", "on_anchor_failure"]
+        )]
+        document: Option<String>,
         /// What to do when the requested anchor is refused: `refuse` (the
         /// default) fails the command; `whole-document` stores the comment
         /// without an anchor, recording core's reason (and the requested

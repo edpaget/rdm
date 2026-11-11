@@ -882,6 +882,7 @@ fn change_review_reports_a_stored_tree_anchor_as_unresolved_with_no_permalink() 
         v.comments.push(rdm_core::model::ReviewComment {
             anchor_state: None,
             intended_path: None,
+            document: None,
             id: 1,
             doc: None,
             status: rdm_core::model::ReviewCommentStatus::Open,
@@ -4951,4 +4952,307 @@ Summary.
     let c = &review_json(plan.path(), src.path(), task_id)["comments"][0];
     assert_eq!(c["applied_commit_repo"], "plan");
     assert!(c.get("applied_commit_link").is_none(), "{c}");
+}
+
+// --- the plan-repo document a change-review comment is about ---
+
+/// A comment about the reviewed phase, named by number, stores the phase's
+/// stem and targets that document at the `plan-item` level.
+#[test]
+fn document_comment_stores_the_plan_document_and_targets_it() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--document",
+            "phase/auth/1",
+            "--body",
+            "The second criterion contradicts the first.",
+        ],
+    );
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--document",
+            "plan/design-plan",
+            "--body",
+            "The plan names a file that does not exist.",
+        ],
+    );
+
+    let j = review_json(plan.path(), src.path(), &id);
+    let phase = &j["comments"][0];
+    assert_eq!(phase["document"], "rdm:phase/auth/phase-1-design");
+    assert_eq!(phase["target"]["level"], "plan-item");
+    assert_eq!(phase["target"]["link"], "rdm:phase/auth/phase-1-design");
+    assert_eq!(phase["anchor_state"], "whole-document");
+    assert!(phase.get("intended_path").is_none(), "{phase}");
+    assert!(phase["anchor"].is_null(), "{phase}");
+
+    let plan_comment = &j["comments"][1];
+    assert_eq!(plan_comment["document"], "rdm:plan/design-plan");
+    assert_eq!(plan_comment["target"]["level"], "plan-item");
+    assert_eq!(plan_comment["target"]["link"], "rdm:plan/design-plan");
+    assert_eq!(plan_comment["anchor_state"], "whole-document");
+    assert!(
+        plan_comment.get("intended_path").is_none(),
+        "{plan_comment}"
+    );
+
+    // Neither is a lost anchor.
+    assert_eq!(j["anchors_degraded"], 0);
+
+    let (ok, stdout, stderr) = run_rdm(plan.path(), src.path(), &["review", "show", &id]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains("[document: phase/auth/phase-1-design]"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("[document: plan/design-plan]"), "{stdout}");
+    assert!(!stdout.contains("Anchors degraded"), "{stdout}");
+}
+
+#[test]
+fn document_comment_is_refused_with_a_quote() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--document",
+            "phase/auth/1",
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Both at once.",
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--document"), "{stderr}");
+    assert!(stderr.contains("--quote"), "{stderr}");
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn document_comment_is_refused_on_a_task_review() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_fix_login_task(plan.path());
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        plan.path(),
+        &["review", "start", "--on", "task/fix-login", "--no-edit"],
+    );
+    assert!(ok, "{stderr}");
+    let id = stdout.split('\'').nth(1).unwrap().to_string();
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &["--document", "phase/auth/1", "--body", "About the phase."],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--document only applies to a change review"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("task/fix-login"), "{stderr}");
+}
+
+#[test]
+fn document_comment_is_refused_for_a_missing_item_and_for_a_change_ref() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--document",
+            "task/no-such-task",
+            "--body",
+            "About nothing.",
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no-such-task"), "{stderr}");
+
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--document",
+            &format!("change/{head}"),
+            "--body",
+            "About the change.",
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("names a change, not a plan-repo document"),
+        "{stderr}"
+    );
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"].as_array().unwrap().len(), 0);
+}
+
+// --- the review-level degraded-anchor count ---
+
+/// One comment whose anchor core refused (stored whole-document with the
+/// refusal's reason) beside one that anchored: the review reports one
+/// degraded anchor, in JSON and in the human view.
+#[test]
+fn review_show_reports_the_degraded_anchor_count() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn nowhere() {}",
+            "--on-anchor-failure",
+            "whole-document",
+            "--body",
+            "Quoted text the file does not have.",
+        ],
+    );
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Rename back.",
+        ],
+    );
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"][0]["anchor_state"], "quote-not-found");
+    assert!(j["comments"][1]["anchor"].is_object(), "{j}");
+    assert_eq!(j["anchors_degraded"], 1);
+
+    let (ok, stdout, stderr) = run_rdm(plan.path(), src.path(), &["review", "show", &id]);
+    assert!(ok, "{stderr}");
+    assert!(stdout.contains("Anchors degraded: 1"), "{stdout}");
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["review", "show", &id, "--format", "markdown"],
+    );
+    assert!(ok, "{stderr}");
+    assert!(stdout.contains("**Anchors degraded:** 1"), "{stdout}");
+}
+
+/// A review persisted before the count existed: one degraded comment plus
+/// the `persist-note` comment the ladder used to write. It loads unchanged,
+/// the note is an ordinary comment (not counted, and still to be resolved),
+/// and the review closes once both are terminal.
+#[test]
+fn a_legacy_persist_note_comment_is_an_ordinary_comment() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let head = git_out(src.path(), &["rev-parse", "topic"]);
+    let id = "2026-07-01-1430-n0te";
+    write_raw_review(
+        plan.path(),
+        id,
+        &format!(
+            "---
+id: {id}
+author: rdm-review
+target:
+  kind: change
+  head: {head}
+state: submitted
+verdict: request-changes
+created: 2026-07-01T14:30:00Z
+submitted: 2026-07-01T14:31:00Z
+comments:
+  - id: 1
+    status: open
+    anchor_state: path-missing
+    body: A finding whose path the change does not have.
+  - id: 2
+    status: open
+    anchor_state: whole-document
+    body: 'persist-note: anchors-degraded 1 of 1 requested anchors'
+---
+Summary.
+"
+        ),
+    );
+
+    let j = review_json(plan.path(), src.path(), id);
+    assert_eq!(j["anchors_degraded"], 1);
+    assert_eq!(j["comments"].as_array().unwrap().len(), 2);
+
+    let resolve = |comment: &str| {
+        run_rdm(
+            plan.path(),
+            src.path(),
+            &[
+                "review",
+                "update",
+                id,
+                "--comment",
+                comment,
+                "--status",
+                "wont-fix",
+                "--reply",
+                "Recorded.",
+            ],
+        )
+    };
+    let close = || {
+        run_rdm(
+            plan.path(),
+            src.path(),
+            &["review", "update", id, "--state", "addressed"],
+        )
+    };
+
+    let (ok, _, stderr) = resolve("1");
+    assert!(ok, "{stderr}");
+    let (ok, _, stderr) = close();
+    assert!(!ok, "the open note comment must still block the close");
+    assert!(stderr.contains('2'), "{stderr}");
+
+    let (ok, _, stderr) = resolve("2");
+    assert!(ok, "{stderr}");
+    let (ok, _, stderr) = close();
+    assert!(ok, "{stderr}");
+    let j = review_json(plan.path(), src.path(), id);
+    assert_eq!(j["state"], "addressed");
+    // Resolving a comment does not restore its anchor.
+    assert_eq!(j["anchors_degraded"], 1);
 }

@@ -1189,6 +1189,8 @@ fn build_review_detail(
     d.push(ast::Block::BlankLine);
 
     let verdict = fm.verdict.map(|v| v.to_string());
+    // Shown only when an anchor was actually lost.
+    let anchors_degraded = fm.degraded_anchor_count();
     match flavor {
         RenderFlavor::Markdown => {
             let mut items = vec![
@@ -1221,6 +1223,12 @@ fn build_review_detail(
                     &format!("rdm:{}", implements.label()),
                 ));
             }
+            if anchors_degraded > 0 {
+                items.push(meta_bullet(
+                    "Anchors degraded",
+                    &anchors_degraded.to_string(),
+                ));
+            }
             d.push(ast::Block::UnorderedList { items });
         }
         RenderFlavor::Terminal => {
@@ -1248,6 +1256,9 @@ fn build_review_detail(
             }
             if let Some(implements) = &fm.implements {
                 d.paragraph(&format!("Implements: rdm:{}", implements.label()));
+            }
+            if anchors_degraded > 0 {
+                d.paragraph(&format!("Anchors degraded: {anchors_degraded}"));
             }
         }
     }
@@ -1283,6 +1294,9 @@ fn build_review_detail(
             );
             if let Some(doc_scope) = &comment.doc {
                 head.push_str(&format!(" [doc: phase/{}]", doc_scope.stem));
+            }
+            if let Some(document) = &comment.document {
+                head.push_str(&format!(" [document: {}]", document.label()));
             }
             if let Some(label) = comment.anchor.as_ref().and_then(anchor_line_label) {
                 head.push_str(&format!(" [{label}]"));
@@ -2457,6 +2471,7 @@ mod tests {
                     ReviewComment {
                         anchor_state: None,
                         intended_path: None,
+                        document: None,
                         id: 1,
                         doc: Some(CommentDoc {
                             kind: CommentDocKind::Phase,
@@ -2476,6 +2491,7 @@ mod tests {
                     ReviewComment {
                         anchor_state: None,
                         intended_path: None,
+                        document: None,
                         id: 2,
                         doc: None,
                         status: ReviewCommentStatus::Open,
@@ -2669,6 +2685,7 @@ mod tests {
                 comments: vec![ReviewComment {
                     anchor_state: None,
                     intended_path: None,
+                    document: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,
@@ -2730,6 +2747,61 @@ mod tests {
             output.contains(&format!("Source: rdm:src/src/lib.rs@{head}#L2-L3")),
             "{output}"
         );
+    }
+
+    /// [`make_change_review_doc`] plus a comment about the reviewed phase's
+    /// document (#2) and one whose anchor was lost (#3).
+    fn make_document_review_doc() -> Document<Review> {
+        let mut doc = make_change_review_doc();
+        let mut about_document = doc.frontmatter.comments[0].clone();
+        about_document.id = 2;
+        about_document.anchor = None;
+        about_document.anchor_state = Some(crate::model::AnchorState::WholeDocument);
+        about_document.document = Some(ReviewTarget::Phase {
+            roadmap: "alpha".to_string(),
+            stem: "phase-2-ops".to_string(),
+        });
+        let mut degraded = about_document.clone();
+        degraded.id = 3;
+        degraded.anchor_state = Some(crate::model::AnchorState::PathMissing);
+        degraded.document = None;
+        doc.frontmatter.comments.push(about_document);
+        doc.frontmatter.comments.push(degraded);
+        doc
+    }
+
+    #[test]
+    fn review_detail_terminal_renders_the_document_tag_and_degraded_count() {
+        let doc = make_document_review_doc();
+        let output = format_review_detail("id", &doc, &[], &[], None);
+        assert!(output.contains("Anchors degraded: 1"), "{output}");
+        assert!(
+            output.contains("Comment 2 — open (unresolved) [document: phase/alpha/phase-2-ops]"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn review_detail_md_renders_the_document_tag_and_degraded_count() {
+        let doc = make_document_review_doc();
+        let output = format_review_detail_md("id", &doc, &[], &[], None);
+        assert!(output.contains("**Anchors degraded:** 1"), "{output}");
+        assert!(
+            output.contains("[document: phase/alpha/phase-2-ops]"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn review_detail_omits_the_degraded_count_when_no_anchor_was_lost() {
+        let doc = make_change_review_doc();
+        for output in [
+            format_review_detail("id", &doc, &make_change_resolutions(), &[], None),
+            format_review_detail_md("id", &doc, &make_change_resolutions(), &[], None),
+        ] {
+            assert!(!output.contains("Anchors degraded"), "{output}");
+            assert!(!output.contains("[document:"), "{output}");
+        }
     }
 
     #[test]

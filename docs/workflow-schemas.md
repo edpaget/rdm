@@ -1264,7 +1264,7 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `concern`       | string (required)                        | the dimension key (`ac`, `correctness`, …)        |
 | `category`      | string                                   | **optional**; security-style slug (injection / authorization / memory / crypto / exposure) |
 | `location`      | string                                   | `file:line`, section heading, or phase stem — free-text, may carry extra human-readable detail |
-| `path`          | string                                   | **optional, code mode**; a STRUCTURED repo-relative source path the `quote` was taken from, distinct from `location`. Required alongside `quote` by prompt convention (not schema-enforced), and the prompt asks for a BARE path with no `:line` suffix — but `persistAnchorFor` tolerates one anyway, stripping it via `stripPathLineSuffix` before validating (see below); a finding that carries `quote` with no usable `path` still falls back to the `location`-parsing heuristic (see `pathFromLocation`) |
+| `path`          | string                                   | **optional, code mode**; a STRUCTURED repo-relative source path the `quote` was taken from, distinct from `location`. Required alongside `quote` by prompt convention (not schema-enforced), and the prompt asks for a BARE path with no `:line` suffix — but `persistAnchorFor` tolerates one anyway, stripping it via `stripPathLineSuffix` before validating (see below); a finding that carries `quote` with no usable `path` still falls back to the `location`-parsing heuristic (see `pathFromLocation`). For a finding about the item document or the implementation plan itself, `path` is that document's ref as the review target names it (`phase/<roadmap>/<stem-or-number>`, `task/<slug>`, or `plan/<slug>`) and `quote` is omitted — see "Findings about the item document or its plan" under § "Persisting a review" |
 | `quote`         | string                                   | **optional**; a VERBATIM excerpt of the reviewed text this finding is about — what makes a code-mode persisted comment anchorable. Plan-mode finders are told not to report it |
 | `start_line` / `end_line` | integer ≥ 1                    | **optional, plan mode**; the first and last line of the span the finding is about, copied from the line numbers printed beside the document under review (`show --numbered`, `cat -n` for a free-form plan). A missing `end_line` means one line; `end_line < start_line` means no span (`findingLineSpan`) |
 | `severity`      | `blocking` \| `concern` \| `suggestion`  | required; drives ranking and the overall verdict  |
@@ -1348,12 +1348,15 @@ and a finder-supplied `path` is normally the MORE reliable signal — discarding
 it in favor of `location` would throw away that reliability over a
 self-inflicted formatting slip.
 
-The code-mode `ac` dimension's prompt deliberately says nothing about `quote`.
-It returns early from its own `AC_REVIEW_SCHEMA` branch and never reaches the
-shared FINDINGS-schema prompt line, its prompt text was byte-pinned by the since-deleted
-`scripts/verify-workflow-review.sh`'s `CODE_PROMPT_BASELINE.ac`, and its
-`findings` array is narrative-only. Structurally `quote` is still accepted there,
-because `AC_REVIEW_SCHEMA.properties.findings` aliases the same sub-schema. See
+The code-mode `ac` dimension's prompt does not ask for a source `quote`. It
+returns early from its own `AC_REVIEW_SCHEMA` branch and never reaches the
+shared FINDINGS-schema prompt lines, and its `findings` array is narrative-only.
+Structurally `quote` is still accepted there, because
+`AC_REVIEW_SCHEMA.properties.findings` aliases the same sub-schema. The one
+thing it does say about `path` is the sentence every code-mode finder carries
+(`DOCUMENT_FINDING_PATH`): a finding about the item document or the
+implementation plan itself sets `path` to that document's ref and omits
+`quote`. The `ac` reviewer is where most such findings come from. See
 § "Persisted review comment body" and § "Persisting a review" below.
 
 **Security severity maps onto the existing three-value ladder.** The `security`
@@ -1478,6 +1481,10 @@ Rules:
   - `degraded` — the finding carried a `quote` but the writer dropped the
     requested anchor at BUILD time (`persistAnchorFor`'s `reason` —
     `path-missing` or `outside-hunk`)
+  - `document` — change target, the finding's path names one of the
+    consumer's plan-repo documents (`opts.documents`) and `--document <ref>`
+    is emitted; the comment is about that document and requests no source
+    anchor
 
   Computed by `persistAnchorState(finding, target, opts)`, which re-derives the
   SAME decision `persistAnchorFor` makes for the writer, so the header can
@@ -1486,7 +1493,7 @@ Rules:
   `line` request core refuses at run time keeps its `anchor: path` /
   `anchor: line` header. **The comment's
   stored `anchor_state` field is authoritative** — `whole-document` for a
-  `wholeDocumentIntended` finding, the writer's own reason for a build-time
+  `wholeDocumentIntended` or `document` finding, the writer's own reason for a build-time
   drop, and core's reason (with the requested file in `intended_path`) for a
   run-time refusal (see [`change-reviews.md`](change-reviews.md#degraded-and-whole-document-comments)).
 - Every header VALUE is single-line (embedded newlines are collapsed to spaces),
@@ -1502,6 +1509,12 @@ Rules:
   `Grouped because: <clusterWhy>`. No header key is added, so every header
   shape still parses and `dimension` stays the representative's concern. A
   singleton's body is byte-identical to a no-consolidator run's.
+- The **gate comment** of a `rework` with no surviving finding
+  (`persistGateFinding`, see § "Persisting a review") is written through the
+  same `formatCommentBody`, so it carries this header too: `severity:
+  blocking`, `dimension: ac`, `finding-id: review-gate`, `anchor:
+  wholeDocumentIntended`. Its `What fails:` line names the unmet criterion or
+  the evidence gap.
 
 **Backward compatibility: a legacy SEVEN-key header still parses.** `anchor`
 was added as a TRAILING eighth key; every comment persisted before that change
@@ -1570,6 +1583,54 @@ still branches on nothing:
 | `opts` field | effect |
 | --- | --- |
 | `pathAnchors` | for each survivor, resolve a repo-relative `--path`: try the finder's own structured `finding.path` first (validated through `isRepoRelativePath`), and fall back to the pure `pathFromLocation(finding.location)` heuristic only when `finding.path` is absent or invalid — then emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. Against a change target `--quote` is emitted ONLY when a `--path` accompanies it — see the unanchorable-quote rule below. |
+| `documents` | an array of plan-repo document refs a finding's path may name (`phase/<roadmap>/<stem-or-number>`, `task/<slug>`, `plan/<slug>`, `roadmap/<slug>`). A survivor whose path names one is written as `review comment --document <entry>` instead of a source anchor — see "Findings about the item document or its plan" below. REFUSED with a throw on a non-change target, and for an entry that is not a non-empty string containing `/` or that starts with `change/`. |
+
+**Findings about the item document or its plan.** Code reviewers, mostly `ac`,
+raise findings about the phase or task document itself — a criterion's wording,
+a missing acceptance section, a stale sentence — and about the implementation
+plan. The finder gives that document's ref as the finding's `path`. A `change/`
+review anchors only into source files, so the ref can never be a `--path`; it
+used to be refused as "does not exist at `<sha>`", stored whole-document as
+`path-missing`, counted as a lost anchor, and — `path-missing` being systemic —
+it raised `anchorsParkRequired=yes`.
+
+It is now treated as something the finder said on purpose. The consumer passes
+the refs it already holds as `opts.documents` (`rdm-wf-review-refute-fix.js`
+passes the reviewed item's ref, plus the `implements` plan ref when it has
+one). `persistDocumentFor(finding, opts)` returns the matching entry, or
+`null`:
+
+- the candidate is `finding.path` when it is a non-blank string, otherwise
+  `finding.location`; it is trimmed, a leading `rdm:` is dropped, and a trailing
+  `:<line>` / `:<a>-<b>` is dropped;
+- it matches an entry when the two are equal, or when both are
+  `phase/<same roadmap>/<x>` and one names the phase by number `N` while the
+  other's stem starts with `phase-N-` (the dispatch passes either spelling).
+
+`persistAnchorFor` asks it first on a change target, and a match wins whether
+or not the finding carries a quote and whether or not the reviewed range is
+empty: the decision is `{ document: <entry>, quote: false, reason: null, … }`
+(`document` is `null` in every other decision). The writer then emits one line,
+`review comment "$RDM_REVIEW_ID" --document '<entry>' --body …`. The value is
+the consumer's own ref, never the finder's text. Core stores which document the
+comment is about and gives it a `plan-item` target linking that document (see
+[`change-reviews.md`](change-reviews.md)).
+
+Such a finding requests no anchor: `persistRequestsAnchor(finding, target,
+opts)` is false for it, so it is in neither the `requested` nor the `degraded`
+count of `persistDegradedSummary` / `persistDegradationClause`, is not a
+build-time drop, and cannot seed `RDM_PERSIST_PARK_REQUIRED`. A run whose only
+finding is a document finding prints `anchorsDegraded=none` and
+`anchorsParkRequired=no`. A quote the finding carries is not stored: a document
+comment is whole-document, like every other fallback.
+
+A path that names neither one of the consumer's documents nor a usable file at
+the reviewed head — another phase of the roadmap, a typo — is unchanged: it is
+`path-missing`, systemic, and parks.
+
+The ladder now needs a binary that knows `review comment --document`, the same
+class of dependency as `--on-anchor-failure` and `--anchor-state`; the plugin
+and the binary ship together.
 
 **`rdm-wf-review-refute-fix.js` defaults its code-review persist target to
 `change/HEAD`** — a code review is about the code, so the recorded artifact
@@ -1587,7 +1648,8 @@ persisted change review onto a document target forbidden POLICY rather than
 merely unimplemented.
 
 **Emitted commands**, in order: `rdm review start --on <target> --body <summary>
---no-edit --format json` → one `rdm review comment` per survivor → `rdm review
+--no-edit --format json` → one `rdm review comment` per survivor (plus the one
+gate comment of a `rework` with no survivor, see below) → `rdm review
 submit --verdict <v>` → a session-scoped `rdm commit`. Quotes and bodies are
 captured through `persistCapture`, which assigns them to a shell variable via
 a plain single-quoted `shellQuote` string (never interpolated into a command
@@ -1736,7 +1798,7 @@ to tell the two apart WITHOUT parsing `persistDegradationClause`'s prose.
 `persistDegradedSummary(result, target, opts)` is the BUILD-TIME half:
 `{ requested, degraded, all }`, where `requested` is how many survivors asked
 for an anchor (`persistRequestsAnchor`: a `--quote`, or a line span on a
-plan-repo document target) and `degraded` is how many were dropped before a single
+plan-repo document target; a document finding asks for none) and `degraded` is how many were dropped before a single
 command ran (the same count the prose clause composes). It cannot see a
 run-time refusal, because nothing has run yet when it is computed — see the
 fall-back mode above.
@@ -1754,35 +1816,24 @@ ONLY when at least one anchor was requested and every single one degraded,
 whichever stage caused it; a run with zero requested anchors, or with some but
 not all degraded, prints `partial` or `none`.
 
-**The REAL total is also recorded IN THE REVIEW ITSELF, not only on stdout.**
-The build-time-only `persistDegradationClause` above is baked into the
-`--body` text before `review start` even runs, so it cannot see a run-time
-refusal — a review whose every anchor degraded at run time used to persist
-with a clean-looking summary and no trace beyond each affected comment's own
-record of it. Once the block above has computed
-`RDM_PERSIST_TOTAL_DEGRADED` (build-time plus run-time), and while the review
-is still a DRAFT — before `review submit` — the ladder appends one
-whole-document comment whenever that total is greater than zero:
-`persistDegradationNoteBody(totalDegraded, requested)` (`persist-note:
-anchors-degraded`, then "`N` of `M` requested anchor(s) could not be placed;
-see the stored anchor_state on each comment above."), with the run-time-only-known
-total filled in through `printf` rather than `persistCapture` — `persistCapture`
-emits a static `shellQuote`d string and cannot expand a shell variable at all,
-so this call site needed `printf` regardless of which capture strategy
-`persistCapture` itself uses (see task
-`persist-capture-bash32-heredoc-apostrophe`, which replaced `persistCapture`'s
-own heredoc-in-`$(...)` form with the same `shellQuote`-based approach for an
-unrelated reason — that form could not even PARSE under macOS's bash 3.2 when
-the captured text contained an apostrophe).
-The note step is emitted only for a change target, or when at least one
-survivor requests a line anchor — the only two cases where a run-time
-fallback can fire — so a plan ladder whose survivors carry no span is
-unchanged. This note carries none of `PERSIST_HEADER_KEYS` (it describes the review, not
-a survivor), so `parseCommentHeader` correctly reports it as unheadered. The
-note is the SAME text a caller reading the persisted review sees regardless of
-whether the degradation happened at build time or run time — the two cases
-are no longer distinguishable only by whether the caller happened to capture
-the ladder's stdout.
+**The REAL total is a fact about the review, not a comment on it.** Every
+degraded comment stores its reason in `anchor_state`, whether the writer
+dropped the anchor at build time (`--anchor-state <reason>`) or core refused it
+at run time (`--on-anchor-failure whole-document`). Core counts those at read
+time, and `rdm review show` reports the number as the review-level
+`anchors_degraded` (JSON, always present) and as an `Anchors degraded: <n>`
+line in the human views when it is above zero. So a reader of the persisted
+review sees the same number whether the degradation happened at build time or
+run time, and whether or not the caller captured the ladder's stdout.
+
+The ladder used to record that total by appending a `persist-note:
+anchors-degraded` comment before `review submit`. It no longer does. The note
+was an ordinary open comment, so the review could not be closed until someone
+resolved it, and each resolution was a `wont-fix` reply that said nothing. A
+review persisted before this change still holds its note; it loads and renders
+unchanged, is not counted (its stored state is `whole-document`), and still has
+to be resolved like any other comment before `--state addressed`.
+`parseCommentHeader` reads it as unheadered.
 
 **The anchor-degraded park signal (AC1), keyed on CAUSE, not on the raw
 `anchorsDegraded` tally (phase-46: anchor-degraded-park-by-cause).** A
@@ -1804,7 +1855,9 @@ should actually key a park decision on. It follows ONE rule: **the ladder
 prints `anchorsParkRequired=yes` if and only if at least one requested
 anchor was lost for a reason not in `ANCHOR_REASONS_BENIGN`** (today
 `['outside-hunk']`). Build-time drops and run-time refusals are classified by
-the same set, and severity is not consulted.
+the same set, and severity is not consulted. A finding about one of the
+consumer's plan-repo documents (`opts.documents`) requested no anchor, so it is
+never part of this decision.
 
 - Reasons that park: `path-missing` (a path absent at the reviewed head, or
   no derivable path at build time), `path-not-a-file`, `path-not-linkable`,
@@ -1893,7 +1946,7 @@ capture its output, and PARK `blocked` when its last line reads
 whose anchors were lost for a systemic cause should not be reported as
 ordinary successful persistence. `anchorsParkRequired=no` is not a park, regardless of what
 `anchorsDegraded` reads; it proceeds normally, with the degradation already
-visible in the review's own note comment (see above) and each comment's
+visible as the review's `anchors_degraded` count (see above) and each comment's
 stored `anchor_state`.
 
 **The engine's own headless `gate: true` path reads the same signal, through
@@ -1943,6 +1996,31 @@ unrecognized outcome rather than defaulting to `comment`):
 | `reviewed` | `approve` |
 | `rework` | `request-changes` |
 | `escalated` | `request-changes`, with the mode's `[code]`/`[plan]` escalation prefix on the review body |
+
+**A `rework` with nothing to act on carries one gate comment.** A code review
+can return `rework` with no surviving finding: `classifyOutcome` yields that
+only through `acTableHasGap`, where a FAIL / PARTIAL row of the acceptance
+table forces rework without ever becoming a finding. Persisted as it stood,
+that was a `request-changes` review with zero comments, so triage had nothing
+to resolve and could not add an explanation once the review was submitted.
+
+`persistGateFinding(result)` returns a finding-shaped object for that case, and
+`null` unless `result.outcome === 'rework'` and there are no survivors. Its
+`what_fails` names every FAIL / PARTIAL row of `result.evidence.acTable` —
+criterion, status and the row's evidence — on one line. With no such row it
+says the review evidence is incomplete when
+`reviewEvidenceComplete(result.evidence)` is false, and otherwise that the
+outcome was `rework` with no finding or unmet criterion supplied. It is
+`severity: 'blocking'`, `concern: 'ac'`, with the fixed id `review-gate`.
+
+`persistReviewCommands` writes it after the survivors and before `review
+submit`, through `formatCommentBody`, as an ordinary whole-document comment
+(`--anchor-state whole-document`). It requests no anchor and is not counted.
+Triage treats it like any other whole-change comment: the implementer gets the
+criterion, or it is `wont-fix` with a reason.
+
+`escalated` gets no gate comment: the shipped code consumer never persists an
+incomplete-evidence escalation (`failure` suppresses the ladder).
 
 **WHO RUNS THE LADDER.** Nobody inside a workflow. `persistReviewCommands`
 returns the ordered command list as DATA; the engines hand it back on their
