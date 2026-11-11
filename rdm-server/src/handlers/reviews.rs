@@ -499,11 +499,12 @@ pub async fn update_comment(
     };
 
     let mut store = state.store();
-    // `applied_commit` is resolved (format + existence, against the review's
-    // target-appropriate repository) before the mutation starts — a hard
-    // refusal, not the read path's degrade-with-a-note pattern — so a SHA
-    // that fails validation never reaches `update_comment`. The resolved
-    // full SHA is what gets stored, not the caller's literal input.
+    // `applied_commit` is resolved (format + existence, in the repository
+    // the review's target kind implies, then in the other one) before the
+    // mutation starts — a hard refusal, not the read path's
+    // degrade-with-a-note pattern — so a SHA that fails validation never
+    // reaches `update_comment`. The resolved full SHA is what gets stored,
+    // not the caller's literal input, with the repository it resolved in.
     let resolved_applied_commit = match req.applied_commit.as_deref() {
         Some(sha) => {
             let review_doc = rdm_core::ops::reviews::get_review(&store, &project, &review_id)
@@ -532,7 +533,10 @@ pub async fn update_comment(
                 anchor,
                 doc: doc_update,
                 status: req.status,
-                applied_commit: resolved_applied_commit.as_deref(),
+                applied_commit: resolved_applied_commit
+                    .as_ref()
+                    .map(|(sha, _)| sha.as_str()),
+                applied_commit_repo: resolved_applied_commit.as_ref().map(|(_, repo)| *repo),
                 reply: req.reply.as_deref(),
             },
         )
@@ -1775,6 +1779,8 @@ mod tests {
         let json = json_body(response).await;
         assert_eq!(json["comments"][0]["status"], "addressed");
         assert_eq!(json["comments"][0]["applied_commit"], head.as_str());
+        // The repository the SHA resolved in travels with it.
+        assert_eq!(json["comments"][0]["applied_commit_repo"], "plan");
         assert_eq!(json["comments"][0]["reply"], "Done.");
     }
 
@@ -1839,11 +1845,58 @@ mod tests {
         let response = send(&state, patch_json(&uri, &body.to_string())).await;
         assert_eq!(response.status(), 400);
         let json = json_body(response).await;
+        let detail = json["detail"].as_str().unwrap();
+        assert!(detail.contains("does not resolve to a commit"), "{detail}");
+        // Both places looked are named: the plan repo by its path, and the
+        // source repo this project does not configure.
         assert!(
-            json["detail"]
-                .as_str()
-                .unwrap()
-                .contains("does not resolve to a commit")
+            detail.contains(&state.plan_root.display().to_string()),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("the project's configured source repo"),
+            "{detail}"
+        );
+    }
+
+    /// A name such as `HEAD` resolves only in the repository the review's
+    /// kind implies. On a change review whose source repo is unavailable it
+    /// is refused, never resolved against the plan repo's unrelated `HEAD`.
+    #[cfg(feature = "git")]
+    #[test]
+    fn applied_commit_head_never_falls_through_to_the_other_repository() {
+        let (_dir, state) = setup();
+        let plan_head = git_init_plan_root(&state);
+        let store = state.store();
+        let change = rdm_core::model::ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: None,
+        };
+        let refusal = crate::source_repo::resolve_applied_commit(
+            &store,
+            "demo",
+            &state.plan_root,
+            &change,
+            "HEAD",
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("does not resolve to a commit"),
+            "{refusal}"
+        );
+        assert!(!refusal.contains("the plan repo at"), "{refusal}");
+
+        // The plan repo's SHA itself is commit-shaped, so it does fall through.
+        assert_eq!(
+            crate::source_repo::resolve_applied_commit(
+                &store,
+                "demo",
+                &state.plan_root,
+                &change,
+                &plan_head,
+            )
+            .unwrap(),
+            (plan_head, rdm_core::model::CommitRepo::Plan)
         );
     }
 

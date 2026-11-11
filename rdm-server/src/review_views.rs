@@ -278,10 +278,11 @@ pub fn page_reviews(
 ///
 /// A value core derives a source-commit reference for (`commit_refs`, from
 /// [`rdm_core::ops::reviews::review_commit_refs`]) renders as the same link a
-/// body `rdm:src@<sha>` gets, its first seven characters as link text. Any
-/// other value stays inert and verbatim: a plan-document review's names a
-/// plan-repo commit, and a legacy change-review value that is not
-/// commit-shaped (e.g. `HEAD`) was never a link.
+/// body `rdm:src@<sha>` gets, its first seven characters as link text —
+/// that is a commit recorded in the source repository, on a review of any
+/// kind. Any other value stays inert and verbatim: a commit recorded in the
+/// plan repo (there is no link form for one), and a legacy value that is not
+/// commit-shaped (e.g. `HEAD`), which was never a link.
 fn applied_commit_view(
     store: &impl rdm_core::store::Store,
     project: &str,
@@ -618,6 +619,7 @@ mod tests {
                 doc: None,
                 status: rdm_core::model::ReviewCommentStatus::Addressed,
                 applied_commit: Some(applied_commit.to_string()),
+                applied_commit_repo: None,
                 anchor: None,
                 anchor_state: None,
                 intended_path: None,
@@ -668,6 +670,40 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("rdm-link-broken"), "{html}");
+    }
+
+    /// The link follows the repository the commit was recorded in, not the
+    /// review's kind: a source commit on a plan-document review links, and a
+    /// plan-repo commit on a change review stays inert.
+    #[test]
+    fn applied_commit_link_follows_the_recorded_repository() {
+        use rdm_core::model::CommitRepo;
+
+        let (_dir, store) = demo_store();
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+
+        let mut task_review = change_review(sha);
+        task_review.target = ReviewTarget::Task {
+            slug: "fix-login".to_string(),
+        };
+        task_review.comments[0].applied_commit_repo = Some(CommitRepo::Source);
+        let refs = rdm_core::ops::reviews::review_commit_refs(&task_review);
+        let (inert, html) =
+            applied_commit_view(&store, "demo", &refs, &task_review.comments[0]).unwrap();
+        assert_eq!(inert, None);
+        let html = html.expect("a commit link");
+        assert!(
+            html.contains(&format!("?target=rdm%3Asrc%40{sha}")),
+            "{html}"
+        );
+
+        let mut review = change_review(sha);
+        review.comments[0].applied_commit_repo = Some(CommitRepo::Plan);
+        let refs = rdm_core::ops::reviews::review_commit_refs(&review);
+        let (inert, html) =
+            applied_commit_view(&store, "demo", &refs, &review.comments[0]).unwrap();
+        assert_eq!(inert.as_deref(), Some(sha));
+        assert_eq!(html, None);
     }
 
     /// The `plan/<slug>` review-target kind has no rdm-server detail route

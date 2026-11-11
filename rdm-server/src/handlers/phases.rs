@@ -1641,6 +1641,7 @@ mod tests {
                 doc: rdm_core::ops::reviews::DocUpdate::Keep,
                 status: Some(rdm_core::model::ReviewCommentStatus::Addressed),
                 applied_commit: Some("c2d9db220824277d2518d7cbeab8560ddd7f9448"),
+                applied_commit_repo: None,
                 reply: Some("Fixed in c2d9db2."),
             },
         )

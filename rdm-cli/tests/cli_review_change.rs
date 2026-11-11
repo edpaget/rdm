@@ -886,6 +886,7 @@ fn change_review_reports_a_stored_tree_anchor_as_unresolved_with_no_permalink() 
             doc: None,
             status: rdm_core::model::ReviewCommentStatus::Open,
             applied_commit: None,
+            applied_commit_repo: None,
             anchor: Some(rdm_core::model::Anchor::FileQuote {
                 path: "sub".to_string(),
                 quote: "a.txt".to_string(),
@@ -2720,6 +2721,11 @@ fn change_review_applied_commit_resolves_short_sha_against_source_repo() {
 
     let j = review_json(plan.path(), src.path(), &id);
     assert_eq!(j["comments"][0]["applied_commit"], head.as_str());
+    assert_eq!(j["comments"][0]["applied_commit_repo"], "source");
+    assert_eq!(
+        j["comments"][0]["applied_commit_link"],
+        format!("rdm:src@{head}")
+    );
 }
 
 #[test]
@@ -2862,10 +2868,9 @@ fn change_review_applied_commit_refuses_a_sha_only_in_an_unrelated_repo() {
         .assert()
         .success();
 
-    // This SHA is a real commit, but only in a repo unrelated to the
-    // project's configured source — proving the check reads the SOURCE
-    // repo, not the plan repo (which would also fail to resolve it, for the
-    // wrong reason).
+    // This SHA is a real commit, but only in a repo unrelated to both the
+    // project's configured source and the plan repo — so it resolves in
+    // neither place looked.
     let unrelated = init_unrelated_repo();
     let unrelated_head = git_out(unrelated.path(), &["rev-parse", "HEAD"]);
 
@@ -2895,15 +2900,12 @@ fn change_review_applied_commit_refuses_a_sha_only_in_an_unrelated_repo() {
         "must refuse the unresolvable sha: {text}"
     );
     assert!(
-        text.contains(&src.path().to_string_lossy().to_string())
-            || text.contains(
-                &src.path()
-                    .canonicalize()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string()
-            ),
-        "must name the source repo checked, not the plan repo: {text}"
+        names_path(&text, src.path()),
+        "must name the source repo checked: {text}"
+    );
+    assert!(
+        names_path(&text, plan.path()),
+        "must name the plan repo checked too: {text}"
     );
 
     let j = review_json(plan.path(), src.path(), &id);
@@ -2994,11 +2996,16 @@ fn change_review_applied_commit_refuses_when_source_is_not_a_git_checkout() {
     let text = String::from_utf8_lossy(&out);
     assert!(
         text.contains("not a git checkout"),
-        "must name the real cause, not \"does not resolve\": {text}"
+        "must name the real cause at the source repo: {text}"
     );
     assert!(
-        !text.contains("does not resolve to a commit"),
-        "an unreachable repo must not be reported as a missing commit: {text}"
+        names_path(&text, not_a_repo.path()),
+        "must name the path that is not a git checkout: {text}"
+    );
+    // The SHA is commit-shaped, so the plan repo was looked in as well.
+    assert!(
+        names_path(&text, plan.path()),
+        "must name the plan repo checked too: {text}"
     );
 }
 
@@ -3633,6 +3640,7 @@ Summary.
         j["comments"][0]["applied_commit_link"],
         format!("rdm:src@{abbrev}")
     );
+    assert_eq!(j["comments"][0]["applied_commit_repo"], "source");
     assert_eq!(j["comments"][1]["applied_commit"], "HEAD");
     assert!(j["comments"][1].get("applied_commit_link").is_none(), "{j}");
 
@@ -4532,4 +4540,406 @@ fn change_comment_refuses_a_line_anchor_in_both_modes() {
     }
     let j = review_json(plan.path(), src.path(), &id);
     assert!(j["comments"].as_array().unwrap().is_empty(), "{j}");
+}
+
+// --- An applied commit resolves in either repository, and records which ---
+
+/// A change review started from `topic` with one comment, submitted and
+/// still open. Returns the review id.
+fn seed_submitted_change_review(plan: &Path, src: &Path) -> String {
+    create_plan(plan, "design-plan", true);
+    let id = start_change_review(
+        plan,
+        src,
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    for args in [
+        vec![
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Rename back.",
+            "--no-edit",
+        ],
+        vec![
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Needs work.",
+            "--no-edit",
+        ],
+    ] {
+        let (ok, _, stderr) = run_rdm(plan, src, &args);
+        assert!(ok, "rdm {args:?} failed: {stderr}");
+    }
+    id
+}
+
+/// A review of the plan document `on` with one whole-document comment,
+/// submitted and still open. Returns the review id.
+fn seed_submitted_document_review(plan: &Path, on: &str) -> String {
+    let (ok, stdout, stderr) = run_rdm(plan, plan, &["review", "start", "--on", on, "--no-edit"]);
+    assert!(ok, "{stderr}");
+    let id = stdout.split('\'').nth(1).unwrap().to_string();
+    for args in [
+        vec![
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "Tighten this.",
+            "--no-edit",
+        ],
+        vec![
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+        ],
+    ] {
+        let (ok, _, stderr) = run_rdm(plan, plan, &args);
+        assert!(ok, "rdm {args:?} failed: {stderr}");
+    }
+    id
+}
+
+/// Creates the task `fix-login` in the plan repo.
+fn create_fix_login_task(plan: &Path) {
+    let (ok, _, stderr) = run_rdm(
+        plan,
+        plan,
+        &[
+            "task",
+            "create",
+            "fix-login",
+            "--title",
+            "Fix login",
+            "--body",
+            "Fix the login flow.",
+            "--no-edit",
+        ],
+    );
+    assert!(ok, "{stderr}");
+}
+
+/// Commits everything in the plan repo with plain git and returns the new
+/// `HEAD` — a commit the source repo never has.
+fn commit_plan_repo(plan: &Path) -> String {
+    git(plan, &["add", "-A"]);
+    git(plan, &["commit", "--no-verify", "-m", "seed plan repo"]);
+    git_out(plan, &["rev-parse", "HEAD"])
+}
+
+/// Whether `text` names `path`, as given or canonicalized (a temp dir is
+/// reached through a symlink on macOS).
+fn names_path(text: &str, path: &Path) -> bool {
+    text.contains(&path.to_string_lossy().to_string())
+        || text.contains(&path.canonicalize().unwrap().to_string_lossy().to_string())
+}
+
+#[test]
+fn change_review_applied_commit_accepts_a_plan_repo_sha_and_records_the_plan_repo() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = seed_submitted_change_review(plan.path(), src.path());
+    let plan_sha = commit_plan_repo(plan.path());
+
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            &plan_sha[..10],
+        ],
+    );
+    assert!(ok, "a plan-repo commit must be accepted: {stderr}");
+
+    let j = review_json(plan.path(), src.path(), &id);
+    let c = &j["comments"][0];
+    assert_eq!(c["applied_commit"], plan_sha.as_str());
+    assert_eq!(c["applied_commit_repo"], "plan");
+    assert!(c.get("applied_commit_link").is_none(), "{c}");
+}
+
+/// The refusal used to cascade: the comment stayed open, so the
+/// `--state addressed` in the same command failed too.
+#[test]
+fn change_review_closes_in_the_same_command_as_a_plan_repo_applied_commit() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = seed_submitted_change_review(plan.path(), src.path());
+    let plan_sha = commit_plan_repo(plan.path());
+
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            &plan_sha,
+            "--state",
+            "addressed",
+        ],
+    );
+    assert!(ok, "{stderr}");
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["state"], "addressed");
+    assert_eq!(j["comments"][0]["applied_commit_repo"], "plan");
+}
+
+#[test]
+fn document_review_applied_commit_accepts_a_source_sha_and_links_it() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_fix_login_task(plan.path());
+    create_plan(plan.path(), "design-plan", false);
+    let source_sha = git_out(src.path(), &["rev-parse", "main"]);
+    commit_plan_repo(plan.path());
+
+    for on in ["task/fix-login", "plan/design-plan"] {
+        let id = seed_submitted_document_review(plan.path(), on);
+        // An abbreviated source SHA, with the source repo discoverable.
+        let (ok, _, stderr) = run_rdm(
+            plan.path(),
+            src.path(),
+            &[
+                "review",
+                "update",
+                &id,
+                "--comment",
+                "1",
+                "--status",
+                "addressed",
+                "--applied-commit",
+                &source_sha[..10],
+            ],
+        );
+        assert!(ok, "a source commit must be accepted on {on}: {stderr}");
+
+        let j = review_json(plan.path(), src.path(), &id);
+        let c = &j["comments"][0];
+        assert_eq!(c["applied_commit"], source_sha.as_str(), "{on}");
+        assert_eq!(c["applied_commit_repo"], "source", "{on}");
+        assert_eq!(
+            c["applied_commit_link"],
+            format!("rdm:src@{source_sha}"),
+            "{on}"
+        );
+
+        // The link is a real one: it checks clean, and the commit lists the
+        // review comment recorded against it.
+        let (ok, stdout, stderr) = run_rdm(
+            plan.path(),
+            src.path(),
+            &["link", "check", "--format", "json"],
+        );
+        assert!(ok, "link check failed: {stdout}{stderr}");
+        let report: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(report["unresolved_commits"], serde_json::json!([]), "{on}");
+
+        let commit_ref = format!("rdm:src@{source_sha}");
+        let entries = rdm_json(plan.path(), src.path(), &["backlinks", &commit_ref]);
+        assert!(
+            entries
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "review"
+                    && e["id"] == id.as_str()
+                    && e["comment"] == 1
+                    && e["field"] == "applied_commit"),
+            "{on}: {entries}"
+        );
+    }
+}
+
+#[test]
+fn document_review_applied_commit_refuses_a_sha_in_neither_repo_naming_both() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_fix_login_task(plan.path());
+    commit_plan_repo(plan.path());
+    let id = seed_submitted_document_review(plan.path(), "task/fix-login");
+    let unrelated = init_unrelated_repo();
+    let unrelated_head = git_out(unrelated.path(), &["rev-parse", "HEAD"]);
+
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--applied-commit",
+            &unrelated_head,
+        ],
+    );
+    assert!(!ok, "a SHA in neither repository must be refused");
+    assert!(stderr.contains("does not resolve to a commit"), "{stderr}");
+    assert!(names_path(&stderr, plan.path()), "{stderr}");
+    assert!(names_path(&stderr, src.path()), "{stderr}");
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert!(j["comments"][0]["applied_commit"].is_null());
+    assert!(j["comments"][0].get("applied_commit_repo").is_none());
+}
+
+/// `HEAD` names a different commit in each repository. With the change
+/// review's source repo not a git checkout, `--applied-commit HEAD` must be
+/// refused: resolving it in the plan repo instead would record an unrelated
+/// plan commit as the fix.
+#[test]
+fn change_review_applied_commit_head_is_refused_when_source_is_not_a_git_checkout() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = seed_submitted_change_review(plan.path(), src.path());
+    // The plan repo has a `HEAD` of its own that the fallback could find.
+    let plan_sha = commit_plan_repo(plan.path());
+
+    let not_a_repo = TempDir::new().unwrap();
+    std::fs::write(not_a_repo.path().join("README.md"), "plain dir\n").unwrap();
+    set_project_source(plan.path(), "demo", &not_a_repo.path().to_string_lossy());
+
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        not_a_repo.path(),
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            "HEAD",
+        ],
+    );
+    assert!(!ok, "HEAD must not fall through to the plan repo");
+    assert!(stderr.contains("not a git checkout"), "{stderr}");
+    assert!(names_path(&stderr, not_a_repo.path()), "{stderr}");
+    assert!(
+        !names_path(&stderr, plan.path()),
+        "the plan repo must not have been looked in: {stderr}"
+    );
+
+    let j = review_json(plan.path(), not_a_repo.path(), &id);
+    assert_eq!(j["comments"][0]["status"], "open");
+    assert!(j["comments"][0]["applied_commit"].is_null());
+
+    // The plan commit's own SHA is not a name: it is still accepted.
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        not_a_repo.path(),
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            &plan_sha,
+        ],
+    );
+    assert!(ok, "{stderr}");
+    let j = review_json(plan.path(), not_a_repo.path(), &id);
+    assert_eq!(j["comments"][0]["applied_commit"], plan_sha.as_str());
+    assert_eq!(j["comments"][0]["applied_commit_repo"], "plan");
+}
+
+/// A record written before the repository was stored reads as the
+/// repository its review's target kind implies, with the same link presence
+/// it always had.
+#[test]
+fn a_legacy_applied_commit_reports_its_target_kinds_repository() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_fix_login_task(plan.path());
+    let head = git_out(src.path(), &["rev-parse", "topic"]);
+    let main = git_out(src.path(), &["rev-parse", "main"]);
+
+    let change_id = "2026-07-01-1430-0ld2";
+    write_raw_review(
+        plan.path(),
+        change_id,
+        &format!(
+            "---
+id: {change_id}
+author: ed
+target:
+  kind: change
+  head: {head}
+state: submitted
+verdict: request-changes
+created: 2026-07-01T14:30:00Z
+comments:
+  - id: 1
+    status: addressed
+    applied_commit: {main}
+    body: Fixed.
+---
+Summary.
+"
+        ),
+    );
+    let task_id = "2026-07-01-1431-0ld3";
+    write_raw_review(
+        plan.path(),
+        task_id,
+        &format!(
+            "---
+id: {task_id}
+author: ed
+target:
+  kind: task
+  slug: fix-login
+state: submitted
+verdict: request-changes
+created: 2026-07-01T14:31:00Z
+comments:
+  - id: 1
+    status: addressed
+    applied_commit: {main}
+    body: Fixed.
+---
+Summary.
+"
+        ),
+    );
+
+    let c = &review_json(plan.path(), src.path(), change_id)["comments"][0];
+    assert_eq!(c["applied_commit_repo"], "source");
+    assert_eq!(c["applied_commit_link"], format!("rdm:src@{main}"));
+
+    let c = &review_json(plan.path(), src.path(), task_id)["comments"][0];
+    assert_eq!(c["applied_commit_repo"], "plan");
+    assert!(c.get("applied_commit_link").is_none(), "{c}");
 }

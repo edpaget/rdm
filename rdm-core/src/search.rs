@@ -1512,6 +1512,7 @@ mod tests {
                     doc: None,
                     status: crate::model::ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: None,
                     body: "Comment mentions wombat explicitly.".to_string(),
                     reply: None,

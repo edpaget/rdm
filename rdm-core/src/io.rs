@@ -661,6 +661,7 @@ mod tests {
                     doc: None,
                     status: ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: Some(Anchor::TextQuote {
                         quote: "quoted".to_string(),
                         prefix: "before ".to_string(),

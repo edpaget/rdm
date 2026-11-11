@@ -1101,6 +1101,44 @@ impl FromStr for ReviewCommentStatus {
     }
 }
 
+/// The repository a review comment's applied commit was resolved in.
+///
+/// A fix lands wherever the thing being fixed lives, which is not always the
+/// repository the review targets: a code-review finding about an acceptance
+/// criterion is fixed by a plan-repo commit, and a plan-review finding is
+/// often fixed by a source commit. Recording the repository lets every
+/// reader tell a source commit (linkable as `rdm:src@<sha>`) from a plan-repo
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommitRepo {
+    /// The project's source repository.
+    Source,
+    /// The plan repository.
+    Plan,
+}
+
+impl fmt::Display for CommitRepo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommitRepo::Source => write!(f, "source"),
+            CommitRepo::Plan => write!(f, "plan"),
+        }
+    }
+}
+
+impl FromStr for CommitRepo {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "source" => Ok(CommitRepo::Source),
+            "plan" => Ok(CommitRepo::Plan),
+            other => Err(ParseError::new("commit repo", other, "source or plan")),
+        }
+    }
+}
+
 /// The plan item a review targets.
 ///
 /// Serialized as a tagged mapping keyed on `kind` (`roadmap` | `phase` |
@@ -1882,6 +1920,14 @@ pub struct ReviewComment {
     /// [`ReviewCommentStatus::Addressed`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_commit: Option<String>,
+    /// The repository [`Self::applied_commit`] was resolved in.
+    ///
+    /// `None` means "not recorded" — a comment with no applied commit, or a
+    /// record written before this field existed. Read it through
+    /// [`Self::effective_applied_commit_repo`], which supplies the repository
+    /// the review's target kind implies for such a record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_commit_repo: Option<CommitRepo>,
     /// Where in the target body the comment points. `None` means the
     /// comment has no anchor; [`Self::anchor_state`] says whether that was
     /// deliberate or why the anchor was lost.
@@ -1907,6 +1953,24 @@ pub struct ReviewComment {
     /// Agent note set when the comment is addressed or needs clarification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<String>,
+}
+
+impl ReviewComment {
+    /// The repository this comment's applied commit lives in, or `None` when
+    /// the comment has no applied commit.
+    ///
+    /// A recorded [`Self::applied_commit_repo`] is returned as is. A record
+    /// without one (written before the field existed) reads as the repository
+    /// the review's target kind implies: [`CommitRepo::Source`] for a
+    /// `change/` review, [`CommitRepo::Plan`] for every other kind.
+    #[must_use]
+    pub fn effective_applied_commit_repo(&self, target: &ReviewTarget) -> Option<CommitRepo> {
+        self.applied_commit.as_ref()?;
+        Some(self.applied_commit_repo.unwrap_or(match target {
+            ReviewTarget::Change { .. } => CommitRepo::Source,
+            _ => CommitRepo::Plan,
+        }))
+    }
 }
 
 /// Frontmatter for a review file (`reviews/<id>.md`).
@@ -2373,6 +2437,7 @@ comments: []
             doc: None,
             status: ReviewCommentStatus::Open,
             applied_commit: None,
+            applied_commit_repo: None,
             anchor: None,
             anchor_state: Some(AnchorState::OutsideHunk),
             intended_path: Some("src/lib.rs".to_string()),

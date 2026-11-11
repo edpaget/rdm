@@ -82,7 +82,8 @@ links widen a pinned query.
 Every rendered `rdm:src/…` or `rdm:src@…` link on a detail page is followed by
 an `annotations` link to this resource, pinned to the location the link
 resolves to (its own `@rev`, else the containing phase's or task's stamped
-commit). A change review comment's `applied_commit` renders the same way. Item
+commit). A review comment's `applied_commit` renders the same way when it
+was recorded in the source repository (`applied_commit_repo: source`). Item
 resources advertise the same entry points as `_links.rdm:annotations`, one per
 distinct code or commit link in the body.
 

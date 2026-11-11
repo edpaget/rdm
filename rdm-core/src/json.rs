@@ -10,9 +10,9 @@ use crate::anchor::{Resolution, ResolvedComment};
 use crate::document::Document;
 use crate::link::{BacklinkEntry, DocRef, Resolved};
 use crate::model::{
-    Anchor, AnchorState, CommentDoc, Difficulty, GateOverride, ModelTier, Phase, PhaseStatus, Plan,
-    PlanStatus, Priority, Project, Review, ReviewComment, ReviewCommentStatus, ReviewState,
-    ReviewTarget, Roadmap, Run, RunDriver, RunStatus, Task, TaskStatus, Verdict,
+    Anchor, AnchorState, CommentDoc, CommitRepo, Difficulty, GateOverride, ModelTier, Phase,
+    PhaseStatus, Plan, PlanStatus, Priority, Project, Review, ReviewComment, ReviewCommentStatus,
+    ReviewState, ReviewTarget, Roadmap, Run, RunDriver, RunStatus, Task, TaskStatus, Verdict,
 };
 use crate::search::{ItemKind, SearchResult};
 
@@ -1065,11 +1065,18 @@ pub struct ReviewCommentJson {
     /// Commit SHA recorded when the comment was addressed, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_commit: Option<String>,
-    /// For a `change/<sha>` review: `applied_commit` as an `rdm:src@<sha>`
-    /// commit link, derived on read (see
-    /// [`crate::ops::reviews::review_commit_refs`]). Absent on every other
-    /// review kind — there `applied_commit` is a plan-repo SHA — and for a
-    /// legacy `applied_commit` that is not commit-shaped.
+    /// The repository `applied_commit` lives in (`source` or `plan`),
+    /// present whenever `applied_commit` is. A record written before the
+    /// repository was stored reports the one its review's target kind
+    /// implies (see
+    /// [`ReviewComment::effective_applied_commit_repo`](crate::model::ReviewComment::effective_applied_commit_repo)).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_commit_repo: Option<CommitRepo>,
+    /// `applied_commit` as an `rdm:src@<sha>` commit link, derived on read
+    /// (see [`crate::ops::reviews::review_commit_refs`]), when
+    /// `applied_commit_repo` is `source` — on a review of any kind. Absent
+    /// when it is `plan` (there is no link form for a plan-repo commit) and
+    /// for a legacy `applied_commit` that is not commit-shaped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_commit_link: Option<String>,
     /// The stored anchor (tagged on `anchor_type`), if the comment is
@@ -1438,8 +1445,9 @@ pub fn comment_added_to_json(
 /// target (unverified where existence would have been checked), so a
 /// mis-sized slice still yields a link and the mapper stays I/O-free.
 ///
-/// A `change/<sha>` review also carries `head_link`, `base_link`, and each
-/// comment's `applied_commit_link` — all taken from one
+/// A `change/<sha>` review also carries `head_link` and `base_link`, and a
+/// comment of any review whose applied commit lives in the source repository
+/// carries `applied_commit_link` — all taken from one
 /// [`crate::ops::reviews::review_commit_refs`] call, so the rules for which
 /// stored values become links live in one place.
 pub fn review_to_json(
@@ -1499,6 +1507,7 @@ pub fn review_to_json(
                     status: c.status,
                     closed: c.status.is_terminal(),
                     applied_commit: c.applied_commit.clone(),
+                    applied_commit_repo: c.effective_applied_commit_repo(&fm.target),
                     applied_commit_link: commit_link(Some(c.id), "applied_commit"),
                     anchor: c.anchor.clone(),
                     anchor_state: comment_anchor_state(c),
@@ -2725,6 +2734,7 @@ mod tests {
                     doc: None,
                     status: ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: Some(Anchor::TextQuote {
                         quote: "the span".to_string(),
                         prefix: "before ".to_string(),
@@ -2923,10 +2933,51 @@ mod tests {
         assert_eq!(v["target"]["base"], "b".repeat(40));
         let c = &v["comments"][0];
         assert_eq!(c["applied_commit"], "c".repeat(40));
+        // No stored repository: a change review's record reads as `source`.
+        assert_eq!(c["applied_commit_repo"], "source");
         assert_eq!(
             c["applied_commit_link"],
             format!("rdm:src@{}", "c".repeat(40))
         );
+    }
+
+    #[test]
+    fn review_json_reports_a_plan_applied_commit_on_a_change_review_without_a_link() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: None,
+        };
+        doc.frontmatter.comments[0].status = ReviewCommentStatus::Addressed;
+        doc.frontmatter.comments[0].applied_commit = Some("c".repeat(40));
+        doc.frontmatter.comments[0].applied_commit_repo = Some(CommitRepo::Plan);
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
+        let c = &v["comments"][0];
+        assert_eq!(c["applied_commit"], "c".repeat(40));
+        assert_eq!(c["applied_commit_repo"], "plan");
+        assert!(c.get("applied_commit_link").is_none(), "{c}");
+    }
+
+    #[test]
+    fn review_json_links_a_source_applied_commit_on_a_plan_document_review() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.comments[0].status = ReviewCommentStatus::Addressed;
+        doc.frontmatter.comments[0].applied_commit = Some("c".repeat(40));
+        doc.frontmatter.comments[0].applied_commit_repo = Some(CommitRepo::Source);
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
+        let c = &v["comments"][0];
+        assert_eq!(c["applied_commit_repo"], "source");
+        assert_eq!(
+            c["applied_commit_link"],
+            format!("rdm:src@{}", "c".repeat(40))
+        );
+    }
+
+    #[test]
+    fn review_json_omits_the_repo_of_a_comment_with_no_applied_commit() {
+        let doc = make_review_doc();
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
+        assert!(v["comments"][0].get("applied_commit_repo").is_none());
     }
 
     #[test]
@@ -2988,6 +3039,8 @@ mod tests {
         assert!(v.get("base_link").is_none(), "{v}");
         let c = &v["comments"][0];
         assert_eq!(c["applied_commit"], "c".repeat(40));
+        // No stored repository: a plan-document record reads as `plan`.
+        assert_eq!(c["applied_commit_repo"], "plan");
         assert!(c.get("applied_commit_link").is_none(), "{c}");
     }
 

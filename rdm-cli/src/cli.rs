@@ -1585,7 +1585,7 @@ pub(crate) enum ReviewCommand {
         #[arg(long)]
         project: Option<String>,
         /// Initial summary body for the review.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         body: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
@@ -1623,7 +1623,7 @@ pub(crate) enum ReviewCommand {
         /// Id of the draft review to comment on.
         review_id: String,
         /// Exact text in the target's body the comment is anchored to.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         quote: Option<String>,
         /// On a `change/` review: the source-repo-relative path of the file
         /// the quote lives in. A path containing `@` or `#` is refused —
@@ -1676,7 +1676,7 @@ pub(crate) enum ReviewCommand {
         )]
         on_anchor_failure: Option<OnAnchorFailure>,
         /// Comment text.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         body: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
@@ -1696,7 +1696,7 @@ pub(crate) enum ReviewCommand {
         #[arg(long)]
         verdict: Verdict,
         /// Replace the review's summary body before submitting.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         body: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
@@ -1767,7 +1767,7 @@ pub(crate) enum ReviewCommand {
         #[arg(long, requires = "comment")]
         applied_commit: Option<String>,
         /// Reply note recorded on the comment.
-        #[arg(long, requires = "comment")]
+        #[arg(long, requires = "comment", allow_hyphen_values = true)]
         reply: Option<String>,
         /// Accepted for uniformity with the other mutators; `review update`
         /// never opens an editor, so this is a no-op.

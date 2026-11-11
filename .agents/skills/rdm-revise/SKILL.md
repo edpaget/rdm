@@ -23,10 +23,10 @@ Work only the requested review(s). Read the summary first, then each open commen
 Apply each requested edit through `roadmap update`, `phase update`, or `task update`, using the full preserved body via `--body` and `--no-edit`; update does not read stdin. Preserve unrelated content and tags. Check `rdm:` links. Commit each comment's document edit separately with `"${RDM_BIN:-rdm}" commit -m "docs(plan): address review comment"`, then capture that plan-repo commit SHA immediately, before updating the review. Inspect `rdm status` first to avoid mixing other changes from your session.
 
 ```bash
-"${RDM_BIN:-rdm}" review update <review-id> --comment <n> --status addressed --applied-commit <plan-sha> --reply "What changed" --project rdm
+"${RDM_BIN:-rdm}" review update <review-id> --comment <n> --status addressed --applied-commit <sha> --reply "What changed" --project rdm
 ```
 
-Every addressed comment needs an actual change and its explicit applied commit. Pinned `rdm:src/` links instead use source-repo SHAs. Commit review bookkeeping separately before starting the next comment, maintaining one document-edit commit per comment.
+Every addressed comment needs an actual change and its explicit applied commit: the commit that made the change, in whichever repository it landed (rdm finds which and records it). A pinned `rdm:src/` link always uses a source-repo SHA. Commit review bookkeeping separately before starting the next comment, maintaining one document-edit commit per comment.
 
 If intent or drift is ambiguous, post a clarification reply without a status change; leave the comment open. If a change should not be made, use `--status wont-fix --reply "Reason"`, within the user's scope. Close with `review update <review-id> --state addressed` only when no comments remain open, then commit the bookkeeping. Otherwise leave the review submitted and report outstanding questions. These are document resolution states, not independent implementation-review approval.
 

@@ -267,6 +267,7 @@ fn seed_plan_repo(base: &str, head: &str) -> TempDir {
         doc: None,
         status: ReviewCommentStatus::Open,
         applied_commit: None,
+        applied_commit_repo: None,
         anchor: anchor(quote, line),
         body: format!("A finding about {quote}."),
         reply: None,
@@ -611,6 +612,7 @@ async fn rest_plan_repo_review_still_resolves_against_the_plan_store() {
                     doc: None,
                     status: ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: Some(Anchor::TextQuote {
                         quote: "Phase body.".to_string(),
                         prefix: String::new(),

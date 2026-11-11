@@ -352,6 +352,10 @@ Roadmap-level review.
         );
         assert_eq!(first.status, ReviewCommentStatus::Addressed);
         assert_eq!(first.applied_commit.as_deref(), Some("f00dfeed"));
+        // A file with no `applied_commit_repo` key loads as "not recorded",
+        // and that absence is not written back.
+        assert_eq!(first.applied_commit_repo, None);
+        assert!(!doc.render().unwrap().contains("applied_commit_repo"));
         assert_eq!(first.reply.as_deref(), Some("Done in f00dfeed."));
         let second = &doc.frontmatter.comments[1];
         assert_eq!(second.doc, None);
@@ -456,6 +460,7 @@ Still loads.
                         doc: None,
                         status: ReviewCommentStatus::Open,
                         applied_commit: None,
+                        applied_commit_repo: None,
                         anchor: Some(Anchor::TextQuote {
                             quote: "## Acceptance Criteria".to_string(),
                             prefix: "right?\n\n".to_string(),
@@ -474,6 +479,7 @@ Still loads.
                         }),
                         status: ReviewCommentStatus::Addressed,
                         applied_commit: Some("beefcafe".to_string()),
+                        applied_commit_repo: Some(crate::model::CommitRepo::Source),
                         anchor: None,
                         body: "Whole-document comment.".to_string(),
                         reply: Some("Addressed.".to_string()),
@@ -485,6 +491,10 @@ Still loads.
             body: "Overall summary.\n".to_string(),
         };
         let rendered = original.render().unwrap();
+        assert!(
+            rendered.contains("applied_commit_repo: source"),
+            "{rendered}"
+        );
         let parsed: Document<Review> = Document::parse(&rendered).unwrap();
         assert_eq!(parsed.frontmatter, original.frontmatter);
         assert_eq!(parsed.body, original.body);

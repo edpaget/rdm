@@ -128,6 +128,7 @@ fn comment(id: u32, anchor: Option<Anchor>, state: Option<AnchorState>) -> Revie
         doc: None,
         status: ReviewCommentStatus::Open,
         applied_commit: None,
+        applied_commit_repo: None,
         anchor,
         anchor_state: state,
         intended_path: None,

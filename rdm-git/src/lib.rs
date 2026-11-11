@@ -27,8 +27,12 @@ use std::path::{Path, PathBuf};
 
 use rdm_core::error::{Error, Result};
 
+pub use commit_lookup::{
+    CandidateMiss, CommitCandidate, CommitLookup, is_commit_shaped, resolve_commit_in_candidates,
+};
 pub use source::GitSourceRepo;
 
+pub mod commit_lookup;
 #[cfg(test)]
 mod git_test_support;
 mod process;

@@ -346,15 +346,15 @@ pub fn resolve_link(
 ///   structural `implements` references (plans and change reviews naming
 ///   `target`, plus one transitive hop through a plan).
 /// - [`BacklinkTarget::Commit`]: `rdm:src@<sha>` commit links in every body
-///   ([`BacklinkRef::Body`]), plus every `change/<sha>` review's `head`,
-///   `base`, and comment `applied_commit` naming that commit
-///   ([`BacklinkRef::Field`], derived by
+///   ([`BacklinkRef::Body`]), plus every `change/<sha>` review's `head` and
+///   `base` and every review comment's source-repository `applied_commit`
+///   naming that commit ([`BacklinkRef::Field`], derived by
 ///   [`crate::ops::reviews::review_commit_refs`]). Revisions match
 ///   case-insensitively when the shorter is a prefix of the longer; this
 ///   function reads no repository, so an abbreviation cannot be expanded,
 ///   and an ambiguous abbreviation can match references to more than one
-///   commit — pass the full SHA to disambiguate. A roadmap, phase, task, or
-///   plan review's `applied_commit` is a plan-repo SHA and is never matched.
+///   commit — pass the full SHA to disambiguate. An `applied_commit` that
+///   lives in the plan repo is never matched, whatever the review's kind.
 ///   `rdm backlinks` answers a commit with [`code_annotations`] instead,
 ///   which resolves the SHA in the source repository first and also lists
 ///   the commit-level review comments on it.
@@ -543,8 +543,8 @@ fn collect_commit_links(
 /// - a match is never inferred from a change's diff.
 ///
 /// **Commit query** ([`BacklinkTarget::Commit`]): the revision is resolved in
-/// `source` first, then every `rdm:src@<sha>` body link and change-review
-/// `head`/`base`/`applied_commit` naming it is returned (as [`backlinks`]
+/// `source` first, then every `rdm:src@<sha>` body link, change-review
+/// `head`/`base` and source-repository `applied_commit` naming it is returned (as [`backlinks`]
 /// finds them, at [`TargetLevel::Commit`]), plus every commit-level comment
 /// of a change review whose head is that commit ([`BacklinkRef::Anchor`]).
 ///
@@ -1230,7 +1230,7 @@ pub struct CommitLinkFinding {
     /// The document the link was found in.
     pub document: DocRef,
     /// Where in that document the reference sits: a body link
-    /// ([`BacklinkRef::Body`] with its byte range), or a change review's
+    /// ([`BacklinkRef::Body`] with its byte range), or a review's
     /// structural `head`/`base`/`applied_commit` field
     /// ([`BacklinkRef::Field`], `via: None`).
     pub reference: BacklinkRef,
@@ -1300,9 +1300,10 @@ pub struct LinkCheckReport {
     /// Every commit link (`rdm:src@<sha>`) found, for a caller-side
     /// commit-existence pass — the commit counterpart of
     /// [`code_links`](Self::code_links). A project-wide check also includes
-    /// each change review's `head`, `base`, and `applied_commit` here, as
-    /// [`BacklinkRef::Field`] findings; a roadmap, phase, task, or plan
-    /// review contributes none (its `applied_commit` is a plan-repo SHA).
+    /// each change review's `head` and `base`, and every review comment's
+    /// source-repository `applied_commit`, here as [`BacklinkRef::Field`]
+    /// findings; an `applied_commit` that lives in the plan repo contributes
+    /// none.
     pub commit_links: Vec<CommitLinkFinding>,
     /// Malformed `rdm:` destinations found while parsing.
     pub diagnostics: Vec<CheckDiagnostic>,
@@ -1463,9 +1464,10 @@ pub fn load_document_body(
 /// for a checkout-aware caller) every code and commit link found — see
 /// [`LinkCheckReport`].
 ///
-/// Each `change/<sha>` review's structural commit references (`head`,
-/// `base`, and every comment's `applied_commit`, via
-/// [`crate::ops::reviews::review_commit_refs`]) are checked too: each is
+/// Each review's structural source-commit references (a `change/<sha>`
+/// review's `head` and `base`, and any review comment's source-repository
+/// `applied_commit`, via [`crate::ops::reviews::review_commit_refs`]) are
+/// checked too: each is
 /// resolved as an `rdm:src@<sha>` link with no `containing_commit`
 /// fallback (a review stamps no commit), counted in `links_checked`, and
 /// pushed to `commit_links` as a [`BacklinkRef::Field`] finding.
@@ -2353,6 +2355,7 @@ mod tests {
                     doc: None,
                     status: ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: None,
                     body: target_body.to_string(),
                     reply: None,
@@ -2533,6 +2536,7 @@ mod tests {
                     }),
                     status: ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: Some(Anchor::TextQuote {
                         quote: "quoted".to_string(),
                         prefix: String::new(),
@@ -2601,6 +2605,7 @@ mod tests {
                     doc: None,
                     status: ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: None,
                     body: "No link in this comment.".to_string(),
                     reply: None,
@@ -3214,6 +3219,7 @@ mod tests {
                 ReviewCommentStatus::Open
             },
             applied_commit: applied_commit.map(str::to_string),
+            applied_commit_repo: None,
             anchor: None,
             body: body.to_string(),
             reply: None,
@@ -3353,6 +3359,52 @@ mod tests {
                 .all(|f| !matches!(&f.document, DocRef::Review { id, .. } if id == "2026-07-01-1431-task")),
             "{:?}",
             report.commit_links
+        );
+    }
+
+    /// [`seed_commit_reviews`], with the task review's applied commit
+    /// re-recorded as a source-repository commit.
+    fn seed_commit_reviews_with_source_fix_on_task_review(store: &mut MemoryStore) {
+        seed_commit_reviews(store);
+        write_review_with(
+            store,
+            "2026-07-01-1431-task",
+            ReviewTarget::Task {
+                slug: "fix-login".to_string(),
+            },
+            vec![ReviewComment {
+                applied_commit_repo: Some(crate::model::CommitRepo::Source),
+                ..comment(1, Some(FIX_SHA), "Source fix.")
+            }],
+        );
+    }
+
+    #[test]
+    fn check_project_collects_a_source_applied_commit_on_a_plan_document_review() {
+        let mut store = setup();
+        seed_commit_reviews_with_source_fix_on_task_review(&mut store);
+        let report = check_project(&store, "demo").unwrap();
+        assert!(
+            report.commit_links.iter().any(|f| {
+                f.document == review_doc("2026-07-01-1431-task", Some(1))
+                    && f.reference == field_ref("applied_commit")
+            }),
+            "{:?}",
+            report.commit_links
+        );
+    }
+
+    #[test]
+    fn backlinks_commit_target_finds_a_source_applied_commit_on_a_plan_document_review() {
+        let mut store = setup();
+        seed_commit_reviews_with_source_fix_on_task_review(&mut store);
+        let entries = backlinks(&store, "demo", &commit_target(FIX_SHA)).unwrap();
+        assert!(
+            entries.contains(&BacklinkEntry {
+                document: review_doc("2026-07-01-1431-task", Some(1)),
+                reference: field_ref("applied_commit"),
+            }),
+            "{entries:?}"
         );
     }
 
@@ -3575,6 +3627,7 @@ mod tests {
             doc: None,
             status: ReviewCommentStatus::Open,
             applied_commit: None,
+            applied_commit_repo: None,
             anchor: Some(Anchor::FileQuote {
                 path: path.to_string(),
                 quote: "fn main() {}".to_string(),
@@ -3595,6 +3648,7 @@ mod tests {
             doc: None,
             status: ReviewCommentStatus::Open,
             applied_commit: None,
+            applied_commit_repo: None,
             anchor: None,
             body: "Anchorless.".to_string(),
             reply: None,

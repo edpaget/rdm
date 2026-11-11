@@ -1918,6 +1918,7 @@ fn review_applied_commit_head_resolves_to_full_plan_repo_sha() {
 
     let json = show_review_json(&plan, &id);
     assert_eq!(json["comments"][0]["applied_commit"], plan_head.as_str());
+    assert_eq!(json["comments"][0]["applied_commit_repo"], "plan");
 }
 
 #[test]
@@ -1960,7 +1961,13 @@ fn review_applied_commit_rejects_nonexistent_sha_in_plan_repo() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("does not resolve to a commit"));
+        .stderr(predicate::str::contains("does not resolve to a commit"))
+        .stderr(predicate::str::contains(
+            plan.path().to_string_lossy().to_string(),
+        ))
+        .stderr(predicate::str::contains(
+            "the project's configured source repo",
+        ));
 
     let json = show_review_json(&plan, &id);
     assert!(json["comments"][0]["applied_commit"].is_null());
@@ -3698,4 +3705,112 @@ fn review_update_format_json_emits_the_updated_review() {
     .clone();
     let dismissed: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(dismissed["state"], "dismissed");
+}
+
+/// A Markdown bullet is ordinary review text: a `--quote`, `--body` or
+/// `--reply` value that starts with a hyphen is the flag's value, never an
+/// unknown flag.
+#[test]
+fn review_comment_and_update_accept_text_starting_with_a_hyphen() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "bulleted", "Intro.\n\n- a bullet\n\nOutro.");
+    commit_plan(&plan, "seed: add bulleted task");
+    let id = start_review(&plan, "task/bulleted");
+
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "- a bullet",
+            "--body",
+            "- a bullet",
+            "--no-edit",
+        ],
+    )
+    .success();
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+        ],
+    )
+    .success();
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "wont-fix",
+            "--reply",
+            "- a bullet",
+        ],
+    )
+    .success();
+
+    let json = show_review_json(&plan, &id);
+    let c = &json["comments"][0];
+    assert_eq!(c["anchor"]["quote"], "- a bullet");
+    assert_eq!(c["body"], "- a bullet");
+    assert_eq!(c["reply"], "- a bullet");
+}
+
+/// The summary body of `review start` and of `review submit` may start with
+/// a hyphen too.
+#[test]
+fn review_start_and_submit_accept_a_body_starting_with_a_hyphen() {
+    let plan = init_plan_repo();
+    let out = rdm_demo(
+        &plan,
+        &[
+            "review",
+            "start",
+            "--on",
+            "task/item-x",
+            "--author",
+            "tester",
+            "--body",
+            "- x",
+            "--no-edit",
+            "--format",
+            "json",
+        ],
+    )
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    let started: Value = serde_json::from_slice(&out).unwrap();
+    let id = started["id"].as_str().unwrap().to_string();
+    // A document body is stored with its trailing newline.
+    assert_eq!(show_review_json(&plan, &id)["body"], "- x\n");
+
+    let other = start_review(&plan, "task/item-y");
+    add_plain_comment(&plan, &other, "A comment.");
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "submit",
+            &other,
+            "--verdict",
+            "comment",
+            "--body",
+            "- x",
+            "--no-edit",
+        ],
+    )
+    .success();
+    assert_eq!(show_review_json(&plan, &other)["body"], "- x\n");
 }

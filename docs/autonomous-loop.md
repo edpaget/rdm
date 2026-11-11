@@ -133,9 +133,10 @@ it. A comment carrying a `path`, a `range`/`file` `target`, or an `intended_path
 comment — so a finding whose anchor fell back to whole-document still reaches an implementer:
 an implementer subagent fixes it in the pinned worktree and its commit SHA becomes the
 `--applied-commit`, with a pinned `rdm:src/<path>@<sha>[#L<n>]` permalink in the reply. A comment on a plan-repo document goes
-through `rdm-revise`, which is the only route that keeps plan-repo `--applied-commit` semantics —
-and the only reason SOURCE comments may not go there: that skill edits plan-repo bodies and
-cannot carry source-commit provenance. A finding marked `unrefutedReason: budget` was never
+through `rdm-revise`, which edits the document body in the plan repo — the reason SOURCE comments
+may not go there: that skill never edits source files. Either route records the commit that made
+the fix: `--applied-commit` accepts a source-repo or a plan-repo SHA and stores which repository
+it resolved in. A finding marked `unrefutedReason: budget` was never
 graded, so its reply says so explicitly on either branch.
 
 **Refusal as escalation.** The terminal write is source-bound

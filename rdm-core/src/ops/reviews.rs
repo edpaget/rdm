@@ -12,8 +12,8 @@ use crate::anchor::LineRange;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{
-    Anchor, AnchorState, CommentDoc, CommentDocKind, ParseError, PlanStatus, Review, ReviewComment,
-    ReviewCommentStatus, ReviewState, ReviewTarget, ReviewTargetKind, Verdict,
+    Anchor, AnchorState, CommentDoc, CommentDocKind, CommitRepo, ParseError, PlanStatus, Review,
+    ReviewComment, ReviewCommentStatus, ReviewState, ReviewTarget, ReviewTargetKind, Verdict,
 };
 use crate::source::SourceRepo;
 use crate::store::{DirEntryKind, Store, VersionedStore};
@@ -438,6 +438,7 @@ fn insert_comment(store: &mut impl Store, req: AddComment<'_>) -> Result<Documen
         doc,
         status: ReviewCommentStatus::Open,
         applied_commit: None,
+        applied_commit_repo: None,
         anchor,
         anchor_state,
         intended_path,
@@ -774,6 +775,11 @@ pub struct UpdateComment<'a> {
     /// Commit SHA recorded when the comment was addressed; `None` keeps the
     /// existing value. Submitted-only.
     pub applied_commit: Option<&'a str>,
+    /// The repository `applied_commit` was resolved in. It travels with
+    /// `applied_commit`: when that is `Some`, this value replaces the stored
+    /// repository (so a corrected commit never keeps a stale one); when that
+    /// is `None`, this is ignored and the stored repository is untouched.
+    pub applied_commit_repo: Option<CommitRepo>,
     /// Agent reply note; `None` keeps the existing value. Submitted-only.
     pub reply: Option<&'a str>,
 }
@@ -816,6 +822,7 @@ pub fn update_comment(store: &mut impl Store, req: UpdateComment<'_>) -> Result<
         doc,
         status,
         applied_commit,
+        applied_commit_repo,
         reply,
     } = req;
     if matches!(anchor, AnchorUpdate::Set(Anchor::LineRange { .. })) {
@@ -892,6 +899,7 @@ pub fn update_comment(store: &mut impl Store, req: UpdateComment<'_>) -> Result<
     }
     if let Some(sha) = applied_commit {
         comment.applied_commit = Some(sha.to_string());
+        comment.applied_commit_repo = applied_commit_repo;
     }
     if let Some(r) = reply {
         comment.reply = Some(r.to_string());
@@ -1400,9 +1408,10 @@ pub fn count_open_reviews_in(reviews: &[(String, Document<Review>)]) -> OpenRevi
     counts
 }
 
-/// One source-repository commit a `change/<sha>` review references
-/// structurally — its target's `head` or `base`, or a comment's
-/// `applied_commit` — as found by [`review_commit_refs`].
+/// One source-repository commit a review references structurally — a
+/// `change/<sha>` review target's `head` or `base`, or, on a review of any
+/// kind, a comment's `applied_commit` that lives in the source repository —
+/// as found by [`review_commit_refs`].
 ///
 /// The stored value is kept verbatim: the on-disk review format does not
 /// change, and the `rdm:src@<sha>` commit link is derived from it on read
@@ -1431,8 +1440,9 @@ impl ReviewCommitRef {
 }
 
 /// Every source-repository commit `review` references structurally, in a
-/// fixed order: the target's `head`, then its `base` when present, then each
-/// comment's `applied_commit` in comment order.
+/// fixed order: a `change/<sha>` target's `head`, then its `base` when
+/// present, then each comment's source-repository `applied_commit` in
+/// comment order.
 ///
 /// This is the single derivation behind `review show --format json`'s
 /// `head_link`/`base_link`/`applied_commit_link` keys, `link check`'s
@@ -1441,9 +1451,13 @@ impl ReviewCommitRef {
 ///
 /// Rules:
 ///
-/// - A review whose target is not [`ReviewTarget::Change`] yields nothing:
-///   on a roadmap, phase, task, or plan review, `applied_commit` is a
-///   **plan-repo** SHA, so it is never a source-repository commit link.
+/// - `head` and `base` exist only on a [`ReviewTarget::Change`] review.
+/// - A comment's `applied_commit` is yielded when its repository
+///   ([`ReviewComment::effective_applied_commit_repo`]) is
+///   [`CommitRepo::Source`], on a review of any kind, and never when it is
+///   [`CommitRepo::Plan`] — a plan-repo commit is not a source-repository
+///   commit link. A record with no stored repository reads as the one its
+///   target kind implies: source on a change review, plan on every other.
 /// - A value becomes a reference only if `rdm:src@<value>` parses as a
 ///   commit link ([`crate::link::parse`]), so the grammar lives only in
 ///   [`crate::link`]. `head` and `base` always pass (they are validated as
@@ -1453,14 +1467,18 @@ impl ReviewCommitRef {
 ///   kept.
 #[must_use]
 pub fn review_commit_refs(review: &Review) -> Vec<ReviewCommitRef> {
-    let ReviewTarget::Change { head, base } = &review.target else {
-        return Vec::new();
+    let (head, base) = match &review.target {
+        ReviewTarget::Change { head, base } => (Some(head.as_str()), base.as_deref()),
+        _ => (None, None),
     };
-    let candidates = std::iter::once((None, "head", head.as_str()))
-        .chain(base.as_deref().map(|b| (None, "base", b)))
+    let candidates = head
+        .map(|h| (None, "head", h))
+        .into_iter()
+        .chain(base.map(|b| (None, "base", b)))
         .chain(review.comments.iter().filter_map(|c| {
-            c.applied_commit
-                .as_deref()
+            (c.effective_applied_commit_repo(&review.target) == Some(CommitRepo::Source))
+                .then_some(c.applied_commit.as_deref())
+                .flatten()
                 .map(|sha| (Some(c.id), "applied_commit", sha))
         }));
     candidates
@@ -1545,6 +1563,7 @@ pub struct ReviewResolution {
 ///     doc: None,
 ///     status: ReviewCommentStatus::Open,
 ///     applied_commit: None,
+///     applied_commit_repo: None,
 ///     anchor: None,
 ///     anchor_state: Some(AnchorState::OutsideHunk),
 ///     intended_path: Some("src/lib.rs".to_string()),
@@ -2693,6 +2712,7 @@ mod tests {
                 doc: None,
                 status: *status,
                 applied_commit: None,
+                applied_commit_repo: None,
                 anchor: None,
                 body: "note".to_string(),
                 reply: None,
@@ -2941,6 +2961,7 @@ mod tests {
                             doc: DocUpdate::Keep,
                             status: None,
                             applied_commit: None,
+                            applied_commit_repo: None,
                             reply: None,
                         },
                     )
@@ -3065,6 +3086,7 @@ mod tests {
                 ReviewCommentStatus::Open
             },
             applied_commit: applied_commit.map(str::to_string),
+            applied_commit_repo: None,
             anchor: None,
             body: "Comment.".to_string(),
             reply: None,
@@ -3127,11 +3149,59 @@ mod tests {
         assert_eq!(refs[0].field, "head");
     }
 
+    /// A record with no stored repository on a plan-document review reads
+    /// as a plan-repo commit, so it is never a source commit reference.
     #[test]
     fn review_commit_refs_is_empty_for_a_plan_document_review() {
         let mut review = sample_review("2026-07-01-1430-a1b2").frontmatter;
         review.comments = vec![comment_with(1, Some(&"d".repeat(40)))];
         assert!(review_commit_refs(&review).is_empty());
+    }
+
+    #[test]
+    fn review_commit_refs_yields_a_source_applied_commit_on_a_plan_document_review() {
+        let applied = "d".repeat(40);
+        let mut review = sample_review("2026-07-01-1430-a1b2").frontmatter;
+        review.comments = vec![
+            ReviewComment {
+                applied_commit_repo: Some(CommitRepo::Source),
+                ..comment_with(1, Some(&applied))
+            },
+            ReviewComment {
+                applied_commit_repo: Some(CommitRepo::Plan),
+                ..comment_with(2, Some(&"e".repeat(40)))
+            },
+        ];
+        assert_eq!(
+            review_commit_refs(&review),
+            vec![ReviewCommitRef {
+                comment: Some(1),
+                field: "applied_commit",
+                rev: applied,
+            }]
+        );
+    }
+
+    #[test]
+    fn review_commit_refs_omits_a_plan_applied_commit_on_a_change_review() {
+        let review = change_review(
+            None,
+            vec![
+                ReviewComment {
+                    applied_commit_repo: Some(CommitRepo::Plan),
+                    ..comment_with(1, Some(&"c".repeat(40)))
+                },
+                comment_with(2, Some(&"d".repeat(40))),
+            ],
+        );
+        let refs = review_commit_refs(&review);
+        assert_eq!(refs.len(), 2, "{refs:?}");
+        assert_eq!(refs[0].field, "head");
+        assert_eq!(
+            refs[1].comment,
+            Some(2),
+            "the legacy record stays a source ref"
+        );
     }
 
     #[test]
@@ -3811,6 +3881,7 @@ mod resolve_review_tests {
             doc: None,
             status: ReviewCommentStatus::Open,
             applied_commit: None,
+            applied_commit_repo: None,
             anchor,
             anchor_state,
             intended_path: intended_path.map(str::to_string),

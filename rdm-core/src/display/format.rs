@@ -1326,8 +1326,10 @@ fn build_review_detail(
             {
                 d.paragraph(&format!("Source: {link}"));
             }
-            if let Some(sha) = &comment.applied_commit {
-                d.paragraph(&format!("Applied commit: {sha}"));
+            if let Some(sha) = &comment.applied_commit
+                && let Some(repo) = comment.effective_applied_commit_repo(&fm.target)
+            {
+                d.paragraph(&format!("Applied commit: {sha} ({repo} repo)"));
             }
             if let Some(reply) = &comment.reply {
                 d.paragraph(&format!("Reply: {reply}"));
@@ -2462,6 +2464,7 @@ mod tests {
                         }),
                         status: ReviewCommentStatus::Addressed,
                         applied_commit: Some("f00dfeed".to_string()),
+                        applied_commit_repo: None,
                         anchor: Some(Anchor::TextQuote {
                             quote: "the span".to_string(),
                             prefix: "before ".to_string(),
@@ -2477,6 +2480,7 @@ mod tests {
                         doc: None,
                         status: ReviewCommentStatus::Open,
                         applied_commit: None,
+                        applied_commit_repo: None,
                         anchor: Some(Anchor::TextQuote {
                             quote: "line one\nline two".to_string(),
                             prefix: String::new(),
@@ -2532,7 +2536,10 @@ mod tests {
             "{output}"
         );
         assert!(output.contains("  > the span"), "{output}");
-        assert!(output.contains("Applied commit: f00dfeed"), "{output}");
+        assert!(
+            output.contains("Applied commit: f00dfeed (plan repo)"),
+            "{output}"
+        );
         assert!(output.contains("Reply: Done in f00dfeed."), "{output}");
         // Comment 2: drifted, with continuation-indented multiline quote.
         assert!(output.contains("Comment 2 — open (drifted)"), "{output}");
@@ -2633,7 +2640,10 @@ mod tests {
         );
         // Multiline quotes keep the blockquote marker on every line.
         assert!(output.contains("> line one\n> line two"), "{output}");
-        assert!(output.contains("Applied commit: f00dfeed"), "{output}");
+        assert!(
+            output.contains("Applied commit: f00dfeed (plan repo)"),
+            "{output}"
+        );
         assert!(output.contains("Reply: Done in f00dfeed."), "{output}");
     }
 
@@ -2663,6 +2673,7 @@ mod tests {
                     doc: None,
                     status: ReviewCommentStatus::Open,
                     applied_commit: None,
+                    applied_commit_repo: None,
                     anchor: Some(Anchor::FileQuote {
                         path: "src/lib.rs".to_string(),
                         quote: "fn two_renamed() {}".to_string(),

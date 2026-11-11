@@ -395,7 +395,8 @@ comments:
 | `implements` | no | item ref | The `rdm:plan/<slug>` this change implements. Only meaningful on a `change` target; absent on every other kind, so every pre-existing review file still loads |
 
 `head`, `base` and a comment's `applied_commit` stay raw SHAs on disk; rdm
-derives `rdm:src@<sha>` commit links from them on read (see
+derives `rdm:src@<sha>` commit links from the source-repository ones on read
+(see
 [`change-reviews.md`](change-reviews.md#commit-references-are-links)).
 
 `rdm:change/<sha>` is **not** a valid link — `change` names a review target, not
@@ -454,6 +455,7 @@ Each entry in `comments` is a mapping:
 | `doc` | no | mapping | Roadmap reviews only: `{kind: phase, stem: …}` points the comment at one of the roadmap's phases |
 | `status` | yes | enum | `open`, `addressed`, or `wont-fix` |
 | `applied_commit` | no | string | Commit SHA recorded when the comment was addressed |
+| `applied_commit_repo` | no | enum | `source` or `plan`: the repository `applied_commit` was resolved in. Absent on a comment with no `applied_commit` and on a record written before this field existed, which reads as the repository the review's target kind implies (`source` for `change`, `plan` for every other kind) |
 | `anchor` | no | mapping | Where the comment points (see [Anchors](#anchors)) |
 | `anchor_state` | no | enum | Why an anchorless comment has no anchor (below). Never present on an anchored comment |
 | `intended_path` | no | string | The repo-relative source file an anchorless `change` review comment was about. Never present on an anchored comment or on another review kind |

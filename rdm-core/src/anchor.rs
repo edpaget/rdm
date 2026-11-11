@@ -1351,6 +1351,7 @@ mod tests {
             doc,
             status: ReviewCommentStatus::Open,
             applied_commit: None,
+            applied_commit_repo: None,
             anchor,
             body: "Please reconsider this.".to_string(),
             reply: None,

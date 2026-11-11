@@ -394,16 +394,17 @@ degraded comments. The total link — present on every comment — is
 
 ## Commit references are links
 
-A change review stores three kinds of source-repository commit: the target's
-`head`, its `base`, and each comment's `applied_commit`. `rdm review show
---format json` emits each as an `rdm:src@<sha>` commit link alongside the raw
-value:
+A change review stores two source-repository commits on its target — `head`
+and `base` — and a comment of any review can record an `applied_commit` that
+lives in the source repository. `rdm review show --format json` emits each as
+an `rdm:src@<sha>` commit link alongside the raw value:
 
 | key | where | derived from |
 |---|---|---|
 | `head_link` | top level | `target.head` |
 | `base_link` | top level, when `base` is recorded | `target.base` |
-| `applied_commit_link` | each comment, when it has an `applied_commit` | `comments[].applied_commit` |
+| `applied_commit_link` | each comment whose `applied_commit_repo` is `source` | `comments[].applied_commit` |
+| `applied_commit_repo` | each comment, when it has an `applied_commit` | the stored `applied_commit_repo`, else the target kind |
 
 Each is exactly what `rdm link resolve` accepts (kind `commit`). The raw
 `target.head`/`target.base`/`applied_commit` stay beside them unchanged, and
@@ -431,12 +432,13 @@ derivation, and every consumer calls it: `review show` JSON, `link check`, and
    SHA and the review's target kind. The precedent is `source_link` (see
    [Permalinks](#permalinks)), already derived from the anchor alone and never
    stored.
-3. **The plan-document exclusion is a read-time rule.** On a roadmap, phase,
-   task or plan review, `applied_commit` is a **plan-repo** SHA. That is decided
-   by the target kind, and `--applied-commit` resolution already makes the same
-   split at write time. Deriving keeps the rule in one place and applies it to
-   reviews already on disk; storing would push it onto every writer and leave
-   old files unconverted.
+3. **The plan-repo exclusion is a read-time rule.** An `applied_commit` that
+   lives in the plan repo is not a source commit and gets no link. Which
+   repository a commit lives in is the comment's stored `applied_commit_repo`;
+   a record written before that field existed has none, and reads as the
+   repository its review's target kind implies (source for `change/`, plan for
+   every other kind). Deriving keeps the rule in one place and applies it to
+   reviews already on disk.
 4. **The counter-precedent was considered.** `implements` *is* stored as
    `rdm:plan/<slug>`. It is a reference the operator chooses at creation, and
    its field was new when it got that shape — nothing had to be migrated.
@@ -446,10 +448,23 @@ Consequence: reviews written before this existed load and check unchanged.
 
 ### Which values become links
 
-- **Only a `change/<sha>` review.** A plan-document review's `applied_commit`
-  is a plan-repo SHA: it never gets an `applied_commit_link`, `link check`
-  never verifies or reports it, and `rdm backlinks rdm:src@<sha>` never
-  matches it.
+- **`head` and `base`: only a `change/<sha>` review.** No other review kind
+  has them.
+- **`applied_commit`: only a source-repository commit, on any review kind.**
+  `review update --applied-commit <sha>` looks for the commit in the
+  repository the review's target kind implies (source for `change/`, the plan
+  repo otherwise), then in the other one, and records where it found it as
+  `applied_commit_repo` (`source` or `plan`). A source commit gets an
+  `applied_commit_link` — also on a roadmap, phase, task or plan review, when
+  the finding was fixed in code. A plan-repo commit never does — also on a
+  change review, when the finding was fixed by editing a plan document:
+  `link check` never verifies or reports it, and `rdm backlinks
+  rdm:src@<sha>` never matches it. There is no link form for a plan-repo
+  commit; it is reported as the SHA plus `applied_commit_repo: "plan"`. A SHA
+  found in neither repository is refused, naming both places looked. Only a
+  SHA is looked for in the second repository: a name such as `HEAD` or a
+  branch means a different commit in each, so it resolves in the first
+  repository or is refused.
 - **Only commit-shaped values.** A value becomes a link only if
   `rdm:src@<value>` parses (7–64 hex characters). `head` and `base` always do.
   A legacy `applied_commit` that is not — e.g. `HEAD`, written before the value
@@ -470,8 +485,8 @@ stamps no commit, so there is no `containing_commit` fallback. `link check
 --on` cannot name a review, so this coverage is project-wide only.
 
 `rdm backlinks rdm:src@<sha>` (or `src@<sha>`, abbreviated or full) resolves
-the SHA in the source checkout, then lists the change reviews whose `head`,
-`base` or `applied_commit` name that commit, as structural
+the SHA in the source checkout, then lists the reviews whose `head`, `base`
+or source-repository `applied_commit` name that commit, as structural
 `[head]`/`[base]`/`[applied_commit]` entries, alongside every body that links
 it and the commit-level comments of a review whose head it is. `rdm backlinks
 rdm:src/<path>` answers the same question for a file; both are described in

@@ -634,11 +634,12 @@ pub fn run(
                 );
             }
             let project = paths::resolve_project(project, repo_config)?;
-            // `--applied-commit` is resolved (format + existence, against the
-            // review's target-appropriate repository) before the mutation
-            // starts, so a SHA that fails validation never reaches
-            // `update_comment`. The resolved full SHA is what gets stored —
-            // not the operator's literal, possibly-abbreviated, input.
+            // `--applied-commit` is resolved (format + existence, in the
+            // repository the review's target kind implies, then in the other
+            // one) before the mutation starts, so a SHA that fails validation
+            // never reaches `update_comment`. The resolved full SHA is what
+            // gets stored — not the operator's literal, possibly-abbreviated,
+            // input — together with the repository it resolved in.
             let resolved_applied_commit = match applied_commit.as_deref() {
                 Some(sha) => {
                     let review_doc =
@@ -663,7 +664,12 @@ pub fn run(
                             review_id: &review_id,
                             comment_id,
                             status,
-                            applied_commit: resolved_applied_commit.as_deref(),
+                            applied_commit: resolved_applied_commit
+                                .as_ref()
+                                .map(|(sha, _)| sha.as_str()),
+                            applied_commit_repo: resolved_applied_commit
+                                .as_ref()
+                                .map(|(_, repo)| *repo),
                             reply: reply.as_deref(),
                             ..Default::default()
                         },

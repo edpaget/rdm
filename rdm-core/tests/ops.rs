@@ -7125,6 +7125,7 @@ fn sample_review_doc(id: &str) -> Document<Review> {
                 doc: None,
                 status: ReviewCommentStatus::Open,
                 applied_commit: None,
+                applied_commit_repo: None,
                 anchor: Some(Anchor::TextQuote {
                     quote: "## Acceptance Criteria".to_string(),
                     prefix: "right?\n\n".to_string(),
@@ -7774,6 +7775,75 @@ fn update_comment_status_applied_commit_reply_while_submitted() {
         Some("c2d9db220824277d2518d7cbeab8560ddd7f9448")
     );
     assert_eq!(comment.reply.as_deref(), Some("Fixed in c2d9db2."));
+}
+
+/// The repository travels with the commit: it is stored beside it, and a
+/// correction replaces both, so a corrected commit never keeps the previous
+/// commit's repository.
+#[test]
+fn update_comment_stores_the_applied_commit_repo_and_overwrites_it_on_correction() {
+    use rdm_core::model::CommitRepo;
+
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Fix the guard clause.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::Addressed),
+            applied_commit: Some("c2d9db220824277d2518d7cbeab8560ddd7f9448"),
+            applied_commit_repo: Some(CommitRepo::Source),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        doc.frontmatter.comments[0].applied_commit_repo,
+        Some(CommitRepo::Source)
+    );
+
+    // A reply-only update leaves the stored repository alone.
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            reply: Some("Fixed."),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        doc.frontmatter.comments[0].applied_commit_repo,
+        Some(CommitRepo::Source)
+    );
+
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            applied_commit: Some("ebae919bd5f67e4a707abfba9182ad451328c86f"),
+            applied_commit_repo: Some(CommitRepo::Plan),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let comment = &doc.frontmatter.comments[0];
+    assert_eq!(
+        comment.applied_commit.as_deref(),
+        Some("ebae919bd5f67e4a707abfba9182ad451328c86f")
+    );
+    assert_eq!(comment.applied_commit_repo, Some(CommitRepo::Plan));
 }
 
 #[test]

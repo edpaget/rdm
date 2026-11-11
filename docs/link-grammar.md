@@ -94,7 +94,9 @@ same way. An unresolved one carries `field` (`head`, `base`,
 `applied_commit`) in place of `range_start`/`range_end` in JSON, and the text
 line names it after the document: `unresolved commit link in
 review/<id>#comment-2 [applied_commit]: …`. A roadmap, phase, task or plan
-review's `applied_commit` is a plan-repo SHA and is never checked.
+review's comment can record a source commit too, and it is checked the same way; an
+`applied_commit` recorded in the plan repo (`applied_commit_repo: plan`) is
+never checked.
 
 ## Backlinks
 
@@ -118,7 +120,8 @@ A commit target finds three kinds of reference:
 
 1. `rdm:src@<sha>` links written in any body (body entries, with a byte
    range);
-2. change reviews whose `head`, `base` or `applied_commit` name the commit
+2. reviews whose `head`, `base` or source-repository `applied_commit` name
+   the commit
    (structural entries tagged `[head]`, `[base]` or `[applied_commit]`, with
    `field` in JSON);
 3. the commit-level comments of a change review whose head is that commit

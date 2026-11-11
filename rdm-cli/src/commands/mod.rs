@@ -1428,38 +1428,52 @@ pub fn resolve_start_commit(
 /// hand (the concrete bug this exists to close was exactly that: a
 /// hand-expanded short SHA, typed wrong).
 ///
-/// The repository checked depends on the review's target kind:
-/// [`rdm_core::model::ReviewTarget::Change`] resolves against the project's
-/// configured **source repo** (via [`crate::source_repo::discover_source_repo`],
-/// the same discovery `review show`/`review source` already use); every
-/// other target kind (`roadmap`, `phase`, `task`, `plan`) resolves against
-/// the **plan repo** rooted at `root`.
+/// Two repositories are candidates, tried in order: the one the review's
+/// target kind implies first — the project's configured **source repo** (via
+/// [`crate::source_repo::discover_source_repo`], the same discovery
+/// `review show`/`review source` already use) for
+/// [`rdm_core::model::ReviewTarget::Change`], the **plan repo** rooted at
+/// `root` for every other kind (`roadmap`, `phase`, `task`, `plan`) — then
+/// the other one. A fix does not always land in the repository the review
+/// targets: a code-review finding about an acceptance criterion is fixed by a
+/// plan-repo commit, and a plan-review finding is often fixed by a source
+/// commit. The repository the commit resolved in is returned with it, so the
+/// comment records where its fix lives. A SHA present in both resolves in the
+/// first.
+///
+/// A candidate that cannot be discovered, or is not a git checkout, is not
+/// fatal on its own: the other one is still tried, so a plan review in a
+/// project with no source repo still accepts a plan-repo SHA.
+///
+/// Only a commit-shaped `sha` (a hex SHA or SHA prefix) is looked for in the
+/// second repository. A name such as `HEAD` or a branch means a different
+/// commit in each repository, so it resolves in the first repository or is
+/// refused — including when that repository is unavailable, where falling
+/// through would record the other repository's unrelated `HEAD` as the fix.
 ///
 /// This is a hard refusal, not a best-effort default: `--applied-commit` is
-/// an explicit instruction minting a public `rdm:src/…@<sha>` permalink, so
-/// a SHA that cannot be verified against the correct repository is refused
-/// rather than accepted silently or degraded with a warning.
+/// an explicit instruction recording provenance (and, for a source commit,
+/// minting a public `rdm:src@<sha>` link), so a SHA that cannot be verified
+/// in either repository is refused rather than accepted silently or degraded
+/// with a warning.
 ///
-/// Two distinct refusal causes are told apart, rather than both collapsing
-/// into "does not resolve":
-/// [`rdm_git::discover_git_dir`] checks the checked path is actually a git
+/// The refusal names every place looked, first one first, and tells the
+/// causes apart rather than collapsing them into "does not resolve":
+/// [`rdm_git::discover_git_dir`] checks a candidate is actually a git
 /// checkout *before* `rev_parse` ever runs, since
 /// [`SourceRepo::rev_parse`](rdm_core::source::SourceRepo::rev_parse) maps
 /// every non-zero git exit — including "not a git repository" and an
 /// ambiguous abbreviated SHA — to the same `Ok(None)`, and reporting that as
 /// "no such commit" would send an operator with a correct SHA to go recheck
-/// it instead of fixing the repository. A SHA that genuinely fails to
-/// resolve in a real git checkout is still reported as "does not resolve",
-/// now with a hint that an abbreviated SHA may be ambiguous.
+/// it instead of fixing the repository.
 ///
 /// # Errors
 ///
-/// Returns an error naming the checked path as not a git checkout when it
-/// isn't one; an error naming the checked repository (with a hint that an
-/// abbreviated SHA may be ambiguous) when `sha` does not resolve to a commit
-/// there; or, when the repository itself cannot be discovered at all (no
-/// source repo configured/reachable for a `change/<sha>` review), that
-/// discovery failure's own actionable text.
+/// Returns an error when `sha` resolves in no repository looked in. The
+/// message names each one by role and path and says what happened there: the
+/// SHA did not resolve (with a hint that an abbreviated SHA may be
+/// ambiguous), the path is not a git checkout, or — when a repository could
+/// not be discovered at all — that discovery failure's own actionable text.
 #[cfg(feature = "git")]
 pub fn resolve_applied_commit(
     store: &AppStore,
@@ -1467,34 +1481,81 @@ pub fn resolve_applied_commit(
     root: &Path,
     target: &rdm_core::model::ReviewTarget,
     sha: &str,
-) -> Result<String> {
-    use rdm_core::source::SourceRepo;
+) -> Result<(String, rdm_core::model::CommitRepo)> {
+    use rdm_core::model::CommitRepo;
+    use rdm_git::{CommitCandidate, CommitLookup};
 
-    let (repo_path, what) = match target {
-        rdm_core::model::ReviewTarget::Change { .. } => {
-            let repo = crate::source_repo::discover_source_repo(store, project)?;
-            (
-                repo.root().to_path_buf(),
-                "the project's configured source repo",
-            )
-        }
-        _ => (root.to_path_buf(), "the plan repo"),
+    let plan = CommitCandidate {
+        repo: CommitRepo::Plan,
+        location: Ok(root.to_path_buf()),
     };
-    if rdm_git::discover_git_dir(&repo_path).is_err() {
-        bail!(
-            "--applied-commit cannot be checked: {what} at '{}' is not a git checkout",
-            repo_path.display()
+    let source = CommitCandidate {
+        repo: CommitRepo::Source,
+        location: crate::source_repo::discover_source_repo(store, project)
+            .map(|repo| repo.root().to_path_buf())
+            .map_err(|e| format!("{e:#}")),
+    };
+    let candidates = match target {
+        rdm_core::model::ReviewTarget::Change { .. } => [source, plan],
+        _ => [plan, source],
+    };
+    match rdm_git::resolve_commit_in_candidates(&candidates, sha)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    {
+        CommitLookup::Found { sha, repo } => Ok((sha, repo)),
+        CommitLookup::NotFound {
+            misses,
+            primary_only,
+        } => bail!("{}", applied_commit_refusal(sha, &misses, primary_only)),
+    }
+}
+
+/// The refusal text for an applied commit that resolved in none of the
+/// repositories looked in (`misses`, in the order they were tried).
+#[cfg(feature = "git")]
+fn applied_commit_refusal(
+    sha: &str,
+    misses: &[(rdm_core::model::CommitRepo, rdm_git::CandidateMiss)],
+    primary_only: bool,
+) -> String {
+    use rdm_core::model::CommitRepo;
+    use rdm_git::CandidateMiss;
+
+    let role = |repo: &CommitRepo| match repo {
+        CommitRepo::Plan => "the plan repo",
+        CommitRepo::Source => "the project's configured source repo",
+    };
+    let places: Vec<String> = misses
+        .iter()
+        .map(|(repo, miss)| match miss {
+            CandidateMiss::DidNotResolve(path) => format!("{} at '{}'", role(repo), path.display()),
+            CandidateMiss::NotAGitCheckout(path) => format!(
+                "{} at '{}' (which is not a git checkout)",
+                role(repo),
+                path.display()
+            ),
+            CandidateMiss::Unavailable(reason) => {
+                format!("{} (not available: {reason})", role(repo))
+            }
+        })
+        .collect();
+    let mut message = format!(
+        "--applied-commit '{sha}' does not resolve to a commit in {}",
+        places.join(" or in ")
+    );
+    if primary_only {
+        message.push_str(
+            " — a name such as HEAD or a branch is resolved only in the repository the review              targets; pass the commit's SHA to have the other repository checked too",
+        );
+    } else if misses
+        .iter()
+        .any(|(_, miss)| matches!(miss, CandidateMiss::DidNotResolve(_)))
+    {
+        message.push_str(
+            " — if this is an abbreviated SHA, it may be ambiguous; try a longer prefix or the              full SHA",
         );
     }
-    let repo = rdm_git::GitSourceRepo::new(&repo_path);
-    let resolved = repo.rev_parse(sha).map_err(|e| anyhow::anyhow!("{e}"))?;
-    resolved.ok_or_else(|| {
-        anyhow::anyhow!(
-            "--applied-commit '{sha}' does not resolve to a commit in {what} at '{}' — if this \
-             is an abbreviated SHA, it may be ambiguous; try a longer prefix or the full SHA",
-            repo_path.display()
-        )
-    })
+    message
 }
 
 // No `#[cfg(not(feature = "git"))]` counterpart: unlike `--start-commit`

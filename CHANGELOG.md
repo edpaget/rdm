@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **An applied commit resolves in either repository.** `rdm review update --applied-commit` (and rdm-server's comment `PATCH`) looks for the SHA in the repository the review's target kind implies (the source repo for `change/`, the plan repo for every other kind), then in the other one, and records which on the comment. A code-review finding fixed by a plan-repo commit, or a plan-review finding fixed by a source commit, is no longer refused — and no longer leaves the comment open so that a `--state addressed` in the same command fails too. `review show --format json` (and rdm-server's review JSON) reports the repository as `applied_commit_repo` (`source` or `plan`), and `applied_commit_link` now follows it: present on a plan-document review fixed by a source commit, absent on a change review fixed by a plan-repo commit; `link check` and `rdm backlinks rdm:src@<sha>` follow the same rule. The human and markdown review detail name the repository (`Applied commit: <sha> (plan repo)`). A SHA found in neither repository is refused, naming both places looked. Only a SHA (7 or more hex characters) is looked for in the second repository: a name such as `HEAD` or a branch resolves in the first repository or is refused, including when that repository is unavailable. A record without the stored field reads as before (the target kind's repository). The shipped dispatch and revise skills no longer tie `--applied-commit` to one repository. rdm-core API: `model::CommitRepo`, `ReviewComment::applied_commit_repo` and `effective_applied_commit_repo`, `UpdateComment::applied_commit_repo`, `ReviewCommentJson::applied_commit_repo`. rdm-git API: `resolve_commit_in_candidates`, `CommitCandidate`, `CommitLookup`, `CandidateMiss`, `is_commit_shaped`. Breaking (rdm-core API): the new fields break `ReviewComment` and `ReviewCommentJson` struct literals, and `review_commit_refs` now yields a source applied commit on any review kind and omits a plan-repo one on a change review.
+
+### Fixed
+
+- **Review text may start with a hyphen.** `rdm review start --body`, `review comment --quote` / `--body`, `review submit --body` and `review update --reply` accept a value that begins with `-` (a Markdown bullet such as `- a bullet`) instead of reading it as an unknown flag.
+
 ## [0.23.1] - 2026-11-11
 
 ## [0.23.0] - 2026-11-11

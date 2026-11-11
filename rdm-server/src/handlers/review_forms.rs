@@ -617,6 +617,7 @@ pub async fn edit_comment_form(
                 doc,
                 status: None,
                 applied_commit: None,
+                applied_commit_repo: None,
                 reply: None,
             },
         )

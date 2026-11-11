@@ -727,10 +727,9 @@ Per comment, run this numbered checklist:
      target link (`target.link`, which for a range equals `source_link`); for an anchorless comment,
      also pass its `anchor_state` and say "the evidence sits outside the diff; the defect may be in
      the changed code or in this file". Require a commit and its SHA. **You MUST NOT route a source comment to
-     `rdm-revise`**: that skill edits plan-repo document bodies and its `--applied-commit` is a
-     plan-repo SHA, so it cannot carry source-commit provenance.
-   - **PLAN-DOCUMENT comment** (on a plan-repo document target): run the `rdm-revise` loop, keeping
-     its plan-repo `--applied-commit` semantics intact.
+     `rdm-revise`**: that skill edits plan-repo document bodies, never source files.
+   - **PLAN-DOCUMENT comment** (on a plan-repo document target): run the `rdm-revise` loop, which
+     edits the document body in the plan repo.
    - **`wont-fix`**: a reasoned `--reply` is mandatory, not optional.
    - **Ungraded finding** — the comment's header carries `unrefutedReason: budget`, meaning it was
      never refuted because the per-unit refutation budget ran out: its reply MUST say so explicitly
@@ -752,6 +751,9 @@ Per comment, run this numbered checklist:
    <rdmBin> review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "…"<proj-flag>
    <rdmBin> review update <id> --comment <n> --status wont-fix --reply "<why>"<proj-flag>
    ```
+   `--applied-commit` takes the commit that made the fix, from the source repo or the plan repo:
+   rdm finds which one holds it and records that on the comment. Pass the commit's SHA rather than
+   a name such as `HEAD`, which is resolved only in the repository the review targets.
    A SOURCE reply MUST embed a pinned permalink to where the fix landed:
    `rdm:src/<path>@<applied-commit>`, plus `#L<line>` when the fix lands on identifiable lines. When
    the comment was anchorless, the reply also states that its anchor was not placed and names the
