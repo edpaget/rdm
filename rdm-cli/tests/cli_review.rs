@@ -3814,3 +3814,69 @@ fn review_start_and_submit_accept_a_body_starting_with_a_hyphen() {
     .success();
     assert_eq!(show_review_json(&plan, &other)["body"], "- x\n");
 }
+
+/// Submits `id` with `verdict` and resolves each `(comment, status)` pair
+/// with a reply.
+fn submit_and_resolve(plan: &TempDir, id: &str, verdict: &str, resolutions: &[(&str, &str)]) {
+    rdm_demo(
+        plan,
+        &["review", "submit", id, "--verdict", verdict, "--no-edit"],
+    )
+    .success();
+    for (comment, status) in resolutions {
+        rdm_demo(
+            plan,
+            &[
+                "review",
+                "update",
+                id,
+                "--comment",
+                comment,
+                "--status",
+                status,
+                "--reply",
+                "Declined.",
+            ],
+        )
+        .success();
+    }
+}
+
+/// `review list --open-comments` keeps the reviews holding at least one
+/// open comment and drops those whose comments are all resolved; it
+/// combines with `--on`.
+#[test]
+fn review_list_open_comments_keeps_only_reviews_holding_an_open_comment() {
+    let plan = init_plan_repo();
+    create_plan_with_body(&plan, "lined", LINED_BODY);
+    commit_plan(&plan, "plan");
+
+    // A: two comments, one left open and one resolved.
+    let a = start_review(&plan, "plan/lined");
+    add_plain_comment(&plan, &a, "Left open.");
+    add_plain_comment(&plan, &a, "Declined.");
+    submit_and_resolve(&plan, &a, "approve", &[("2", "wont-fix")]);
+
+    // B: its only comment is resolved.
+    let b = start_review(&plan, "plan/lined");
+    add_plain_comment(&plan, &b, "Declined.");
+    submit_and_resolve(&plan, &b, "comment", &[("1", "wont-fix")]);
+
+    // An open comment on a different target.
+    let other = start_review(&plan, "task/item-y");
+    add_plain_comment(&plan, &other, "Elsewhere.");
+    submit_and_resolve(&plan, &other, "comment", &[]);
+
+    let open = review_list_json(&plan, &["--on", "plan/lined", "--open-comments"], &[]);
+    assert_eq!(ids_of(&open), vec![a.clone()]);
+    // The listing is the ordinary review object: the open comment is
+    // readable from it.
+    assert_eq!(open[0]["comments"][0]["status"], "open");
+    assert_eq!(open[0]["comments"][1]["status"], "wont-fix");
+
+    let mut all = ids_of(&review_list_json(&plan, &["--on", "plan/lined"], &[]));
+    all.sort();
+    let mut expected = vec![a, b];
+    expected.sort();
+    assert_eq!(all, expected);
+}

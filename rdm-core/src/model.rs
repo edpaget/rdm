@@ -2131,6 +2131,49 @@ impl Review {
             })
             .count()
     }
+
+    /// Counts this review's open comments: those whose status is not
+    /// terminal ([`ReviewCommentStatus::is_terminal`]), i.e. neither
+    /// `addressed` nor `wont-fix`.
+    ///
+    /// This is the single definition of "open" shared by the
+    /// `open_comments` list filter
+    /// ([`ReviewFilter`](crate::ops::reviews::ReviewFilter)), the check that
+    /// refuses to close a review as `addressed`, and the open-review counts,
+    /// so they cannot disagree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::model::Review;
+    ///
+    /// let review: Review = serde_yaml::from_str(
+    ///     "id: r1
+    /// author: a
+    /// target:
+    ///   kind: task
+    ///   slug: t
+    /// state: submitted
+    /// created: 2026-07-01T00:00:00Z
+    /// comments:
+    /// - id: 1
+    ///   status: open
+    ///   body: still open
+    /// - id: 2
+    ///   status: wont-fix
+    ///   body: declined
+    /// ",
+    /// )
+    /// .unwrap();
+    /// assert_eq!(review.open_comment_count(), 1);
+    /// ```
+    #[must_use]
+    pub fn open_comment_count(&self) -> usize {
+        self.comments
+            .iter()
+            .filter(|c| !c.status.is_terminal())
+            .count()
+    }
 }
 
 /// Which lane driver opened a [`Run`].

@@ -190,6 +190,11 @@ belongs to another item and is **not yours to triage**: acting on it would dispa
 item's worktree for a change that lives somewhere else, record an `--applied-commit` from the wrong
 branch, and race any concurrent dispatch run reading the same global queue.
 
+An **open review** in this set is a submitted `request-changes` review. An approving plan review
+that is still `submitted` and holds open comments is **not** one: that is the normal state between
+plan approval (step 7) and the terminal write, and step 15 resolves those comments. It never sends a
+resumed run to triage.
+
 - An `approved` plan for `<item>` **and** an open review **in that set** → **resume at triage (step
   13)** with those ids. Do not re-plan, do not create a second review, and do not re-ask a
   confirmation for a decision already recorded as a reply on a comment.
@@ -495,6 +500,11 @@ NOT** inspect who authored the review. rdm flips plan status on **any** `review 
 this *same read* sees both. An author or provenance check here would break the human/agent symmetry
 this design depends on.
 
+`approved` is the end of plan review. A pass with no blocking finding is ready to implement, and
+nothing drives the plan further toward a comment-free review: the comments an approving review
+leaves open are **not** triaged or revised here. They stay open on the review, go to the implementer
+in step 10, and are resolved in step 15.
+
 Poll with a bounded number of attempts, logging one visible line per attempt. On exhaustion park
 `blocked` with reason `[plan] plan approval not recorded on plan/<plan-slug>` — **never** proceed on
 an unapproved plan.
@@ -559,6 +569,22 @@ write (already recorded, or a resumed pass with prior commits), `identity.base` 
 step 4 for the not-found fallback), the approved plan body verbatim, the item body, and
 `identity.path` as its working directory. Require it to commit in that worktree and return the
 commit SHA. Follow the `--permission-mode auto` rules below. **You MUST NOT** implement inline.
+
+**Before dispatching, read the approving plan review's open comments** — one read, on the approved
+plan this run implements:
+
+```bash
+<rdmBin> review list --on plan/<plan-slug> --state submitted --verdict approve --open-comments<proj-flag> --format json
+```
+
+Only the item's current `approved` plan is read; reviews of a plan it superseded are not swept in.
+`--state submitted --verdict approve` keeps the read to reviews step 15 can close: a draft, or a
+dismissed review whose comments were never resolved, is left alone. In each returned review the open
+comments are the entries of `comments[]` whose `status` is `open`. Put each one in the brief under
+its own heading, as advisory notes from the plan review: the review id, the comment number, its line
+anchor or quote, and its body. Require the implementer to take each into account and to return, with
+its commit SHA, one line per comment saying what it did about it or why it did nothing. An empty
+read adds nothing to the brief.
 
 **Self-check before proceeding:** confirm the implementer returned, then re-run `review source --on
 <item>` and restate the pinned `path`/`branch`/`base`, comparing `base` against the **current**
@@ -730,6 +756,9 @@ request-changes` produces the *same document shape* the engine's persist ladder 
 no second branch to write. (`--path` is required with `--quote` on a change target, and a path
 containing `@` or `#` is refused — the `rdm:src/<path>@<rev>#L<n>` grammar reserves both.)
 
+An approving plan review's open comments are **not** on this work list and are never routed through
+`rdm-revise` here: the implementer already had them (step 10), and step 15 resolves them.
+
 Per comment, run this numbered checklist:
 
 1. **Declare** the decision, the route, and the reply text you intend to record.
@@ -849,6 +878,37 @@ at HEAD, is refused as `GateStaleChangeReview`, which names both SHAs.
 
 ### 15. The terminal write — through the gate, never around it
 
+**First, resolve the approving plan review's open comments.** Re-run step 10's read:
+
+```bash
+<rdmBin> review list --on plan/<plan-slug> --state submitted --verdict approve --open-comments<proj-flag> --format json
+```
+
+As in step 10, only the item's current `approved` plan is read. An empty result means there is
+nothing to do; go straight to the write below. Otherwise, for each comment still `open`, resolve it
+against what the implementation did, with a reply on both branches:
+
+```bash
+<rdmBin> review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "…"<proj-flag>
+<rdmBin> review update <id> --comment <n> --status wont-fix --reply "<why>"<proj-flag>
+```
+
+`addressed` names the source commit that dealt with the comment (a SHA, not a name such as `HEAD` —
+see step 13). Use the implementer's per-comment lines from step 10; a resumed run with no implementer
+report in context decides from the comment and the item's diff. A comment the implementation did not
+act on is `wont-fix` with the reason, optionally naming a task filed for it — **never** a late fix.
+This is record-keeping only: **you MUST NOT** make a source commit or dispatch an implementer here,
+so the head step 14 approved cannot move. Under `--interactive`, present each resolution for
+confirmation first, as step 13 does. Then close each of those reviews and land the batch:
+
+```bash
+<rdmBin> review update <id> --state addressed<proj-flag>
+<rdmBin> link check --on <item><proj-flag>
+<rdmBin> commit -m "chore(plan): resolve plan review <id>"
+```
+
+**Then the write:**
+
 ```bash
 <rdmBin> phase update <phase> --status reviewed \
   --source <identity.path> --base <identity.base> \
@@ -929,7 +989,10 @@ Identical procedure, three differences only:
    (step 6 recorded none). An `--interactive` run abandoned at that
    wait MUST park with a durable reason rather than spin, and the poll MUST NOT treat `draft` as
    `changes-requested`.
-3. **Step 13** presents each triage decision for confirmation before replying.
+3. **Step 13** presents each triage decision for confirmation before replying, and **step 15** does
+   the same for each plan-review comment resolution. A human's approving plan review with comments
+   is otherwise handled exactly like the Workflow's: step 10 briefs the implementer with them and
+   step 15 resolves them.
 
 Apart from step 6's skipped plan-review Workflow, both modes run the same commands and produce the
 same review-record shape.

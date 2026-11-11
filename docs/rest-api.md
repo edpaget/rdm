@@ -60,6 +60,22 @@ the stored `line-range` anchor's `snippet`; the request never supplies it.
 | `line` with `anchor` or `anchor_state`, or on a `change/` review | `400` |
 | A hand-built `line-range` `anchor` (here or on `PATCH …/comments/:id`) | `400`, pointing at `line` |
 
+## Review list filters
+
+`GET /projects/:project/reviews` lists reviews newest first and takes the same
+filters as `rdm review list`, combined as an AND:
+
+| Query parameter | Keeps only reviews |
+|-----------------|--------------------|
+| `on` | of this target (`roadmap/<slug>`, `phase/<roadmap>/<stem-or-number>`, `task/<slug>`, `plan/<slug>`, `change/<sha>`) |
+| `state` | in this state (`draft`, `submitted`, `addressed`, `dismissed`) |
+| `verdict` | with this verdict (`approve`, `request-changes`, `comment`) |
+| `author` | by this author |
+| `open_comments` | when `true`, holding at least one open comment — one that is neither `addressed` nor `wont-fix`. Absent or `false` filters nothing |
+
+The list items are metadata only and carry no `comments` array; fetch a review
+to read which of its comments are open.
+
 ## Follow-up reviews
 
 A change review that follows an earlier one (started with

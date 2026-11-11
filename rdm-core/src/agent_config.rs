@@ -4851,7 +4851,11 @@ mod tests {
         // named `rdm-dispatch-phase` twice (the authorized orchestrator and
         // the reason-string citation). The dispatch never passes the
         // override; a follow-up review clears a stale approval instead.
-        let expected = 59;
+        // 59 -> 60: `review-submission-smoothing` phase 5 added a sentence to
+        // `skill-dispatch-phase-cli.md`'s triage step saying an approving
+        // plan review's open comments are not routed through `rdm-revise`
+        // there.
+        let expected = 60;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

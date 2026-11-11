@@ -560,6 +560,7 @@ pub fn run(
             verdict,
             author,
             mine,
+            open_comments,
             project,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
@@ -583,6 +584,7 @@ pub fn run(
                     state,
                     verdict,
                     author,
+                    open_comments,
                     ..Default::default()
                 },
             )

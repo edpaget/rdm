@@ -1249,12 +1249,7 @@ pub fn update_review(
                     to: ReviewState::Addressed,
                 });
             }
-            let open_count = review_doc
-                .frontmatter
-                .comments
-                .iter()
-                .filter(|c| !c.status.is_terminal())
-                .count();
+            let open_count = review_doc.frontmatter.open_comment_count();
             if open_count > 0 {
                 return Err(Error::ReviewOpenComments {
                     review_id: review_id.to_string(),
@@ -1282,7 +1277,7 @@ pub fn update_review(
 ///
 /// Each populated field narrows the result set independently; a review is
 /// kept only if it satisfies all populated criteria. The default value (all
-/// fields `None`) keeps every review. Mirrors
+/// fields `None`, `open_comments` `false`) keeps every review. Mirrors
 /// [`TaskFilter`](crate::ops::task::TaskFilter).
 #[derive(Debug, Clone, Default)]
 pub struct ReviewFilter {
@@ -1299,6 +1294,12 @@ pub struct ReviewFilter {
     pub verdict: Option<Verdict>,
     /// Author criterion: keep only reviews by exactly this author.
     pub author: Option<String>,
+    /// Open-comment criterion: when `true`, keep only reviews holding at
+    /// least one open comment ([`Review::open_comment_count`] is non-zero),
+    /// so a review with no comments never matches. `false` (the default) is
+    /// no criterion. It is independent of the review's state: combine it
+    /// with `state` to exclude drafts or closed reviews.
+    pub open_comments: bool,
 }
 
 /// Returns whether `review` satisfies every populated criterion in `filter`.
@@ -1314,6 +1315,7 @@ pub fn review_matches(review: &Review, filter: &ReviewFilter) -> bool {
         && filter.state.is_none_or(|s| review.state == s)
         && filter.verdict.is_none_or(|v| review.verdict == Some(v))
         && filter.author.as_deref().is_none_or(|a| review.author == a)
+        && (!filter.open_comments || review.open_comment_count() > 0)
 }
 
 /// Filters `reviews` to those satisfying `filter`, preserving order.
@@ -1409,7 +1411,7 @@ pub fn delete_review(
 ///
 /// Returns `(id, Document<Review>)` tuples. Returns an empty vec if the
 /// reviews directory doesn't exist. Compose with [`filter_reviews`] to
-/// narrow by target, state, verdict, or author.
+/// narrow by target, state, verdict, author, or open comments.
 ///
 /// # Errors
 ///
@@ -1530,11 +1532,7 @@ pub fn count_open_reviews_in(reviews: &[(String, Document<Review>)]) -> OpenRevi
         if review.state != ReviewState::Submitted {
             continue;
         }
-        let open_comments = review
-            .comments
-            .iter()
-            .filter(|c| !c.status.is_terminal())
-            .count();
+        let open_comments = review.open_comment_count();
         let (map, key) = match &review.target {
             ReviewTarget::Roadmap { roadmap } => (&mut counts.roadmaps, roadmap),
             ReviewTarget::Phase { roadmap, .. } => (&mut counts.roadmaps, roadmap),
@@ -1971,6 +1969,92 @@ mod tests {
         );
     }
 
+    /// Writes a review on `target` in `state` whose comments carry `statuses`.
+    fn write_review_with_comments(
+        store: &mut MemoryStore,
+        id: &str,
+        target: ReviewTarget,
+        state: ReviewState,
+        statuses: &[ReviewCommentStatus],
+    ) {
+        let (_, doc) = counted_review(id, target, state, statuses);
+        crate::io::write_review(store, "test", id, &doc).unwrap();
+    }
+
+    fn plan_target(slug: &str) -> ReviewTarget {
+        ReviewTarget::Plan {
+            slug: slug.to_string(),
+        }
+    }
+
+    #[test]
+    fn open_comments_filter_keeps_only_reviews_with_an_open_comment() {
+        use ReviewCommentStatus::{Addressed, Open, WontFix};
+        let mut store = setup_store();
+        write_review_with_comments(
+            &mut store,
+            "mixed",
+            plan_target("p"),
+            ReviewState::Submitted,
+            &[Open, WontFix],
+        );
+        write_review_with_comments(
+            &mut store,
+            "all-terminal",
+            plan_target("p"),
+            ReviewState::Submitted,
+            &[Addressed, WontFix],
+        );
+        write_review_with_comments(
+            &mut store,
+            "no-comments",
+            plan_target("p"),
+            ReviewState::Submitted,
+            &[],
+        );
+        let filter = ReviewFilter {
+            open_comments: true,
+            ..Default::default()
+        };
+        assert_eq!(query_ids(&store, &filter), vec!["mixed"]);
+        // Unset, the criterion drops nothing.
+        assert_eq!(query_ids(&store, &ReviewFilter::default()).len(), 3);
+    }
+
+    #[test]
+    fn open_comments_filter_ands_with_target_and_state() {
+        use ReviewCommentStatus::Open;
+        let mut store = setup_store();
+        write_review_with_comments(
+            &mut store,
+            "on-p-submitted",
+            plan_target("p"),
+            ReviewState::Submitted,
+            &[Open],
+        );
+        write_review_with_comments(
+            &mut store,
+            "on-p-draft",
+            plan_target("p"),
+            ReviewState::Draft,
+            &[Open],
+        );
+        write_review_with_comments(
+            &mut store,
+            "on-q-submitted",
+            plan_target("q"),
+            ReviewState::Submitted,
+            &[Open],
+        );
+        let filter = ReviewFilter {
+            target: Some(plan_target("p")),
+            state: Some(ReviewState::Submitted),
+            open_comments: true,
+            ..Default::default()
+        };
+        assert_eq!(query_ids(&store, &filter), vec!["on-p-submitted"]);
+    }
+
     #[test]
     fn list_reviews_missing_dir_is_empty() {
         let store = setup_store();
@@ -2202,6 +2286,7 @@ mod tests {
             state: Some(ReviewState::Submitted),
             verdict: Some(Verdict::Approve),
             author: Some("ed".to_string()),
+            open_comments: false,
         };
         let all_match = review_for_filter(
             task_target("a"),

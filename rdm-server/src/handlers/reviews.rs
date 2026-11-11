@@ -185,6 +185,10 @@ pub struct ReviewFilters {
     pub verdict: Option<String>,
     /// Keep only reviews by this author.
     pub author: Option<String>,
+    /// When `true`, keep only reviews holding at least one open comment (a
+    /// comment that is neither addressed nor wont-fix). Absent or `false`
+    /// is no criterion.
+    pub open_comments: Option<bool>,
 }
 
 /// `GET /projects/:project/reviews` — list reviews with optional filters,
@@ -229,6 +233,7 @@ pub async fn list_reviews(
             state: state_filter,
             verdict: verdict_filter,
             author: filters.author.clone(),
+            open_comments: filters.open_comments.unwrap_or(false),
             ..Default::default()
         },
     )
@@ -1049,6 +1054,52 @@ mod tests {
         let items = json["_embedded"]["reviews"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["author"], "bot");
+    }
+
+    #[tokio::test]
+    async fn list_reviews_filter_by_open_comments() {
+        let (_dir, state) = setup();
+        // One open comment.
+        let open = create_draft(&state, "task/fix-login", "ed").await;
+        add_comment_ok(&state, &open, serde_json::json!({ "body": "Still open." })).await;
+        // Its only comment is resolved.
+        let resolved = create_draft(&state, "task/fix-login", "ed").await;
+        add_comment_ok(
+            &state,
+            &resolved,
+            serde_json::json!({ "body": "Declined." }),
+        )
+        .await;
+        submit_ok(&state, &resolved, "comment").await;
+        let uri = format!("/projects/demo/reviews/{resolved}/comments/1");
+        let response = send(
+            &state,
+            patch_json(&uri, r#"{"status":"wont-fix","reply":"Not needed."}"#),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        // No comments at all.
+        create_draft(&state, "task/fix-login", "ed").await;
+
+        let response = send(
+            &state,
+            get_req("/projects/demo/reviews?on=task/fix-login&open_comments=true"),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        let items = json["_embedded"]["reviews"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], serde_json::json!(open));
+
+        // `false` is no criterion, the same as leaving the parameter out.
+        let response = send(
+            &state,
+            get_req("/projects/demo/reviews?open_comments=false"),
+        )
+        .await;
+        let json = json_body(response).await;
+        assert_eq!(json["_embedded"]["reviews"].as_array().unwrap().len(), 3);
     }
 
     #[tokio::test]

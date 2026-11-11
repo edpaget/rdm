@@ -704,6 +704,30 @@ that approved the current head gets none. The engine side is in
 [`workflow-schemas.md`](workflow-schemas.md) § "Source-bound standalone code
 review".
 
+## Listing reviews with open comments (`--open-comments`)
+
+`rdm review list --open-comments` keeps only the reviews that hold at least
+one **open** comment: one whose status is neither `addressed` nor `wont-fix`.
+A review whose comments are all resolved is left out, and so is a review with
+no comments. It works on every review kind and combines with the other
+filters as an AND, so
+
+```bash
+rdm review list --on plan/<slug> --open-comments --format json
+```
+
+returns the reviews of that plan that still have something to resolve. The
+output is the ordinary review list: each review's `comments[].status` says
+which of its comments are the open ones.
+
+The filter does not look at the review's state, so a `draft` or a `dismissed`
+review with unresolved comments is listed too. Add `--state submitted` to
+keep to reviews that can be closed with `review update <id> --state
+addressed`. `rdm-dispatch-phase` reads an approved plan's reviews this way
+(`--state submitted --verdict approve --open-comments`) to hand their open
+comments to the implementer and to resolve them before it writes `reviewed`;
+see [`autonomous-loop.md`](autonomous-loop.md).
+
 ## The never-write-the-source-repo invariant
 
 Every source-repo interaction routes through `rdm_core::source::SourceRepo`, a

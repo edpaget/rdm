@@ -1752,6 +1752,11 @@ pub(crate) enum ReviewCommand {
         /// `$USER`/`$USERNAME`).
         #[arg(long, conflicts_with = "author")]
         mine: bool,
+        /// Keep only reviews holding at least one open comment (a comment
+        /// that is neither addressed nor wont-fix). Combines with every
+        /// other filter.
+        #[arg(long)]
+        open_comments: bool,
         /// Project to list reviews for.
         #[arg(long)]
         project: Option<String>,

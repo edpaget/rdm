@@ -5605,3 +5605,121 @@ fn a_follow_up_naming_a_different_plan_is_refused() {
     assert!(stderr.contains(&full), "{stderr}");
     assert_eq!(review_ids(plan.path(), src.path()), before);
 }
+
+/// An approving plan review closes as `addressed` once every comment is
+/// terminal — one of them addressed with a source-repo commit — and closing
+/// it leaves the plan `approved`.
+#[test]
+fn an_approving_plan_review_closes_once_its_comments_are_terminal() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", false);
+    let source_sha = git_out(src.path(), &["rev-parse", "main"]);
+    commit_plan_repo(plan.path());
+
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        plan.path(),
+        &["review", "start", "--on", "plan/design-plan", "--no-edit"],
+    );
+    assert!(ok, "{stderr}");
+    let id = stdout.split('\'').nth(1).unwrap().to_string();
+    let open_ids = |plan: &Path, src: &Path| -> Vec<String> {
+        rdm_json(
+            plan,
+            src,
+            &[
+                "review",
+                "list",
+                "--on",
+                "plan/design-plan",
+                "--open-comments",
+            ],
+        )
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect()
+    };
+    for args in [
+        vec![
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "Consider the edge case.",
+            "--no-edit",
+        ],
+        vec![
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "Maybe rename this.",
+            "--no-edit",
+        ],
+        vec!["review", "submit", &id, "--verdict", "approve", "--no-edit"],
+    ] {
+        let (ok, _, stderr) = run_rdm(plan.path(), plan.path(), &args);
+        assert!(ok, "rdm {args:?} failed: {stderr}");
+    }
+    assert_eq!(open_ids(plan.path(), src.path()), vec![id.clone()]);
+
+    // With a comment still open the close is refused.
+    let (ok, _, _) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["review", "update", &id, "--state", "addressed"],
+    );
+    assert!(!ok, "an open comment must block the close");
+
+    for args in [
+        vec![
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            &source_sha,
+            "--reply",
+            "Handled in the implementation.",
+        ],
+        vec![
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "2",
+            "--status",
+            "wont-fix",
+            "--reply",
+            "The name is used elsewhere.",
+        ],
+    ] {
+        let (ok, _, stderr) = run_rdm(plan.path(), src.path(), &args);
+        assert!(ok, "rdm {args:?} failed: {stderr}");
+    }
+
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["review", "update", &id, "--state", "addressed"],
+    );
+    assert!(ok, "closing the approving plan review failed: {stderr}");
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["state"], "addressed");
+    assert_eq!(j["verdict"], "approve");
+    assert_eq!(j["comments"][0]["status"], "addressed");
+    assert_eq!(j["comments"][0]["applied_commit"], source_sha.as_str());
+    assert_eq!(j["comments"][0]["applied_commit_repo"], "source");
+    assert_eq!(j["comments"][1]["status"], "wont-fix");
+
+    let shown = rdm_json(plan.path(), src.path(), &["plan", "show", "design-plan"]);
+    assert_eq!(shown["status"], "approved");
+    assert!(open_ids(plan.path(), src.path()).is_empty());
+}

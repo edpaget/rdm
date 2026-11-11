@@ -101,12 +101,14 @@ Skill(rdm-dispatch-phase)
   5  Agent: planner → plan create --implements [--supersedes] + '## Verification command'
   6  Workflow: rdm-wf-plan-review  persist → plan/<slug>      (local copy only; see below)
   7  poll plan show --format json → approved | changes-requested | draft | superseded
-  8  Agent: implementer in the pinned worktree → commit
+  8  Agent: implementer in the pinned worktree → commit      (brief carries the approving plan
+                                                              review's open comments)
   9  verify run (exit 2 → the plan-recorded command, run in the pinned checkout)
  10  Workflow: rdm-wf-review-refute-fix persist → change/<head>, gate:false
  11  triage every comment: addressed(--applied-commit) | wont-fix, each with a reply
  12  re-review by rule: the engine, given the prior review, returns none | follow-up | full
- 13  phase/task update --status reviewed, source-bound, through the core gate
+ 13  resolve the approving plan review's open comments and close it (plan repo only), then
+     phase/task update --status reviewed, source-bound, through the core gate
  14  return OUTCOME + planId + reviewIds
 ```
 
@@ -126,7 +128,21 @@ and no `--on` flag, so it returns every pending review in the project. Triaging 
 dispatch a fix for another roadmap's comment into *this* item's pinned worktree and record an
 `--applied-commit` from the wrong branch, and two concurrent dispatch runs would race each other for
 the same entries. The completion check is scoped the same way, so another item's open review can
-never block this item's terminal write.
+never block this item's terminal write. An "open review" in this set is a submitted
+`request-changes` review. An approving plan review that is still `submitted` with open comments is
+the normal state between plan approval and the terminal write, and never sends a resumed run to
+triage.
+
+**An approving plan review's comments go to the implementer.** A plan is ready to implement once a
+review pass has no blocking finding; a blocking finding still sends it back through the revise loop,
+up to `--max-plan-revise`. The comments an approving review leaves open are not triaged before
+implementation. The dispatch reads them with `review list --on plan/<plan-slug> --state submitted
+--verdict approve --open-comments` and puts them in the implementer's brief, and the implementer
+reports what it did about each. Just before the `reviewed` write the dispatch runs the same read
+again and resolves every comment still open: `addressed` with the source commit that dealt with it,
+or `wont-fix` with the reason. It then closes the review as `addressed`. That step writes only to
+the plan repo, so the head the code review approved does not move. Only the item's current
+`approved` plan is read; reviews of a plan it superseded are left as they are.
 
 **Triage routing** is decided by the comment's own anchor and stored target, not by who wrote
 it. A comment carrying a `path`, a `range`/`file` `target`, or an `intended_path` is a SOURCE
