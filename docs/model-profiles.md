@@ -104,3 +104,70 @@ no legacy key for `frontier`.
    (default medium);
    `implement` follows the item tier and `mechanical` is unfloored.
 3. Map the tier to the host's profile.
+
+## Presets
+
+A **preset** is a named, sparse overlay on the profile table. It changes what
+a tier or a role *runs on*, never which tier is picked: tier resolution above
+(hint, `[models.steps]`, defaults, `PLAN_FLOOR`, `review_floor`) is untouched.
+
+Selecting a preset per run (flag, env var or config default) is not wired to
+the CLI yet; today only rdm-core's `ModelPolicy::for_preset` takes a preset
+name. With no preset the policy is exactly the one described above.
+
+```toml
+[models.presets.fable-build.claude.steps.plan]
+model = "fable"
+[models.presets.fable-build.claude.steps.implement]
+model = "fable"
+effort = "high"
+[models.presets.cheap.claude.tiers.large]
+model = "opus"
+effort = "medium"
+```
+
+Per host, a preset holds `tiers.<tier>` overrides (applied to every step that
+resolves to that tier) and `steps.<step>` overrides (applied to that role at
+whatever tier it resolves to; step keys use the kebab-case names `plan`,
+`implement`, `review-find`, `review-verify`, `review-consolidate`,
+`mechanical`). Each field of the resolved profile layers independently:
+
+- **model**: preset `steps.<step>.model` → preset `tiers.<tier>.model` →
+  the configured-or-default profile model.
+- **effort**: preset `steps.<step>.effort` → preset `tiers.<tier>.effort` →
+  the configured-or-default profile effort.
+
+So a preset that only says "implement runs on fable" inherits its effort from
+the tier the item resolved to, and a role override that sets only `model`
+still picks up a tier override's `effort`.
+
+### Built-in presets
+
+Core ships two presets for the `claude` host; the `codex` host has none.
+
+| Preset | Roles on `fable` (claude) | Left on the profile table |
+|---|---|---|
+| `fable` | `plan`, `implement`, `review-find`, `review-verify`, `review-consolidate` | `mechanical` |
+| `fable-build` | `plan`, `implement` | the three review roles, `mechanical` |
+
+Neither sets an effort, so each role keeps the effort of its resolved tier.
+
+A `[models.presets.<name>]` table whose name is a built-in's **replaces** that
+built-in entirely; the two are not merged. Asking for a name that is neither
+built in nor configured fails with
+`unknown model preset '<name>' — available presets: fable, fable-build, …`.
+
+### Global vs repo config
+
+Presets live inside `[models]`, so they follow its existing wholesale
+precedence: a repo `rdm.toml` `[models]` table — even one with no presets —
+hides every preset in the global config's `[models]`; a repo with no
+`[models]` table inherits the global presets. There is no deep merge.
+
+### Validation
+
+Preset efforts are validated when the config loads, like profile efforts. A
+host-unsupported effort fails naming the key, e.g.
+`invalid value 'max' for 'models.presets.<name>.codex.steps.review-find.effort'`
+or `… 'models.presets.<name>.codex.tiers.small.effort' — valid values: low,
+medium, high, xhigh`.

@@ -466,7 +466,8 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("cannot set both '{field}' and 'clear_{field}'")),
                 instance: None,
             },
-            Error::KeyNotProjectScopable { .. } => ProblemDetail {
+            // An unknown preset is a caller-supplied name naming no preset.
+            Error::KeyNotProjectScopable { .. } | Error::UnknownModelPreset { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Bad Request".to_string(),
                 status: 400,
@@ -662,6 +663,20 @@ mod tests {
         for key in rdm_core::config::PROJECT_SCOPABLE_KEYS {
             assert!(detail.contains(key), "{key} missing from: {detail}");
         }
+    }
+
+    #[test]
+    fn from_unknown_model_preset_is_bad_request() {
+        let err = Error::UnknownModelPreset {
+            name: "nope".to_string(),
+            available: vec!["fable".to_string(), "fable-build".to_string()],
+        };
+        let pd = ProblemDetail::from(&err);
+        assert_eq!(pd.status, 400);
+        assert_eq!(pd.title, "Bad Request");
+        let detail = pd.detail.unwrap();
+        assert!(detail.contains("nope"), "{detail}");
+        assert!(detail.contains("fable, fable-build"), "{detail}");
     }
 
     #[test]

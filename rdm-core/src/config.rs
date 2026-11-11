@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::model::{Effort, ModelTier};
-use crate::model_policy::Host;
+use crate::model_policy::{DispatchStep, Host};
 
 /// Valid values for the `default_format` config key.
 pub const VALID_FORMATS: &[&str] = &["human", "json", "table", "markdown"];
@@ -293,6 +293,109 @@ pub struct ModelsConfig {
     /// [`crate::model_policy`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles: Option<ProfilesConfig>,
+    /// Named model presets (`[models.presets.<name>]`): sparse per-host
+    /// overlays of per-tier and per-role model + effort overrides layered
+    /// over the profile table when a policy is built for that preset (see
+    /// [`crate::model_policy::ModelPolicy::for_preset`]).
+    ///
+    /// A configured preset with the name of a built-in preset
+    /// ([`crate::model_policy::BUILTIN_PRESETS`]) replaces it entirely.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub presets: BTreeMap<String, PresetConfig>,
+}
+
+/// One named model preset (`[models.presets.<name>]`), keyed by host.
+///
+/// Every field a preset leaves unset falls through to the configured or
+/// built-in profile table, so a preset only states what it changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PresetConfig {
+    /// Overrides for the Claude Code host (`[models.presets.<name>.claude]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<PresetHostConfig>,
+    /// Overrides for the Codex host (`[models.presets.<name>.codex]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<PresetHostConfig>,
+}
+
+impl PresetConfig {
+    /// Returns this preset's overrides for `host`, if any.
+    #[must_use]
+    pub fn for_host(&self, host: Host) -> Option<&PresetHostConfig> {
+        match host {
+            Host::Claude => self.claude.as_ref(),
+            Host::Codex => self.codex.as_ref(),
+        }
+    }
+}
+
+/// One host's overrides within a preset
+/// (`[models.presets.<name>.<host>]`).
+///
+/// A role (`steps`) override takes precedence over a tier (`tiers`)
+/// override field by field; both fall through to the profile table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PresetHostConfig {
+    /// Per-tier overrides (`[models.presets.<name>.<host>.tiers.<tier>]`),
+    /// applied to every step that resolves to that tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<HostProfilesConfig>,
+    /// Per-role overrides (`[models.presets.<name>.<host>.steps.<step>]`),
+    /// applied to that step at whatever tier it resolves to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<StepProfilesConfig>,
+}
+
+/// Per-step model + effort overrides within a preset host
+/// (`[models.presets.<name>.<host>.steps]`), keyed by the kebab-case
+/// dispatch step name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StepProfilesConfig {
+    /// Override for the planning step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<ProfileConfig>,
+    /// Override for the implementation step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implement: Option<ProfileConfig>,
+    /// Override for the review-find step.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "review-find"
+    )]
+    pub review_find: Option<ProfileConfig>,
+    /// Override for the review-verify step.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "review-verify"
+    )]
+    pub review_verify: Option<ProfileConfig>,
+    /// Override for the review-consolidate step.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "review-consolidate"
+    )]
+    pub review_consolidate: Option<ProfileConfig>,
+    /// Override for mechanical (non-judgment) steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanical: Option<ProfileConfig>,
+}
+
+impl StepProfilesConfig {
+    /// Returns the override configured for `step`, if any.
+    #[must_use]
+    pub fn for_step(&self, step: DispatchStep) -> Option<&ProfileConfig> {
+        match step {
+            DispatchStep::Plan => self.plan.as_ref(),
+            DispatchStep::Implement => self.implement.as_ref(),
+            DispatchStep::ReviewFind => self.review_find.as_ref(),
+            DispatchStep::ReviewVerify => self.review_verify.as_ref(),
+            DispatchStep::ReviewConsolidate => self.review_consolidate.as_ref(),
+            DispatchStep::Mechanical => self.mechanical.as_ref(),
+        }
+    }
 }
 
 /// The `[models.profiles]` table: model + effort profiles keyed by host.
@@ -439,7 +542,8 @@ impl GlobalConfig {
     ///
     /// Returns [`Error::InvalidConfigValue`] if `default_format` is set to an
     /// unrecognized value, or if a `[models.profiles.<host>.<tier>]` effort
-    /// is not one the host accepts (see [`Host::valid_efforts`]).
+    /// or a `[models.presets.<name>.<host>]` tier or step override effort is
+    /// not one the host accepts (see [`Host::valid_efforts`]).
     pub fn validate(&self) -> Result<()> {
         validate_format(&self.default_format)?;
         validate_models(&self.models)
@@ -561,7 +665,8 @@ impl Config {
     ///
     /// Returns [`Error::InvalidConfigValue`] if `default_format` is set to an
     /// unrecognized value, or if a `[models.profiles.<host>.<tier>]` effort
-    /// is not one the host accepts (see [`Host::valid_efforts`]).
+    /// or a `[models.presets.<name>.<host>]` tier or step override effort is
+    /// not one the host accepts (see [`Host::valid_efforts`]).
     pub fn validate(&self) -> Result<()> {
         validate_format(&self.default_format)?;
         validate_models(&self.models)
@@ -1108,36 +1213,76 @@ fn reviewed_gate_enabled_at_with_env(
     resolve_reviewed_gate(Some(project), &config, env)
 }
 
-/// Validates that every configured profile effort is accepted by its host.
+/// Every model tier, smallest first, for validation walks.
+const VALIDATED_TIERS: [ModelTier; 4] = [
+    ModelTier::Small,
+    ModelTier::Medium,
+    ModelTier::Large,
+    ModelTier::Frontier,
+];
+
+/// Validates that every configured profile and preset effort is accepted by
+/// its host.
 fn validate_models(models: &Option<ModelsConfig>) -> Result<()> {
-    let Some(profiles) = models.as_ref().and_then(|m| m.profiles.as_ref()) else {
+    let Some(models) = models.as_ref() else {
         return Ok(());
     };
-    for host in Host::ALL {
-        let Some(host_profiles) = profiles.for_host(host) else {
-            continue;
-        };
-        for tier in [
-            ModelTier::Small,
-            ModelTier::Medium,
-            ModelTier::Large,
-            ModelTier::Frontier,
-        ] {
-            if let Some(effort) = host_profiles.for_tier(tier).and_then(|p| p.effort)
-                && !host.valid_efforts().contains(&effort)
-            {
-                return Err(Error::InvalidConfigValue {
-                    key: format!("models.profiles.{host}.{tier}.effort"),
-                    value: effort.to_string(),
-                    valid: host
-                        .valid_efforts()
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                });
+    if let Some(profiles) = models.profiles.as_ref() {
+        for host in Host::ALL {
+            let Some(host_profiles) = profiles.for_host(host) else {
+                continue;
+            };
+            for tier in VALIDATED_TIERS {
+                check_effort(host, host_profiles.for_tier(tier), || {
+                    format!("models.profiles.{host}.{tier}.effort")
+                })?;
             }
         }
+    }
+    for (name, preset) in &models.presets {
+        for host in Host::ALL {
+            let Some(preset_host) = preset.for_host(host) else {
+                continue;
+            };
+            if let Some(tiers) = preset_host.tiers.as_ref() {
+                for tier in VALIDATED_TIERS {
+                    check_effort(host, tiers.for_tier(tier), || {
+                        format!("models.presets.{name}.{host}.tiers.{tier}.effort")
+                    })?;
+                }
+            }
+            if let Some(steps) = preset_host.steps.as_ref() {
+                for step in DispatchStep::ALL {
+                    check_effort(host, steps.for_step(step), || {
+                        format!("models.presets.{name}.{host}.steps.{step}.effort")
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Rejects `profile`'s effort, if set, when `host` does not accept it,
+/// naming the offending config key built by `key`.
+fn check_effort(
+    host: Host,
+    profile: Option<&ProfileConfig>,
+    key: impl FnOnce() -> String,
+) -> Result<()> {
+    if let Some(effort) = profile.and_then(|p| p.effort)
+        && !host.valid_efforts().contains(&effort)
+    {
+        return Err(Error::InvalidConfigValue {
+            key: key(),
+            value: effort.to_string(),
+            valid: host
+                .valid_efforts()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
     }
     Ok(())
 }
@@ -1625,6 +1770,7 @@ mechanical = "small"
                     mechanical: Some(ModelTier::Small),
                 }),
                 profiles: None,
+                presets: BTreeMap::new(),
             }),
             ..Default::default()
         };
@@ -1660,6 +1806,7 @@ mechanical = "small"
             review_floor: Some(ModelTier::Medium),
             steps: None,
             profiles: None,
+            presets: BTreeMap::new(),
         };
         let global = GlobalConfig {
             models: Some(global_models.clone()),
@@ -1678,6 +1825,7 @@ mechanical = "small"
             review_floor: None,
             steps: None,
             profiles: None,
+            presets: BTreeMap::new(),
         };
         let global_models = ModelsConfig {
             small: Some("haiku".to_string()),
@@ -1686,6 +1834,7 @@ mechanical = "small"
             review_floor: Some(ModelTier::Large),
             steps: None,
             profiles: None,
+            presets: BTreeMap::new(),
         };
         let repo_config = Config {
             models: Some(repo_models.clone()),
@@ -2170,6 +2319,117 @@ effort = "xhigh"
                 other => panic!("expected InvalidConfigValue, got {other:?}"),
             }
         }
+    }
+
+    // --- [models.presets] config tests ---
+
+    #[test]
+    fn preset_host_unsupported_effort_rejected_naming_key() {
+        let cases = [
+            (
+                "[models.presets.p.codex.steps.review-find]\neffort = \"max\"\n",
+                "models.presets.p.codex.steps.review-find.effort",
+            ),
+            (
+                "[models.presets.p.codex.tiers.small]\neffort = \"max\"\n",
+                "models.presets.p.codex.tiers.small.effort",
+            ),
+        ];
+        for (toml_str, want_key) in cases {
+            for err in [
+                Config::from_toml(toml_str).unwrap_err(),
+                GlobalConfig::from_toml(toml_str).unwrap_err(),
+            ] {
+                match err {
+                    Error::InvalidConfigValue { key, value, valid } => {
+                        assert_eq!(key, want_key);
+                        assert_eq!(value, "max");
+                        assert_eq!(valid, "low, medium, high, xhigh");
+                    }
+                    other => panic!("expected InvalidConfigValue, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preset_with_host_supported_effort_parses() {
+        let toml_str = r#"
+[models.presets.fable-build.claude.steps.plan]
+model = "fable"
+[models.presets.fable-build.claude.steps.implement]
+model = "fable"
+effort = "max"
+[models.presets.cheap.claude.tiers.large]
+model = "opus"
+effort = "medium"
+"#;
+        let config = Config::from_toml(toml_str).unwrap();
+        assert!(GlobalConfig::from_toml(toml_str).is_ok());
+        let presets = config.models.expect("models parsed").presets;
+        let steps = presets["fable-build"]
+            .for_host(Host::Claude)
+            .and_then(|h| h.steps.as_ref())
+            .expect("steps parsed");
+        assert_eq!(
+            steps.for_step(DispatchStep::Implement),
+            Some(&ProfileConfig {
+                model: Some("fable".to_string()),
+                effort: Some(Effort::Max),
+            })
+        );
+        assert_eq!(steps.for_step(DispatchStep::ReviewFind), None);
+        let tiers = presets["cheap"]
+            .for_host(Host::Claude)
+            .and_then(|h| h.tiers.as_ref())
+            .expect("tiers parsed");
+        assert_eq!(
+            tiers.for_tier(ModelTier::Large),
+            Some(&ProfileConfig {
+                model: Some("opus".to_string()),
+                effort: Some(Effort::Medium),
+            })
+        );
+        assert!(presets["cheap"].for_host(Host::Codex).is_none());
+    }
+
+    #[test]
+    fn presets_round_trip_and_are_omitted_when_empty() {
+        let without = Config {
+            models: Some(ModelsConfig {
+                small: Some("opus".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!without.to_toml().unwrap().contains("presets"));
+
+        let toml_str = "[models.presets.p.claude.steps.review-consolidate]\nmodel = \"fable\"\n\
+                        [models.presets.p.codex.tiers.frontier]\neffort = \"xhigh\"\n";
+        let config = Config::from_toml(toml_str).unwrap();
+        let out = config.to_toml().unwrap();
+        assert!(out.contains("review-consolidate"), "{out}");
+        assert_eq!(Config::from_toml(&out).unwrap(), config);
+    }
+
+    #[test]
+    fn presets_follow_wholesale_models_precedence() {
+        let global =
+            GlobalConfig::from_toml("[models.presets.g.claude.steps.plan]\nmodel = \"fable\"\n")
+                .unwrap();
+        // A repo `[models]` table without presets hides the global presets.
+        let repo = Config::from_toml("[models]\nsmall = \"opus\"\n").unwrap();
+        let merged = repo.with_global_defaults(&global);
+        assert!(merged.models.expect("repo models").presets.is_empty());
+        // A repo with no `[models]` inherits them.
+        let merged = Config::default().with_global_defaults(&global);
+        assert!(
+            merged
+                .models
+                .expect("global models")
+                .presets
+                .contains_key("g")
+        );
     }
 
     #[test]

@@ -18,13 +18,26 @@
 //! [`ModelPolicy::profile`](crate::model_policy::ModelPolicy::profile) maps
 //! that tier to the host's configured-or-default profile. No built-in default
 //! ever resolves to [`ModelTier::Frontier`](crate::model::ModelTier::Frontier).
+//!
+//! A policy may also be built for a named **preset**
+//! ([`ModelPolicy::for_preset`](crate::model_policy::ModelPolicy::for_preset)):
+//! a sparse overlay that changes what a tier or a role *runs on*, never which
+//! tier is picked. Each field (model, effort) of the profile a step resolves
+//! to is layered independently: the preset's role (step) override, else the
+//! preset's override for the resolved tier, else the configured-or-default
+//! profile. Presets come from config (`[models.presets.<name>]`) or are built
+//! in ([`BUILTIN_PRESETS`](crate::model_policy::BUILTIN_PRESETS)); a
+//! configured preset replaces a built-in one of the same name.
 
 use std::fmt;
 use std::str::FromStr;
 
 use serde::Serialize;
 
-use crate::config::{Config, StepTiersConfig};
+use crate::config::{
+    Config, PresetConfig, PresetHostConfig, ProfileConfig, StepProfilesConfig, StepTiersConfig,
+};
+use crate::error::Error;
 use crate::model::{Effort, ModelTier, ParseError};
 
 /// Built-in minimum tier review steps may run on when `[models]` does not
@@ -166,6 +179,16 @@ pub enum DispatchStep {
 }
 
 impl DispatchStep {
+    /// Every dispatch step, in pipeline order.
+    pub const ALL: [DispatchStep; 6] = [
+        DispatchStep::Plan,
+        DispatchStep::Implement,
+        DispatchStep::ReviewFind,
+        DispatchStep::ReviewVerify,
+        DispatchStep::ReviewConsolidate,
+        DispatchStep::Mechanical,
+    ];
+
     /// Returns this step's built-in default tier, used when neither a caller
     /// hint nor a `[models.steps]` override is present.
     #[must_use]
@@ -239,12 +262,79 @@ impl FromStr for DispatchStep {
     }
 }
 
+/// The Claude model id the built-in presets put roles on.
+const FABLE_MODEL: &str = "fable";
+
+/// The names of the presets built into core, sorted.
+///
+/// - `fable`: on the `claude` host, `plan`, `implement`, `review-find`,
+///   `review-verify` and `review-consolidate` run on Fable at the effort of
+///   the tier they resolve to; `mechanical` is left on the profile table.
+/// - `fable-build`: on the `claude` host, `plan` and `implement` run on
+///   Fable; the review roles are left on the profile table.
+///
+/// Neither touches the `codex` host.
+pub const BUILTIN_PRESETS: [&str; 2] = ["fable", "fable-build"];
+
+/// Returns the built-in preset named `name`, or `None` if core ships no
+/// preset of that name (see [`BUILTIN_PRESETS`]).
+///
+/// This ignores config: a configured `[models.presets.<name>]` table of the
+/// same name takes its place in [`ModelPolicy::for_preset`].
+#[must_use]
+pub fn builtin_preset(name: &str) -> Option<PresetConfig> {
+    let fable = || {
+        Some(ProfileConfig {
+            model: Some(FABLE_MODEL.to_string()),
+            effort: None,
+        })
+    };
+    let steps = match name {
+        "fable" => StepProfilesConfig {
+            plan: fable(),
+            implement: fable(),
+            review_find: fable(),
+            review_verify: fable(),
+            review_consolidate: fable(),
+            mechanical: None,
+        },
+        "fable-build" => StepProfilesConfig {
+            plan: fable(),
+            implement: fable(),
+            ..Default::default()
+        },
+        _ => return None,
+    };
+    Some(PresetConfig {
+        claude: Some(PresetHostConfig {
+            tiers: None,
+            steps: Some(steps),
+        }),
+        codex: None,
+    })
+}
+
+/// Returns every preset name available under `config`: the built-in presets
+/// ([`BUILTIN_PRESETS`]) and the configured `[models.presets.<name>]` tables,
+/// sorted and deduplicated.
+#[must_use]
+pub fn available_presets(config: &Config) -> Vec<String> {
+    let mut names: Vec<String> = BUILTIN_PRESETS.iter().map(ToString::to_string).collect();
+    if let Some(models) = config.models.as_ref() {
+        names.extend(models.presets.keys().cloned());
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Resolves a [`DispatchStep`] (plus an optional caller tier hint) to a
 /// concrete [`Profile`] for a [`Host`].
 ///
 /// Built from the `[models]` table of a [`Config`] via
 /// [`ModelPolicy::from_config`], filling every unset field with a built-in
-/// default so callers never need to special-case an absent `[models]` table.
+/// default so callers never need to special-case an absent `[models]` table,
+/// or via [`ModelPolicy::for_preset`] with a named preset layered on top.
 ///
 /// # Examples
 ///
@@ -262,9 +352,14 @@ impl FromStr for DispatchStep {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPolicy {
-    /// Resolved profiles, indexed `[host][tier]` in [`Host::ALL`] /
-    /// [`ALL_TIERS`] order.
+    /// Tier-layer profiles (configured or default, with the preset's tier
+    /// overrides), indexed `[host][tier]` in [`Host::ALL`] / [`ALL_TIERS`]
+    /// order.
     profiles: [[Profile; 4]; 2],
+    /// Fully layered profiles (the preset's role overrides over
+    /// `profiles`), indexed `[host][step][tier]` in [`Host::ALL`] /
+    /// [`DispatchStep::ALL`] / [`ALL_TIERS`] order.
+    resolved: [[[Profile; 4]; 6]; 2],
     review_floor: ModelTier,
     steps: StepTiersConfig,
 }
@@ -285,6 +380,27 @@ fn tier_index(tier: ModelTier) -> usize {
     }
 }
 
+fn step_index(step: DispatchStep) -> usize {
+    match step {
+        DispatchStep::Plan => 0,
+        DispatchStep::Implement => 1,
+        DispatchStep::ReviewFind => 2,
+        DispatchStep::ReviewVerify => 3,
+        DispatchStep::ReviewConsolidate => 4,
+        DispatchStep::Mechanical => 5,
+    }
+}
+
+/// Applies `overlay`'s set fields over `base`, field by field.
+fn layer(base: &Profile, overlay: Option<&ProfileConfig>) -> Profile {
+    Profile {
+        model: overlay
+            .and_then(|o| o.model.clone())
+            .unwrap_or_else(|| base.model.clone()),
+        effort: overlay.and_then(|o| o.effort).unwrap_or(base.effort),
+    }
+}
+
 impl ModelPolicy {
     /// Builds a `ModelPolicy` from a repo [`Config`], filling every field the
     /// `[models]` table leaves unset with its built-in default.
@@ -296,6 +412,55 @@ impl ModelPolicy {
     /// ([`Config::validate`]), so this never fails.
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
+        Self::build(config, None)
+    }
+
+    /// Builds a `ModelPolicy` from a repo [`Config`] with the named preset
+    /// layered over the profile table, or with no preset when `preset` is
+    /// `None` (identical to [`ModelPolicy::from_config`]).
+    ///
+    /// A configured `[models.presets.<name>]` table is used when present —
+    /// replacing, not merging with, a built-in preset of the same name —
+    /// else the built-in preset ([`builtin_preset`]). Tier resolution
+    /// ([`ModelPolicy::resolve_tier`]) is unaffected by a preset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownModelPreset`], listing
+    /// [`available_presets`], if `preset` names neither a configured nor a
+    /// built-in preset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::config::Config;
+    /// use rdm_core::model_policy::{DispatchStep, Host, ModelPolicy};
+    ///
+    /// let policy = ModelPolicy::for_preset(&Config::default(), Some("fable")).unwrap();
+    /// let p = policy.resolve(DispatchStep::Implement, None, Host::Claude);
+    /// assert_eq!(p.model, "fable");
+    /// ```
+    pub fn for_preset(config: &Config, preset: Option<&str>) -> crate::error::Result<Self> {
+        let Some(name) = preset else {
+            return Ok(Self::build(config, None));
+        };
+        let configured = config
+            .models
+            .as_ref()
+            .and_then(|m| m.presets.get(name))
+            .cloned();
+        let Some(resolved) = configured.or_else(|| builtin_preset(name)) else {
+            return Err(Error::UnknownModelPreset {
+                name: name.to_string(),
+                available: available_presets(config),
+            });
+        };
+        Ok(Self::build(config, Some(&resolved)))
+    }
+
+    /// The one builder behind [`ModelPolicy::from_config`] and
+    /// [`ModelPolicy::for_preset`].
+    fn build(config: &Config, preset: Option<&PresetConfig>) -> Self {
         let models = config.models.as_ref();
         let build = |host: Host, tier: ModelTier| -> Profile {
             let (default_model, default_effort) = default_profile(host, tier);
@@ -317,19 +482,47 @@ impl ModelPolicy {
                 effort: configured.and_then(|c| c.effort).unwrap_or(default_effort),
             }
         };
-        let profiles = Host::ALL.map(|host| ALL_TIERS.map(|tier| build(host, tier)));
+        let preset_host = |host: Host| preset.and_then(|p| p.for_host(host));
+        let tier_override = |host: Host, tier: ModelTier| {
+            preset_host(host)
+                .and_then(|h| h.tiers.as_ref())
+                .and_then(|t| t.for_tier(tier))
+        };
+        let role_override = |host: Host, step: DispatchStep| {
+            preset_host(host)
+                .and_then(|h| h.steps.as_ref())
+                .and_then(|s| s.for_step(step))
+        };
+        let profiles = Host::ALL
+            .map(|host| ALL_TIERS.map(|tier| layer(&build(host, tier), tier_override(host, tier))));
+        let resolved = Host::ALL.map(|host| {
+            DispatchStep::ALL.map(|step| {
+                ALL_TIERS.map(|tier| {
+                    layer(
+                        &profiles[host_index(host)][tier_index(tier)],
+                        role_override(host, step),
+                    )
+                })
+            })
+        });
         let review_floor = models
             .and_then(|m| m.review_floor)
             .unwrap_or(DEFAULT_REVIEW_FLOOR);
         let steps = models.and_then(|m| m.steps.clone()).unwrap_or_default();
         ModelPolicy {
             profiles,
+            resolved,
             review_floor,
             steps,
         }
     }
 
-    /// Returns the configured (or default) profile for `host` at `tier`.
+    /// Returns the tier-layer profile for `host` at `tier`: the configured
+    /// (or default) profile with the preset's tier override, if any, applied.
+    ///
+    /// A preset's role (step) overrides are not visible here — they apply
+    /// only through [`ModelPolicy::resolve`]. With no preset, this is the
+    /// configured (or default) profile.
     #[must_use]
     pub fn profile(&self, host: Host, tier: ModelTier) -> &Profile {
         &self.profiles[host_index(host)][tier_index(tier)]
@@ -372,21 +565,29 @@ impl ModelPolicy {
     }
 
     /// Resolves `step` (plus an optional caller `hint`) to the concrete
-    /// profile for `host`. Equivalent to
-    /// `self.profile(host, self.resolve_tier(step, hint))`.
+    /// profile for `host`: the tier-layer profile
+    /// (`self.profile(host, self.resolve_tier(step, hint))`) with the
+    /// preset's role override for `step`, if any, layered field by field on
+    /// top. With no preset, the two are equal.
     #[must_use]
     pub fn resolve(&self, step: DispatchStep, hint: Option<ModelTier>, host: Host) -> &Profile {
-        self.profile(host, self.resolve_tier(step, hint))
+        let tier = self.resolve_tier(step, hint);
+        &self.resolved[host_index(host)][step_index(step)][tier_index(tier)]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::config::{
-        Config, HostProfilesConfig, ModelsConfig, ProfileConfig, ProfilesConfig, StepTiersConfig,
+        Config, HostProfilesConfig, ModelsConfig, PresetConfig, PresetHostConfig, ProfileConfig,
+        ProfilesConfig, StepProfilesConfig, StepTiersConfig,
     };
+    use crate::error::Error;
     use crate::model::{Effort, ModelTier};
-    use crate::model_policy::{DispatchStep, Host, ModelPolicy, PLAN_FLOOR, default_profile};
+    use crate::model_policy::{
+        BUILTIN_PRESETS, DispatchStep, Host, ModelPolicy, PLAN_FLOOR, available_presets,
+        builtin_preset, default_profile,
+    };
 
     const ALL_STEPS: [DispatchStep; 6] = [
         DispatchStep::Plan,
@@ -892,6 +1093,385 @@ mod tests {
             let parsed: DispatchStep = expected.parse().unwrap();
             assert_eq!(parsed, variant);
         }
+    }
+
+    // --- presets ---
+
+    const HINTS: [Option<ModelTier>; 5] = [
+        None,
+        Some(ModelTier::Small),
+        Some(ModelTier::Medium),
+        Some(ModelTier::Large),
+        Some(ModelTier::Frontier),
+    ];
+
+    const JUDGMENT_STEPS: [DispatchStep; 5] = [
+        DispatchStep::Plan,
+        DispatchStep::Implement,
+        DispatchStep::ReviewFind,
+        DispatchStep::ReviewVerify,
+        DispatchStep::ReviewConsolidate,
+    ];
+
+    fn pc(model: Option<&str>, effort: Option<Effort>) -> Option<ProfileConfig> {
+        Some(ProfileConfig {
+            model: model.map(ToString::to_string),
+            effort,
+        })
+    }
+
+    /// A `[models]` table exercising profiles, legacy keys, step tiers and
+    /// the review floor at once.
+    fn nontrivial_models() -> ModelsConfig {
+        ModelsConfig {
+            small: Some("legacy-small".to_string()),
+            large: Some("legacy-large".to_string()),
+            review_floor: Some(ModelTier::Large),
+            steps: Some(StepTiersConfig {
+                implement: Some(ModelTier::Large),
+                mechanical: Some(ModelTier::Medium),
+                ..Default::default()
+            }),
+            profiles: Some(ProfilesConfig {
+                claude: Some(HostProfilesConfig {
+                    medium: pc(Some("profile-medium"), Some(Effort::Xhigh)),
+                    large: pc(None, Some(Effort::Max)),
+                    ..Default::default()
+                }),
+                codex: Some(HostProfilesConfig {
+                    small: pc(None, Some(Effort::Low)),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn with_preset(mut m: ModelsConfig, name: &str, preset: PresetConfig) -> Config {
+        m.presets.insert(name.to_string(), preset);
+        models(m)
+    }
+
+    fn claude_preset(host: PresetHostConfig) -> PresetConfig {
+        PresetConfig {
+            claude: Some(host),
+            codex: None,
+        }
+    }
+
+    #[test]
+    fn no_preset_resolves_as_before_the_phase() {
+        for cfg in [Config::default(), models(nontrivial_models())] {
+            let policy = ModelPolicy::for_preset(&cfg, None).unwrap();
+            for step in ALL_STEPS {
+                for hint in HINTS {
+                    for host in Host::ALL {
+                        // The pre-phase definition of `resolve`.
+                        assert_eq!(
+                            policy.resolve(step, hint, host),
+                            policy.profile(host, policy.resolve_tier(step, hint)),
+                            "{step} {hint:?} {host}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(policy, ModelPolicy::from_config(&cfg));
+        }
+        // The configured table itself is unchanged by the preset machinery.
+        let policy = ModelPolicy::for_preset(&models(nontrivial_models()), None).unwrap();
+        assert_eq!(
+            pair(&policy, Host::Claude, ModelTier::Small),
+            o("legacy-small", Effort::Low)
+        );
+        assert_eq!(
+            pair(&policy, Host::Claude, ModelTier::Medium),
+            o("profile-medium", Effort::Xhigh)
+        );
+        assert_eq!(
+            pair(&policy, Host::Claude, ModelTier::Large),
+            o("legacy-large", Effort::Max)
+        );
+        assert_eq!(
+            pair(&policy, Host::Codex, ModelTier::Small),
+            o("gpt-6-sol", Effort::Low)
+        );
+    }
+
+    #[test]
+    fn tier_override_applies_to_every_step_at_that_tier_only() {
+        let base_models = nontrivial_models();
+        let base = ModelPolicy::from_config(&models(base_models.clone()));
+        let cfg = with_preset(
+            base_models,
+            "p",
+            claude_preset(PresetHostConfig {
+                tiers: Some(HostProfilesConfig {
+                    large: pc(Some("x"), None),
+                    ..Default::default()
+                }),
+                steps: None,
+            }),
+        );
+        let policy = ModelPolicy::for_preset(&cfg, Some("p")).unwrap();
+        let mut hit_large = 0;
+        for step in ALL_STEPS {
+            for hint in HINTS {
+                for host in Host::ALL {
+                    let tier = base.resolve_tier(step, hint);
+                    assert_eq!(policy.resolve_tier(step, hint), tier);
+                    let got = resolved(&policy, step, hint, host);
+                    if host == Host::Claude && tier == ModelTier::Large {
+                        hit_large += 1;
+                        // Large's configured effort (`max`) is kept.
+                        assert_eq!(got, o("x", Effort::Max), "{step} {hint:?}");
+                    } else {
+                        assert_eq!(
+                            got,
+                            resolved(&base, step, hint, host),
+                            "{step} {hint:?} {host}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(hit_large > 0);
+    }
+
+    #[test]
+    fn role_override_applies_at_every_tier_with_the_tier_effort() {
+        let base_models = nontrivial_models();
+        let base = ModelPolicy::from_config(&models(base_models.clone()));
+        let cfg = with_preset(
+            base_models,
+            "p",
+            claude_preset(PresetHostConfig {
+                tiers: None,
+                steps: Some(StepProfilesConfig {
+                    implement: pc(Some("x"), None),
+                    ..Default::default()
+                }),
+            }),
+        );
+        let policy = ModelPolicy::for_preset(&cfg, Some("p")).unwrap();
+        for tier in ALL_TIERS {
+            let want_effort = base.profile(Host::Claude, tier).effort;
+            assert_eq!(
+                resolved(&policy, DispatchStep::Implement, Some(tier), Host::Claude),
+                o("x", want_effort),
+                "{tier}"
+            );
+        }
+        // Medium's effort comes from the configured table, not the defaults.
+        assert_eq!(
+            resolved(
+                &policy,
+                DispatchStep::Implement,
+                Some(ModelTier::Medium),
+                Host::Claude
+            ),
+            o("x", Effort::Xhigh)
+        );
+        for step in ALL_STEPS {
+            for hint in HINTS {
+                for host in Host::ALL {
+                    if step == DispatchStep::Implement && host == Host::Claude {
+                        continue;
+                    }
+                    assert_eq!(
+                        resolved(&policy, step, hint, host),
+                        resolved(&base, step, hint, host),
+                        "{step} {hint:?} {host}"
+                    );
+                }
+            }
+        }
+        // The role layer is not visible through the tier table.
+        for tier in ALL_TIERS {
+            assert_eq!(
+                policy.profile(Host::Claude, tier),
+                base.profile(Host::Claude, tier)
+            );
+        }
+    }
+
+    #[test]
+    fn role_override_beats_tier_override_field_by_field() {
+        let cfg = with_preset(
+            ModelsConfig::default(),
+            "p",
+            claude_preset(PresetHostConfig {
+                tiers: Some(HostProfilesConfig {
+                    medium: pc(Some("t"), None),
+                    ..Default::default()
+                }),
+                steps: Some(StepProfilesConfig {
+                    implement: pc(Some("r"), None),
+                    ..Default::default()
+                }),
+            }),
+        );
+        let policy = ModelPolicy::for_preset(&cfg, Some("p")).unwrap();
+        let medium = Some(ModelTier::Medium);
+        assert_eq!(
+            resolved(&policy, DispatchStep::Implement, medium, Host::Claude),
+            o("r", Effort::Medium)
+        );
+        assert_eq!(
+            resolved(&policy, DispatchStep::Plan, medium, Host::Claude),
+            o("t", Effort::Medium)
+        );
+
+        // The role sets only the model; the tier override's effort still
+        // applies under it.
+        let cfg = with_preset(
+            ModelsConfig::default(),
+            "p",
+            claude_preset(PresetHostConfig {
+                tiers: Some(HostProfilesConfig {
+                    medium: pc(Some("t"), Some(Effort::Max)),
+                    ..Default::default()
+                }),
+                steps: Some(StepProfilesConfig {
+                    implement: pc(Some("r"), None),
+                    ..Default::default()
+                }),
+            }),
+        );
+        let policy = ModelPolicy::for_preset(&cfg, Some("p")).unwrap();
+        assert_eq!(
+            resolved(&policy, DispatchStep::Implement, medium, Host::Claude),
+            o("r", Effort::Max)
+        );
+        assert_eq!(
+            resolved(&policy, DispatchStep::Plan, medium, Host::Claude),
+            o("t", Effort::Max)
+        );
+    }
+
+    #[test]
+    fn builtin_fable_puts_every_judgment_role_on_fable() {
+        let cfg = Config::default();
+        let base = ModelPolicy::from_config(&cfg);
+        let policy = ModelPolicy::for_preset(&cfg, Some("fable")).unwrap();
+        for step in ALL_STEPS {
+            for hint in HINTS {
+                let want_claude = if JUDGMENT_STEPS.contains(&step) {
+                    let effort = base.resolve(step, hint, Host::Claude).effort;
+                    o("fable", effort)
+                } else {
+                    resolved(&base, step, hint, Host::Claude)
+                };
+                assert_eq!(
+                    resolved(&policy, step, hint, Host::Claude),
+                    want_claude,
+                    "{step} {hint:?}"
+                );
+                assert_eq!(
+                    resolved(&policy, step, hint, Host::Codex),
+                    resolved(&base, step, hint, Host::Codex),
+                    "codex {step} {hint:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_fable_build_puts_only_plan_and_implement_on_fable() {
+        let cfg = Config::default();
+        let base = ModelPolicy::from_config(&cfg);
+        let policy = ModelPolicy::for_preset(&cfg, Some("fable-build")).unwrap();
+        for hint in HINTS {
+            for step in [DispatchStep::Plan, DispatchStep::Implement] {
+                assert_eq!(
+                    resolved(&policy, step, hint, Host::Claude).0,
+                    "fable",
+                    "{step} {hint:?}"
+                );
+            }
+            for step in [
+                DispatchStep::ReviewFind,
+                DispatchStep::ReviewVerify,
+                DispatchStep::ReviewConsolidate,
+                DispatchStep::Mechanical,
+            ] {
+                assert_eq!(
+                    resolved(&policy, step, hint, Host::Claude),
+                    resolved(&base, step, hint, Host::Claude),
+                    "{step} {hint:?}"
+                );
+            }
+            for step in ALL_STEPS {
+                assert_eq!(
+                    resolved(&policy, step, hint, Host::Codex),
+                    resolved(&base, step, hint, Host::Codex)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn configured_preset_replaces_builtin_of_the_same_name() {
+        let cfg =
+            Config::from_toml("[models.presets.fable.claude.steps.mechanical]\nmodel = \"y\"\n")
+                .unwrap();
+        let base = ModelPolicy::from_config(&cfg);
+        let policy = ModelPolicy::for_preset(&cfg, Some("fable")).unwrap();
+        for hint in HINTS {
+            assert_eq!(
+                resolved(&policy, DispatchStep::Mechanical, hint, Host::Claude).0,
+                "y"
+            );
+            // Not merged with the built-in: every judgment role is unchanged.
+            for step in JUDGMENT_STEPS {
+                assert_eq!(
+                    resolved(&policy, step, hint, Host::Claude),
+                    resolved(&base, step, hint, Host::Claude),
+                    "{step} {hint:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_preset_errors_listing_available_names() {
+        let cfg = with_preset(ModelsConfig::default(), "mine", PresetConfig::default());
+        match ModelPolicy::for_preset(&cfg, Some("nope")) {
+            Err(Error::UnknownModelPreset { name, available }) => {
+                assert_eq!(name, "nope");
+                assert_eq!(available, ["fable", "fable-build", "mine"]);
+            }
+            other => panic!("expected UnknownModelPreset, got {other:?}"),
+        }
+        let msg = ModelPolicy::for_preset(&cfg, Some("nope"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            msg,
+            "unknown model preset 'nope' — available presets: fable, fable-build, mine"
+        );
+        // An empty configured preset is still a known name.
+        assert!(ModelPolicy::for_preset(&cfg, Some("mine")).is_ok());
+    }
+
+    #[test]
+    fn available_presets_dedups_configured_builtin_names() {
+        let mut m = ModelsConfig::default();
+        m.presets
+            .insert("zeta".to_string(), PresetConfig::default());
+        m.presets
+            .insert("fable".to_string(), PresetConfig::default());
+        assert_eq!(
+            available_presets(&models(m)),
+            ["fable", "fable-build", "zeta"]
+        );
+        assert_eq!(
+            available_presets(&Config::default()),
+            ["fable", "fable-build"]
+        );
+        for name in BUILTIN_PRESETS {
+            assert!(builtin_preset(name).is_some(), "{name}");
+        }
+        assert!(builtin_preset("nope").is_none());
     }
 
     #[test]

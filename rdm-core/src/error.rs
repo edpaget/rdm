@@ -503,6 +503,15 @@ pub enum Error {
         /// A description of the valid values.
         valid: String,
     },
+    /// A model policy was requested for a preset name that is neither a
+    /// built-in preset nor a configured `[models.presets.<name>]` table.
+    UnknownModelPreset {
+        /// The preset name that was requested.
+        name: String,
+        /// Every preset name that is available, sorted (see
+        /// [`crate::model_policy::available_presets`]).
+        available: Vec<String>,
+    },
     /// A key was used with a project scope (`[projects.<name>]`,
     /// `rdm config ... --project`) but is not one of
     /// [`crate::config::PROJECT_SCOPABLE_KEYS`].
@@ -1292,6 +1301,11 @@ impl std::fmt::Display for Error {
                     "invalid value '{value}' for '{key}' — valid values: {valid}"
                 )
             }
+            Error::UnknownModelPreset { name, available } => write!(
+                f,
+                "unknown model preset '{name}' — available presets: {}",
+                available.join(", ")
+            ),
             Error::KeyNotProjectScopable { key } => write!(
                 f,
                 "'{key}' cannot be set per project — project-scopable keys: {}",
