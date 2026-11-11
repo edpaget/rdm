@@ -134,6 +134,45 @@ fn task_create_and_show() {
         );
 }
 
+/// A task file whose frontmatter cannot be read fails the command with one
+/// line that names the file, the problem and where it is — each once, though
+/// the error passes through a chain of contexts on its way to stderr.
+#[test]
+fn task_show_reports_unreadable_frontmatter_once() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-login", "Fix login");
+
+    let file = "projects/fbm/tasks/fix-login.md";
+    fs::write(
+        dir.path().join(file),
+        "---\nproject: fbm\ntitle: Fix login\nstatus: nearly\npriority: medium\n\
+         created: 2026-11-11\n---\n",
+    )
+    .unwrap();
+
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", "fix-login", "--project", "fbm"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.starts_with(&format!(
+            "error: failed to load task: failed to parse frontmatter in {file}: \
+             unknown variant `nearly`"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.ends_with(" at line 4, column 9\n"), "{stderr}");
+    assert_eq!(stderr.matches(file).count(), 1, "{stderr}");
+    assert_eq!(stderr.matches("unknown variant").count(), 1, "{stderr}");
+    assert_eq!(stderr.matches(" at line ").count(), 1, "{stderr}");
+}
+
 #[test]
 fn task_create_with_tags() {
     let dir = TempDir::new().unwrap();

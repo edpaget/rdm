@@ -1733,7 +1733,10 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Io(e) => Some(e),
-            Error::FrontmatterParse(e) => Some(e),
+            // `Display` already writes the whole of a frontmatter error —
+            // document, problem and position — so handing the payload on as
+            // a source would make a chain print all three twice.
+            Error::FrontmatterParse(_) => None,
             Error::ConfigParse(e) => Some(e),
             Error::ConfigSerialize(e) => Some(e),
             Error::PathResolutionFailed { source, .. } => Some(source),
@@ -1766,7 +1769,54 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
-    use super::Error;
+    use super::{Error, FrontmatterError};
+
+    const TASK_FILE: &str = "projects/demo/tasks/fix-login.md";
+
+    #[test]
+    fn a_frontmatter_error_displays_its_document_problem_and_position() {
+        let problem = FrontmatterError::new("unknown variant `nearly`", Some((4, 9)));
+        assert_eq!(
+            problem.to_string(),
+            "unknown variant `nearly` at line 4, column 9"
+        );
+        assert_eq!(
+            problem.in_document(TASK_FILE).to_string(),
+            format!("{TASK_FILE}: unknown variant `nearly` at line 4, column 9")
+        );
+        // A problem the reader gave no position for.
+        assert_eq!(
+            FrontmatterError::new("could not be written", None)
+                .in_document(TASK_FILE)
+                .to_string(),
+            format!("{TASK_FILE}: could not be written")
+        );
+    }
+
+    /// A caller that prints an error with its sources, as the CLI does, must
+    /// not see the document, the problem and the position a second time.
+    #[test]
+    fn a_frontmatter_parse_error_and_its_sources_say_everything_once() {
+        let err = Error::FrontmatterParse(
+            FrontmatterError::new("unknown variant `nearly`", Some((4, 9))).in_document(TASK_FILE),
+        );
+
+        let mut chain = err.to_string();
+        let mut source = std::error::Error::source(&err);
+        while let Some(cause) = source {
+            chain.push_str(": ");
+            chain.push_str(&cause.to_string());
+            source = cause.source();
+        }
+
+        assert_eq!(
+            chain,
+            format!(
+                "failed to parse frontmatter in {TASK_FILE}: unknown variant `nearly` at line 4, \
+                 column 9"
+            )
+        );
+    }
 
     /// The refusal is a user-facing message on the `rdm commit` path, so its
     /// two obligations — name the item, say what to do — are gated here rather
