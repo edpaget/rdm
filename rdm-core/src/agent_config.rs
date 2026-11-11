@@ -4843,7 +4843,10 @@ mod tests {
         // 55 -> 58: `consolidate-review-findings` phase 6 added the autopilot
         // `--max-refutations` flag, naming `rdm-dispatch-phase` three times as
         // the skill it is forwarded to and that resolves it from config.
-        let expected = 58;
+        // 58 -> 61: `model-presets` phase 3 added the `--models <preset>`
+        // argument, which autopilot (argument list and Run modes) and do
+        // each name `rdm-dispatch-phase` as the skill it is forwarded to.
+        let expected = 61;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

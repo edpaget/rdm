@@ -332,6 +332,17 @@ cached `agent()` results.
   invoke the [`rdm-land`](./landing.md) skill to land the work to `main` with
   linear history. Without it, autopilot **never touches `main`**; it leaves every
   reviewed phase on the `roadmap/<slug>` branch for a human to land.
+- `--models <preset>` — the run's model preset, forwarded unchanged to every
+  `rdm-dispatch-phase` unit of the run (and likewise by `rdm-do`), which adds
+  `--preset <preset>` to each of its model resolutions. Absent, nothing is added.
+
+**Selecting a preset for a run.** By argument —
+`/rdm-autopilot <slug> --models fable-build`, or
+`/rdm-do <slug> <phase> --models fable` — which works inside a running session,
+with no restart and no `rdm.toml` edit. Or by environment: launch the session with
+`RDM_MODEL_PRESET=<name>`, which every resolve honours when no argument is given.
+The argument wins for that run: it becomes `--preset`, the top of the precedence
+chain in [`docs/model-profiles.md` § "Selecting a preset"](./model-profiles.md#selecting-a-preset).
 
 Because the run is unattended, launch it with `--permission-mode auto` (or
 `bypassPermissions` in a sandbox) so worktree edits, commands, and dispatched

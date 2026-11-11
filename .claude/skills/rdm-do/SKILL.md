@@ -47,9 +47,15 @@ Workflow calls don't block on a prompt.
   rdm task list --project rdm
   ```
 
-`--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--max-refutations N`, `--rdm-bin <path>` and
-`--project <name>` are passed straight through — the orchestrator resolves the last two into its own
-`rdmBin` and `<proj-flag>` placeholders.
+`--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--max-refutations N`, `--models <preset>`,
+`--rdm-bin <path>` and `--project <name>` are passed straight through — the orchestrator resolves the
+last two into its own `rdmBin` and `<proj-flag>` placeholders.
+
+`--models <preset>` — optional. The name of a model preset for this run. When given, every
+`rdm model resolve` this skill runs carries `--preset <preset>`; when absent, no flag is added and
+`RDM_MODEL_PRESET` / the `[models] preset` key still select (see `rdm model show` for the selectable
+names). The name is passed through verbatim and never interpreted here; an unknown name fails at the
+first resolve with rdm's own error. Forwarded unchanged to `rdm-dispatch-phase`.
 
 ## What to do
 
@@ -63,10 +69,12 @@ Workflow calls don't block on a prompt.
 
    ```
    Skill({ skill: 'rdm-dispatch-phase',
-           args: '<roadmap-slug> <phase>' + (auto ? '' : ' --interactive') })
+           args: '<roadmap-slug> <phase>' + (auto ? '' : ' --interactive') + passThrough })
    ```
 
-   (task form: `args: '--task <slug>'` plus the same `--interactive` suffix.) It MUST be `Skill`: an
+   (task form: `args: '--task <slug>'` plus the same `--interactive` suffix and `passThrough`.)
+   `passThrough` is every pass-through flag from "Argument forms" that `$ARGUMENTS` set — including
+   `--models <preset>` — appended unchanged, and nothing for one that was not given. It MUST be `Skill`: an
    `Agent`-spawned subagent has no `Workflow` tool at all, so the orchestrator's two review-engine
    calls could not be made there (`docs/workflow-schemas.md` § "Orchestrator /
    Workflow-reachability spike"). The orchestrator owns everything from that point: the worktree,

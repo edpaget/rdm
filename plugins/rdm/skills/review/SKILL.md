@@ -12,7 +12,7 @@ allowed-tools:
   - Workflow
 ---
 
-Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task, optionally followed by `--max-refutations N` (the per-run refutation budget; see step 4).
+Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task, optionally followed by `--max-refutations N` (the per-run refutation budget; see step 4) and/or `--models <preset>` (see step 1.1).
 
 The review runs as a pipeline: **find → refute → filter → verdict → act → gate**. Findings of a **gating** severity are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them; a non-gating `suggestion` is passed through marked `unrefuted: true` and acted on under the un-refuted disposition rule (§ Act). The agent that finds an issue is never the agent that confirms it.
 
@@ -28,6 +28,7 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are perf
    - If the first argument is `--task`, the next argument is a task slug.
    - Otherwise, the first argument is a roadmap slug and the second is a phase number.
    - Strip `--max-refutations N` (and its value) before reading the target; keep `N` for step 4.
+   - Strip `--models <preset>` (and its value) before reading the target; keep it for step 4. `--models <preset>` — optional. The name of a model preset for this run. When given, every `rdm model resolve` this skill runs carries `--preset <preset>`; when absent, no flag is added and `RDM_MODEL_PRESET` / the `[models] preset` key still select (see `rdm model show` for the selectable names). The name is passed through verbatim and never interpreted here; an unknown name fails at the first resolve with rdm's own error.
 2. **Read the acceptance criteria**:
    - For a phase: `rdm phase show <phase-number> --roadmap <slug> --project <PROJECT>`
    - For a task: `rdm task show <slug> --project <PROJECT>`
@@ -45,16 +46,16 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are perf
    Pass the resolved source path, base, expected head and branch into the workflow. A caller-supplied `diff` never bypasses resolution: authoritative committed content is reacquired. Use the returned head for pinned source links.
 
    From the resolved `changedFiles` and `diffText`, note the diff size, which modules it touches, and whether it changes public API, a security-sensitive surface (auth, input parsing or validation, path/file handling, subprocess or shell invocation, secrets, deserialization, network code), dependencies, or user-facing behavior — these tell you which reviewers to include (see Review specification § Reviewers). From those same signals derive a **tier hint**: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, a security-sensitive surface, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
-4. **Resolve the three review profiles** — a model plus a reasoning effort each — so every finder, refuter and the consolidator runs on an explicitly resolved profile, never the inherited session model:
+4. **Resolve the three review profiles** — a model plus a reasoning effort each — so every finder, refuter and the consolidator runs on an explicitly resolved profile, never the inherited session model. `<preset-flag>` below is ` --preset <preset>` when `--models` was given, otherwise nothing at all (never an empty `--preset` value):
 
    ```bash
-   rdm model resolve review-find --tier <hint> --format json   # {"step","host","tier","model","effort"}
-   rdm model resolve review-verify --format json               # default tier already floored to the top review tier
-   rdm model resolve review-consolidate --format json          # default tier already floored to the top review tier
+   rdm model resolve review-find --tier <hint><preset-flag> --format json   # {"step","host","tier","model","effort"}
+   rdm model resolve review-verify<preset-flag> --format json               # default tier already floored to the top review tier
+   rdm model resolve review-consolidate<preset-flag> --format json          # default tier already floored to the top review tier
    rdm config get max_refutations --raw --project <PROJECT>            # SKIP when --max-refutations was given
    ```
 
-   Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides), falling back to the built-in profile table when unset — run `rdm model show` to see the effective table. The workflow applies them itself: it passes the model and effort into every finder and refuter agent it dispatches.
+   Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides) and the selected preset, if any, falling back to the built-in profile table when unset — run `rdm model show` to see the effective table. The workflow applies them itself: it passes the model and effort into every finder and refuter agent it dispatches.
 
 ### 2. Review — invoke the canonical pipeline (find → refute → verdict)
 

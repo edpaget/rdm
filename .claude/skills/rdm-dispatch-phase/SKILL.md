@@ -75,6 +75,11 @@ subagent forward on each notification until it converges — never assume the ca
   through un-refuted. Parsed exactly like `--max-plan-revise` — a non-negative integer, `0` legal and
   distinct from unset. When absent, step 4 resolves it from config. The precedence chain is stated
   once, in `docs/file-formats.md` § `rdm.toml`.
+- `--models <preset>` — optional. The name of a model preset for this run. When given, every
+  `rdm model resolve` this skill runs carries `--preset <preset>`; when absent, no flag is added and
+  `RDM_MODEL_PRESET` / the `[models] preset` key still select (see `rdm model show` for the
+  selectable names). The name is passed through verbatim and never interpreted here; an unknown name
+  fails at the first resolve with rdm's own error.
 - `--run <id>` — optional. The id of an open run record, passed by `rdm-autopilot`. With it, this
   unit writes its `unit-start`/`unit-end` entries into that record and never opens or closes a run of
   its own. Without it (standalone, or entered through `rdm-do`), this unit opens a single-unit run in
@@ -93,6 +98,8 @@ Resolve once, in step 1, and use everywhere after:
   repo's project), or nothing at all when no project name applies and rdm's own
   `RDM_PROJECT`/`default_project` chain should resolve it (never an empty `--project` value).
   `<project>` in the Workflow calls is that same name, omitted when `<proj-flag>` is empty.
+- `<preset-flag>` — ` --preset <preset>` when `--models` was given, otherwise nothing at all (never
+  an empty `--preset` value). Every `model resolve` below carries it.
 - `<item>` — `phase/<roadmap>/<stem>` or `task/<slug>`. Every `--on`/`--implements` ref uses this
   exact string.
 
@@ -262,11 +269,11 @@ comes from. Do not issue a second one.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
-<rdmBin> model resolve plan --tier <T> --format json
-<rdmBin> model resolve implement --tier <T> --format json
+<rdmBin> model resolve plan --tier <T><preset-flag> --format json
+<rdmBin> model resolve implement --tier <T><preset-flag> --format json
 # T empty/missing, or task mode (a task carries no tier at all):
-<rdmBin> model resolve plan --format json
-<rdmBin> model resolve implement --format json
+<rdmBin> model resolve plan<preset-flag> --format json
+<rdmBin> model resolve implement<preset-flag> --format json
 ```
 
 Each prints `{"step", "host", "tier", "model", "effort"}`. Record the two results as
@@ -294,9 +301,9 @@ corpus, which no document records.
 
 ```bash
 <rdmBin> roadmap show <slug><proj-flag> --format json    # for STEP 5's planner — SKIP in task mode
-<rdmBin> model resolve review-find --format json
-<rdmBin> model resolve review-verify --format json
-<rdmBin> model resolve review-consolidate --format json
+<rdmBin> model resolve review-find<preset-flag> --format json
+<rdmBin> model resolve review-verify<preset-flag> --format json
+<rdmBin> model resolve review-consolidate<preset-flag> --format json
 <rdmBin> config get max_refutations --raw<proj-flag>     # SKIP when --max-refutations was given
 <rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
 ```
@@ -314,7 +321,8 @@ and the wont-fix titles as `wontFixedTitles`:
   and 12) entirely, never forward a default the engine applies itself. Pass a value through as-is;
   the engine validates it and throws before any agent runs on a malformed one.
 
-- The three `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models. There
+- The three `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models — but do
+  carry `<preset-flag>`. There
   is no mechanical model left to resolve and no bootstrap agent to pre-empt: each model and effort is
   independently optional, and an omitted one makes that judgment agent inherit the session's model
   or effort.
@@ -327,9 +335,10 @@ and the wont-fix titles as `wontFixedTitles`:
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
 `profiles.plan` / `profiles.implement` and the three resolved `profiles.reviewFind` /
 `profiles.reviewVerify` / `profiles.reviewConsolidate` (model and effort each) and the resolved
-`maxRefutations` (or "unset"), and confirm you captured the item's `body`, the
-roadmap `body` (phase mode) and the wont-fix titles. If the worktree or identity command failed,
-escalate — never invent a checkout, and never let a subagent choose one. A failed **read** is
+`maxRefutations` (or "unset") and the selected preset (the `--models` value, or `none — env/config`),
+and confirm you captured the item's `body`, the roadmap `body` (phase mode) and the wont-fix titles.
+If the worktree or identity command failed, or a `model resolve` failed on an unknown preset,
+escalate with rdm's error verbatim — never invent a checkout, and never let a subagent choose one. A failed **read** is
 different and not fatal, but say which one failed and state the consequence — it differs per value,
 and **no engine-side fallback exists for any of them** since the engine dispatches finder,
 consolidator and refuter agents only, with nothing reachable to re-read what you omit:

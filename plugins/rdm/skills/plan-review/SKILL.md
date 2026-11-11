@@ -16,7 +16,7 @@ Review the *plan* of an rdm roadmap, phase, or task — not its implementation. 
 
 ## Invoke the workflow
 
-Pass `$ARGUMENTS` through to the `rdm:rdm-wf-plan-review` Workflow with any `--rdm-bin <path>`, `--project <name>` and `--max-refutations N` pairs removed first — they travel only as the structured `rdmBin`/`project`/`maxRefutations` keys below, because the workflow's tokenizer would read their values as target slugs. It accepts the same four target forms:
+Pass `$ARGUMENTS` through to the `rdm:rdm-wf-plan-review` Workflow with any `--rdm-bin <path>`, `--project <name>` and `--max-refutations N` pairs removed first — they travel only as the structured `rdmBin`/`project`/`maxRefutations` keys below, because the workflow's tokenizer would read their values as target slugs. Remove any `--models <preset>` pair too — it is **not** forwarded as a workflow key at all; it is consumed by this skill's own model resolutions (the `findModel` … `consolidateEffort` bullet below). `--models <preset>` — optional. The name of a model preset for this run. When given, every `rdm model resolve` this skill runs carries `--preset <preset>`; when absent, no flag is added and `RDM_MODEL_PRESET` / the `[models] preset` key still select (see `rdm model show` for the selectable names). The name is passed through verbatim and never interpreted here; an unknown name fails at the first resolve with rdm's own error. It accepts the same four target forms:
 
 - `--task <slug>` — review a task's plan.
 - `--roadmap <slug>` — review the whole roadmap: its own body plus **every phase, gated independently**. A phase whose status is exactly `done` or `wont-fix` is **excluded from this sweep** — there is no implementation left to vet, and clearing `needs-plan-review` on a retired phase would assert something untrue about it — and the exclusion is **reported, never silently dropped**: the run names every skipped phase (stem + status) in its summary and log. A phase with a missing, blank, or unrecognized status is **kept in the sweep** (fail-open) rather than skipped. This filter applies only to the aggregate `--roadmap` sweep — targeting a terminal phase explicitly (see the next bullet) still reviews it.
@@ -67,9 +67,12 @@ never parsed out of the `$ARGUMENTS` flag string:
 - **`reviewers`** — see the bullet above.
 - **`findModel` / `findEffort`**, **`verifyModel` / `verifyEffort`** and
   **`consolidateModel` / `consolidateEffort`** — the `model` and `effort` fields
-  printed by `rdm model resolve review-find --format json`, `... review-verify
-  --format json` and `... review-consolidate --format json`; the workflow passes
-  them into every finder, refuter and consolidator agent it dispatches. Each is
+  printed by `rdm model resolve review-find<preset-flag> --format json`,
+  `... review-verify<preset-flag> --format json` and
+  `... review-consolidate<preset-flag> --format json`, where `<preset-flag>` is
+  ` --preset <preset>` when `--models` was given and nothing otherwise (never an
+  empty `--preset` value); the workflow passes them into every finder, refuter and
+  consolidator agent it dispatches. Each is
   independently optional; an omitted model makes that agent inherit the session
   model, an omitted effort its effort. There is no mechanical model any more and no
   bootstrap agent to skip.
