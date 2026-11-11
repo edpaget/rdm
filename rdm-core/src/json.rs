@@ -1303,6 +1303,12 @@ pub struct ReviewJson {
     /// Source-repository branch the reviewed change was on, if recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_branch: Option<String>,
+    /// Id of the change review this one follows, when it is a follow-up. A
+    /// follow-up covers the commits from that review's head — reported here
+    /// as `target.base` and `base_link` — to its own head. Absent on a
+    /// review that follows nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows: Option<String>,
     /// Why source-repository anchor verification was skipped, when it was
     /// (no checkout reachable, no resolvable HEAD, a build without git).
     /// Absent when resolution really ran — the same degrade-with-a-reason
@@ -1507,6 +1513,7 @@ pub fn review_to_json(
         created_commit: fm.created_commit.clone(),
         implements: fm.implements.as_ref().map(|r| format!("rdm:{}", r.label())),
         change_branch: fm.change_branch.clone(),
+        follows: fm.follows.clone(),
         source_verification_skipped: None,
         anchors_degraded: fm.degraded_anchor_count(),
         body: doc.body.clone(),
@@ -2762,6 +2769,7 @@ mod tests {
                 }],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: "Overall summary.".to_string(),
         }
@@ -2801,6 +2809,26 @@ mod tests {
         assert_eq!(c["resolution"]["body"], "original");
         assert_eq!(c["resolution"]["current"]["range_start"], 3);
         assert_eq!(c["resolution"]["current"]["range_end"], 11);
+    }
+
+    #[test]
+    fn review_json_reports_follows_only_on_a_follow_up() {
+        let mut doc = make_review_doc();
+        let plain = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
+        assert!(
+            plain.get("follows").is_none(),
+            "a review that follows nothing carries no `follows` key: {plain}"
+        );
+
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: "b".repeat(40),
+            base: Some("a".repeat(40)),
+        };
+        doc.frontmatter.follows = Some("2026-06-30-0900-c3d4".to_string());
+        let follow_up = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
+        assert_eq!(follow_up["follows"], "2026-06-30-0900-c3d4");
+        // The base it covers from is the ordinary target base.
+        assert_eq!(follow_up["target"]["base"], "a".repeat(40));
     }
 
     #[test]

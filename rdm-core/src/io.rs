@@ -673,6 +673,7 @@ mod tests {
                 }],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: "Review summary.".to_string(),
         }

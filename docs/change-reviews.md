@@ -625,6 +625,71 @@ Surfaced two ways:
   `rdm backlinks rdm:src@<sha>` — see
   [Commit references are links](#commit-references-are-links).
 
+## Follow-up reviews (`--follows`)
+
+```
+rdm review start --on change/HEAD --follows <review-id> --project <p>
+```
+
+A change review can declare the earlier change review it **follows**. A
+follow-up reviews only what was committed after that review: its range is
+`followed.head..head`. It exists for the common case where an approving
+review left comments, triage fixed them in new commits, and the only thing
+left unreviewed is that delta.
+
+**What the record holds.** The follow-up's frontmatter carries
+`follows: <review-id>`, and its `target.base` is the followed review's head.
+Both are written once, when the review is started, and never changed. The
+base is not chosen by the caller: `create_review` stamps it from the followed
+review itself and overwrites anything passed in, and `--base` cannot be
+combined with `--follows`. A review with no `follows` is unchanged in every
+respect, and review files written before the field existed load and
+re-serialize without it.
+
+**The ancestry rule.** The followed review's head must be an ancestor of the
+new head, or "the commits since that review" is not a range of this change.
+That happens when the reviewed commit was amended or rebased away, or the
+branch was reset. `rdm_core::change::resolve_follow_up_target` proves it with
+the read-only port: the merge base of the two heads must be the followed
+head. Any other merge base, and no merge base at all (unrelated history, a
+shallow clone, a checkout that does not contain the followed head), is
+refused with `Error::ChangeFollowUpNotAncestor`, which names the followed
+review and both heads and says to start a full review without `--follows`.
+This is the only place ancestry is checked; the `reviewed` gate re-checks the
+recorded continuity instead (see
+[`core-enforced-gates.md`](core-enforced-gates.md) § "Follow-up chains").
+
+**The empty range.** A follow-up whose head *is* the followed review's head
+covers no commits and is refused (`Error::ChangeFollowUpEmptyRange`): nothing
+was committed, so the followed review's verdict already stands at that head.
+
+**`implements` is inherited.** A follow-up implements the plan the followed
+review implements, so `--implements` can be omitted and nothing is inferred
+from the worktree. Passing `--implements` is allowed only when it names that
+same plan; a different one, or any plan when the followed review implements
+none, is refused with `Error::ReviewFollowsImplementsMismatch` naming both.
+Every review in a chain therefore implements one plan, which is what stops a
+follow-up from standing on another item's full review in a shared roadmap
+worktree.
+
+**Only structure is judged at start.** `--follows` is refused on a target
+that is not `change/` (`Error::ReviewFollowsNotApplicable`), for an id that
+names no review (`Error::ReviewNotFound`), and for a review that does not
+review a change (`Error::ReviewFollowsNotAChange`). The followed review's
+verdict and state are *not* judged: following a `request-changes` review, or
+one still `submitted`, is recorded truthfully. Whether such a chain can
+approve anything is the gate's decision.
+
+**What is reported.** `rdm review show --format json` (and `review list`,
+`review requests`, `review start --format json`, and rdm-server's review
+detail, which share the serializer) carries `follows` with the followed
+review's id; the base is the ordinary `target.base` and `base_link`. The text
+and markdown outputs print `Follows: <id>` after `Base:`. The server's review
+resource adds a `follows` link to the followed review.
+
+A follow-up is otherwise an ordinary change review: comments anchor into its
+own range, so a quote must fall inside a hunk of `followed.head..head`.
+
 ## The never-write-the-source-repo invariant
 
 Every source-repo interaction routes through `rdm_core::source::SourceRepo`, a
@@ -741,6 +806,9 @@ checkout to read, asking the cwd which worktree it is, and formatting output.
 | the read-only port + test double | `rdm-core/src/source.rs` |
 | hunk parsing, anchoring, resolution, permalinks | `rdm-core/src/change.rs` |
 | target pinning (`resolve_change_target`) and anchor derivation (`derive_change_anchor`) | `rdm-core/src/change.rs` |
+| a follow-up's target and its ancestry rule (`resolve_follow_up_target`) | `rdm-core/src/change.rs` |
+| a follow-up's stamped base and inherited plan (`create_review`, `followed_review_head`) | `rdm-core/src/ops/reviews.rs` |
+| the follow-up chain the `reviewed` gate walks | `rdm-core/src/ops/gate.rs` |
 | the default branch the merge base is taken against (`source_default_branch`) | `rdm-core/src/ops/reviews.rs` |
 | `--implements` parsing and single-approved-plan inference | `rdm-core/src/ops/plan.rs` |
 | the git implementation | `rdm-git/src/source.rs` |

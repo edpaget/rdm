@@ -163,6 +163,7 @@ fn add_change_review(
                     slug: plan_slug.to_string(),
                 }),
                 change_branch: None,
+                follows: None,
                 comments: Vec::new(),
             },
             body: "Looks right.".to_string(),
@@ -1396,4 +1397,905 @@ fn a_task_stale_approval_reports_the_same_refusal() {
         item.contains("solo"),
         "the refusal must name the item: {err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up chains — an approving follow-up counts only through its chain
+// ---------------------------------------------------------------------------
+
+/// A 40-character SHA made of one hex digit.
+fn sha(digit: char) -> String {
+    digit.to_string().repeat(40)
+}
+
+/// An approving, `addressed` change review implementing `plan-one`, recorded
+/// at `head` — the shape every link of a valid chain has. Tests mutate the
+/// one field they are about before storing it with [`put`].
+fn link(id: &str, head: char, base: Option<char>, follows: Option<&str>) -> Review {
+    Review {
+        id: id.to_string(),
+        author: "reviewer".to_string(),
+        target: ReviewTarget::Change {
+            head: sha(head),
+            base: base.map(sha),
+        },
+        state: ReviewState::Addressed,
+        verdict: Some(Verdict::Approve),
+        created: Utc::now(),
+        submitted: None,
+        created_commit: None,
+        implements: Some(ReviewTarget::Plan {
+            slug: "plan-one".to_string(),
+        }),
+        change_branch: None,
+        follows: follows.map(str::to_string),
+        comments: Vec::new(),
+    }
+}
+
+fn put(store: &mut MemoryStore, review: Review) {
+    let id = review.id.clone();
+    rdm_core::io::write_review(
+        store,
+        PROJECT,
+        &id,
+        &Document {
+            frontmatter: review,
+            body: "Looks right.".to_string(),
+        },
+    )
+    .unwrap();
+}
+
+/// A store whose phase has the approved plan `plan-one` and no reviews.
+fn seed_with_plan() -> MemoryStore {
+    let mut store = seed();
+    add_plan(&mut store, "plan-one", &phase_item(), PlanStatus::Approved);
+    store
+}
+
+/// A clean worktree for the phase, checked out at `head`.
+fn probe_at(head: char) -> MemoryWorktreeProbe {
+    MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &[])
+        .with_head(&phase_item(), &sha(head))
+}
+
+/// Runs the gate for the phase against a checkout at `head`.
+fn gate_at(store: &MemoryStore, head: char) -> rdm_core::error::Result<GateDecision> {
+    let probe = probe_at(head);
+    check_reviewed_gate(
+        store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&probe)),
+    )
+}
+
+/// Unwraps a [`Error::GateFollowUpChain`] into `(tip, link, problem)`.
+fn chain_refusal(
+    result: rdm_core::error::Result<GateDecision>,
+) -> (
+    String,
+    String,
+    rdm_core::ops::gate::FollowUpChainProblem,
+    String,
+) {
+    let err = result.expect_err("the gate must refuse");
+    let message = err.to_string();
+    match err {
+        Error::GateFollowUpChain {
+            tip, link, problem, ..
+        } => (tip, link, *problem, message),
+        other => panic!("expected GateFollowUpChain, got {other:?}"),
+    }
+}
+
+use rdm_core::ops::gate::FollowUpChainProblem as Problem;
+
+const ROOT: &str = "2026-09-13-1000-root";
+const MIDDLE: &str = "2026-09-13-1100-midl";
+const TIP: &str = "2026-09-13-1200-tipp";
+
+/// `ROOT` (full review at `a`) ← `TIP` (follow-up at `b`), both valid.
+fn seed_two_link_chain() -> MemoryStore {
+    let mut store = seed_with_plan();
+    put(&mut store, link(ROOT, 'a', None, None));
+    put(&mut store, link(TIP, 'b', Some('a'), Some(ROOT)));
+    store
+}
+
+/// `ROOT` (at `a`) ← `MIDDLE` (at `b`) ← `TIP` (at `c`), all valid.
+fn seed_three_link_chain() -> MemoryStore {
+    let mut store = seed_with_plan();
+    put(&mut store, link(ROOT, 'a', None, None));
+    put(&mut store, link(MIDDLE, 'b', Some('a'), Some(ROOT)));
+    put(&mut store, link(TIP, 'c', Some('b'), Some(MIDDLE)));
+    store
+}
+
+/// Rewrites one stored review in place.
+fn amend(store: &mut MemoryStore, id: &str, change: impl FnOnce(&mut Review)) {
+    let mut doc = rdm_core::io::load_review(store, PROJECT, id).unwrap();
+    change(&mut doc.frontmatter);
+    rdm_core::io::write_review(store, PROJECT, id, &doc).unwrap();
+}
+
+#[test]
+fn a_follow_up_over_an_approving_addressed_full_review_satisfies_the_gate() {
+    let mut store = seed_two_link_chain();
+    // Only followed links must be `addressed`: the tip keeps the ordinary
+    // rule, so a `submitted` approve at HEAD still counts.
+    amend(&mut store, TIP, |r| r.state = ReviewState::Submitted);
+    let decision = gate_at(&store, 'b').unwrap();
+    assert_eq!(
+        decision,
+        GateDecision::Satisfied {
+            plan: "plan-one".to_string(),
+            review_id: TIP.to_string(),
+        },
+        "the decision names the follow-up at HEAD, not the review it follows"
+    );
+}
+
+#[test]
+fn a_three_link_chain_satisfies_the_gate_and_names_the_tip() {
+    let store = seed_three_link_chain();
+    let decision = gate_at(&store, 'c').unwrap();
+    assert!(
+        matches!(decision, GateDecision::Satisfied { ref review_id, .. } if review_id == TIP),
+        "{decision:?}"
+    );
+}
+
+#[test]
+fn a_followed_review_that_did_not_approve_breaks_the_chain() {
+    for verdict in [Some(Verdict::RequestChanges), Some(Verdict::Comment), None] {
+        let mut store = seed_two_link_chain();
+        amend(&mut store, ROOT, |r| r.verdict = verdict);
+        let (tip, broken, problem, message) = chain_refusal(gate_at(&store, 'b'));
+        assert_eq!(tip, TIP);
+        assert_eq!(broken, ROOT);
+        assert_eq!(problem, Problem::NotApproving { verdict });
+        assert!(message.contains(ROOT), "the link is not named: {message}");
+        if let Some(verdict) = verdict {
+            assert!(
+                message.contains(&verdict.to_string()),
+                "the verdict is not named: {message}"
+            );
+        }
+        assert!(
+            message.contains("rdm review start --on change/HEAD"),
+            "the full-review remedy is missing: {message}"
+        );
+        assert!(
+            message.contains("--override-gate"),
+            "the bypass remedy is missing: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_followed_review_left_submitted_breaks_the_chain_and_names_the_fix() {
+    let mut store = seed_two_link_chain();
+    amend(&mut store, ROOT, |r| r.state = ReviewState::Submitted);
+    let (tip, broken, problem, message) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::NotAddressed {
+            state: ReviewState::Submitted
+        }
+    );
+    assert!(message.contains("`submitted`"), "{message}");
+    assert!(
+        message.contains(&format!("rdm review update {ROOT} --state addressed")),
+        "the remedy must name the command that closes the link: {message}"
+    );
+
+    // Closing the link is all it takes.
+    amend(&mut store, ROOT, |r| r.state = ReviewState::Addressed);
+    assert!(matches!(
+        gate_at(&store, 'b').unwrap(),
+        GateDecision::Satisfied { .. }
+    ));
+}
+
+#[test]
+fn a_followed_review_that_was_dismissed_or_never_submitted_breaks_the_chain() {
+    for state in [ReviewState::Dismissed, ReviewState::Draft] {
+        let mut store = seed_two_link_chain();
+        amend(&mut store, ROOT, |r| r.state = state);
+        let (_, broken, problem, message) = chain_refusal(gate_at(&store, 'b'));
+        assert_eq!(broken, ROOT);
+        assert_eq!(problem, Problem::NotAddressed { state });
+        assert!(message.contains(&format!("`{state}`")), "{message}");
+        assert!(
+            !message.contains("--state addressed"),
+            "a {state} link cannot be closed as addressed, so that remedy must not be offered: \
+             {message}"
+        );
+    }
+}
+
+#[test]
+fn a_broken_middle_link_is_the_one_named_not_the_root() {
+    let mut store = seed_three_link_chain();
+    amend(&mut store, MIDDLE, |r| r.state = ReviewState::Submitted);
+    let (tip, broken, problem, _) = chain_refusal(gate_at(&store, 'c'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, MIDDLE);
+    assert_eq!(
+        problem,
+        Problem::NotAddressed {
+            state: ReviewState::Submitted
+        }
+    );
+}
+
+#[test]
+fn a_broken_root_is_found_through_a_valid_middle_link() {
+    // The walk does not stop at the first link that holds.
+    let mut store = seed_three_link_chain();
+    amend(&mut store, ROOT, |r| {
+        r.verdict = Some(Verdict::RequestChanges);
+    });
+    let (tip, broken, problem, _) = chain_refusal(gate_at(&store, 'c'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::NotApproving {
+            verdict: Some(Verdict::RequestChanges)
+        }
+    );
+}
+
+#[test]
+fn a_follow_up_whose_followed_review_is_missing_is_refused() {
+    let mut store = seed_with_plan();
+    put(&mut store, link(TIP, 'b', Some('a'), Some(ROOT)));
+    let (tip, broken, problem, message) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::Missing {
+            follower: TIP.to_string()
+        }
+    );
+    assert!(message.contains(ROOT) && message.contains(TIP), "{message}");
+}
+
+#[test]
+fn a_follows_id_that_can_name_no_review_file_is_a_missing_link() {
+    // A hand-written `follows` is untrusted text: one that is not a single
+    // path component must refuse, never reach a path builder.
+    for bogus in ["../escape", "a/b", "..", ""] {
+        let mut store = seed_with_plan();
+        put(&mut store, link(TIP, 'b', Some('a'), Some(bogus)));
+        let (_, broken, problem, _) = chain_refusal(gate_at(&store, 'b'));
+        assert_eq!(broken, bogus);
+        assert_eq!(
+            problem,
+            Problem::Missing {
+                follower: TIP.to_string()
+            }
+        );
+    }
+}
+
+#[test]
+fn a_review_that_follows_itself_terminates_and_is_refused() {
+    let mut store = seed_with_plan();
+    put(&mut store, link(TIP, 'b', Some('a'), Some(TIP)));
+    let (tip, broken, problem, message) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, TIP);
+    assert_eq!(problem, Problem::Cycle);
+    assert!(message.contains("cycle"), "{message}");
+}
+
+#[test]
+fn a_hand_written_cycle_terminates_and_is_refused() {
+    // TIP follows MIDDLE and MIDDLE follows TIP, with bases that line up, so
+    // nothing but the cycle check can end the walk with this problem. TIP is
+    // left `submitted` so a walk without that check would report TIP's state
+    // rather than loop forever.
+    let mut store = seed_with_plan();
+    put(&mut store, link(MIDDLE, 'a', Some('b'), Some(TIP)));
+    let mut tip = link(TIP, 'b', Some('a'), Some(MIDDLE));
+    tip.state = ReviewState::Submitted;
+    put(&mut store, tip);
+    let (tip, broken, problem, _) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, TIP, "the link that closes the cycle is named");
+    assert_eq!(problem, Problem::Cycle);
+}
+
+#[test]
+fn a_follow_up_that_does_not_start_where_the_followed_review_ended_is_refused() {
+    // The follow-up's range starts at `c`, but the review it follows ended
+    // at `a`: the commits between them were never reviewed.
+    let mut store = seed_with_plan();
+    put(&mut store, link(ROOT, 'a', None, None));
+    put(&mut store, link(TIP, 'b', Some('c'), Some(ROOT)));
+    let (tip, broken, problem, message) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::Discontinuous {
+            follower: TIP.to_string(),
+            follower_base: Some(sha('c')),
+            link_head: sha('a'),
+        }
+    );
+    assert!(
+        message.contains("cccccccccccc") && message.contains("aaaaaaaaaaaa"),
+        "both SHAs must be named: {message}"
+    );
+    assert!(
+        message.contains(TIP),
+        "the follower is not named: {message}"
+    );
+
+    // A follow-up with no recorded base at all is just as discontinuous.
+    amend(&mut store, TIP, |r| {
+        r.target = ReviewTarget::Change {
+            head: sha('b'),
+            base: None,
+        };
+    });
+    let (_, _, problem, _) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(
+        problem,
+        Problem::Discontinuous {
+            follower: TIP.to_string(),
+            follower_base: None,
+            link_head: sha('a'),
+        }
+    );
+}
+
+#[test]
+fn a_discontinuity_between_middle_and_root_is_found_too() {
+    let mut store = seed_three_link_chain();
+    amend(&mut store, MIDDLE, |r| {
+        r.target = ReviewTarget::Change {
+            head: sha('b'),
+            base: Some(sha('d')),
+        };
+    });
+    let (_, broken, problem, _) = chain_refusal(gate_at(&store, 'c'));
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::Discontinuous {
+            follower: MIDDLE.to_string(),
+            follower_base: Some(sha('d')),
+            link_head: sha('a'),
+        }
+    );
+}
+
+#[test]
+fn a_chain_cannot_borrow_another_plans_full_review() {
+    // The full review implements a DIFFERENT approved plan of the same item.
+    let mut store = seed_two_link_chain();
+    add_plan(&mut store, "plan-two", &phase_item(), PlanStatus::Approved);
+    amend(&mut store, ROOT, |r| {
+        r.implements = Some(ReviewTarget::Plan {
+            slug: "plan-two".to_string(),
+        });
+    });
+    // ROOT is itself an approving candidate under plan-two, but it is stale
+    // at `b`; the follow-up's chain is what is at HEAD.
+    let (tip, broken, problem, message) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::WrongPlan {
+            expected: "plan-one".to_string(),
+            target: format!("change/{}", sha('a')),
+            implements: Some("plan/plan-two".to_string()),
+        }
+    );
+    assert!(
+        message.contains("plan/plan-one") && message.contains("plan/plan-two"),
+        "{message}"
+    );
+
+    // A followed review that implements no plan at all is refused the same way.
+    amend(&mut store, ROOT, |r| r.implements = None);
+    let (_, broken, problem, _) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::WrongPlan {
+            expected: "plan-one".to_string(),
+            target: format!("change/{}", sha('a')),
+            implements: None,
+        }
+    );
+}
+
+#[test]
+fn a_followed_review_that_is_not_a_change_review_is_refused() {
+    let mut store = seed_two_link_chain();
+    amend(&mut store, ROOT, |r| {
+        r.target = ReviewTarget::Task {
+            slug: "solo".to_string(),
+        };
+    });
+    let (_, broken, problem, _) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::WrongPlan {
+            expected: "plan-one".to_string(),
+            target: "task/solo".to_string(),
+            implements: Some("plan/plan-one".to_string()),
+        }
+    );
+}
+
+/// A [`MemoryStore`] whose reads of one path start failing after the first
+/// `allowed` of them.
+///
+/// The gate reads every review once while listing the candidates and reads a
+/// chain link again while walking the chain, so `allowed: 1` on a link's
+/// path fails exactly the chain walk's read of it.
+struct ReadsRunOutStore {
+    inner: MemoryStore,
+    path: String,
+    allowed: usize,
+    reads: std::cell::Cell<usize>,
+}
+
+impl rdm_core::store::Store for ReadsRunOutStore {
+    fn read(&self, path: &rdm_core::store::RelPath) -> rdm_core::error::Result<String> {
+        if path.as_str() == self.path {
+            self.reads.set(self.reads.get() + 1);
+            if self.reads.get() > self.allowed {
+                return Err(Error::Io(std::io::Error::other("seeded read failure")));
+            }
+        }
+        self.inner.read(path)
+    }
+
+    fn exists(&self, path: &rdm_core::store::RelPath) -> bool {
+        self.inner.exists(path)
+    }
+
+    fn list(
+        &self,
+        path: &rdm_core::store::RelPath,
+    ) -> rdm_core::error::Result<Vec<rdm_core::store::DirEntry>> {
+        self.inner.list(path)
+    }
+
+    fn write(
+        &mut self,
+        path: &rdm_core::store::RelPath,
+        content: String,
+    ) -> rdm_core::error::Result<()> {
+        self.inner.write(path, content)
+    }
+
+    fn delete(&mut self, path: &rdm_core::store::RelPath) -> rdm_core::error::Result<()> {
+        self.inner.delete(path)
+    }
+
+    fn commit(&mut self) -> rdm_core::error::Result<()> {
+        self.inner.commit()
+    }
+
+    fn discard(&mut self) {
+        self.inner.discard();
+    }
+}
+
+#[test]
+fn a_chain_link_that_cannot_be_read_fails_closed_with_the_store_error() {
+    let store = ReadsRunOutStore {
+        inner: seed_two_link_chain(),
+        path: rdm_core::paths::review_path(PROJECT, ROOT)
+            .as_str()
+            .to_string(),
+        allowed: 1,
+        reads: std::cell::Cell::new(0),
+    };
+    let probe = probe_at('b');
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&probe)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Io(_)),
+        "a link that cannot be read must surface as its own error, never as a satisfied gate \
+         or a chain problem: {err:?}"
+    );
+    assert_eq!(
+        store.reads.get(),
+        2,
+        "the failing read must be the chain walk's, after the candidate listing's"
+    );
+}
+
+#[test]
+fn a_full_approve_at_head_satisfies_the_gate_beside_a_broken_follow_up() {
+    // The broken follow-up sorts FIRST, so the search must continue past it.
+    let mut store = seed_with_plan();
+    let mut root = link(ROOT, 'a', None, None);
+    root.verdict = Some(Verdict::RequestChanges);
+    put(&mut store, root);
+    put(
+        &mut store,
+        link("2026-09-13-1200-aaaa", 'b', Some('a'), Some(ROOT)),
+    );
+    put(&mut store, link("2026-09-13-1300-full", 'b', None, None));
+    let decision = gate_at(&store, 'b').unwrap();
+    assert!(
+        matches!(decision, GateDecision::Satisfied { ref review_id, .. } if review_id == "2026-09-13-1300-full"),
+        "{decision:?}"
+    );
+}
+
+#[test]
+fn a_chain_failure_at_head_is_reported_in_preference_to_a_stale_review() {
+    // A stale full approve sorts first and would be the stale refusal; the
+    // follow-up that IS at HEAD has a broken chain, which is what to fix.
+    let mut store = seed_with_plan();
+    put(&mut store, link("2026-09-13-0900-olde", 'd', None, None));
+    let mut root = link(ROOT, 'a', None, None);
+    root.state = ReviewState::Submitted;
+    put(&mut store, root);
+    put(&mut store, link(TIP, 'b', Some('a'), Some(ROOT)));
+    let (tip, broken, _, _) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, ROOT);
+}
+
+#[test]
+fn the_first_chain_failure_by_review_id_is_the_one_reported() {
+    let mut store = seed_with_plan();
+    let mut root = link(ROOT, 'a', None, None);
+    root.verdict = Some(Verdict::RequestChanges);
+    put(&mut store, root);
+    put(
+        &mut store,
+        link("2026-09-13-1200-bbbb", 'b', Some('a'), Some("gone")),
+    );
+    put(
+        &mut store,
+        link("2026-09-13-1200-aaaa", 'b', Some('a'), Some(ROOT)),
+    );
+    let (tip, broken, _, _) = chain_refusal(gate_at(&store, 'b'));
+    assert_eq!(tip, "2026-09-13-1200-aaaa");
+    assert_eq!(broken, ROOT);
+}
+
+#[test]
+fn with_no_probe_a_follow_up_still_needs_its_chain() {
+    // The server and a cwd outside any checkout observe nothing. A follow-up
+    // must not satisfy (b) on its own there either.
+    let mut store = seed_with_plan();
+    let mut root = link(ROOT, 'a', None, None);
+    root.verdict = Some(Verdict::RequestChanges);
+    put(&mut store, root);
+    put(&mut store, link(TIP, 'b', Some('a'), Some(ROOT)));
+    let unobserved = |store: &MemoryStore| {
+        check_reviewed_gate(
+            store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(None),
+        )
+    };
+    let (tip, broken, problem, _) = chain_refusal(unobserved(&store));
+    assert_eq!(tip, TIP);
+    assert_eq!(broken, ROOT);
+    assert_eq!(
+        problem,
+        Problem::NotApproving {
+            verdict: Some(Verdict::RequestChanges)
+        }
+    );
+
+    // The same refusal when rdm manages no worktree for the item.
+    let no_worktree = MemoryWorktreeProbe::new();
+    assert!(matches!(
+        check_reviewed_gate(
+            &store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(Some(&no_worktree)),
+        ),
+        Err(Error::GateFollowUpChain { .. })
+    ));
+}
+
+#[test]
+fn with_no_probe_a_follow_up_over_a_valid_chain_satisfies_the_gate() {
+    // The follow-up sorts first, so it — not the full review behind it — is
+    // the candidate the unobserved search reaches.
+    let mut store = seed_with_plan();
+    put(&mut store, link("2026-09-13-1300-root", 'a', None, None));
+    put(
+        &mut store,
+        link(
+            "2026-09-13-1200-tipp",
+            'b',
+            Some('a'),
+            Some("2026-09-13-1300-root"),
+        ),
+    );
+    let decision = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(None),
+    )
+    .unwrap();
+    assert!(
+        matches!(decision, GateDecision::Satisfied { ref review_id, .. } if review_id == "2026-09-13-1200-tipp"),
+        "{decision:?}"
+    );
+}
+
+#[test]
+fn an_override_waives_a_chain_failure_but_never_a_dirty_worktree() {
+    let mut store = seed_two_link_chain();
+    amend(&mut store, ROOT, |r| {
+        r.verdict = Some(Verdict::RequestChanges);
+    });
+    let clean = probe_at('b');
+    assert!(matches!(
+        check_reviewed_gate(
+            &store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(Some(&clean)),
+        ),
+        Err(Error::GateFollowUpChain { .. })
+    ));
+    assert!(matches!(
+        check_reviewed_gate(
+            &store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(Some(&clean)).with_override("hotfix", "alice"),
+        )
+        .unwrap(),
+        GateDecision::Overridden(_)
+    ));
+    let dirty = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &["oops.rs"])
+        .with_head(&phase_item(), &sha('b'));
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&dirty)).with_override("hotfix", "alice"),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::GateWorktreeDirty { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_dirty_worktree_still_refuses_behind_a_valid_chain() {
+    let store = seed_two_link_chain();
+    let dirty = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &["oops.rs"])
+        .with_head(&phase_item(), &sha('b'));
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&dirty)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::GateWorktreeDirty { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_task_chain_gets_the_same_two_outcomes() {
+    let item = task_item("solo");
+    let mut store = seed();
+    add_plan(&mut store, "plan-one", &item, PlanStatus::Approved);
+    put(&mut store, link(ROOT, 'a', None, None));
+    put(&mut store, link(TIP, 'b', Some('a'), Some(ROOT)));
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&item, "/wt/solo", &[])
+        .with_head(&item, &sha('b'));
+    let gate = ReviewedGate::enforcing(Some(&probe));
+    assert!(matches!(
+        check_reviewed_gate(&store, PROJECT, &item, &gate).unwrap(),
+        GateDecision::Satisfied { ref review_id, .. } if review_id == TIP
+    ));
+
+    amend(&mut store, ROOT, |r| {
+        r.verdict = Some(Verdict::RequestChanges);
+    });
+    let err = check_reviewed_gate(&store, PROJECT, &item, &gate).unwrap_err();
+    let Error::GateFollowUpChain {
+        ref item, ref link, ..
+    } = err
+    else {
+        panic!("expected GateFollowUpChain, got {err:?}");
+    };
+    assert_eq!(item, "task/solo");
+    assert_eq!(link, ROOT);
+}
+
+#[test]
+fn the_gated_phase_write_refuses_a_broken_chain_and_accepts_a_valid_one() {
+    let mut store = seed_two_link_chain();
+    amend(&mut store, ROOT, |r| r.state = ReviewState::Submitted);
+    let probe = probe_at('b');
+    let write = |store: &mut MemoryStore| {
+        rdm_core::ops::phase::update_phase_gated(
+            store,
+            PROJECT,
+            ROADMAP,
+            STEM,
+            Some(PhaseStatus::Reviewed),
+            TagsUpdate::Keep,
+            BodyUpdate::Keep,
+            None,
+            None,
+            None,
+            None,
+            TitleUpdate::Keep,
+            &ReviewedGate::enforcing(Some(&probe)),
+        )
+    };
+    let err = write(&mut store).unwrap_err();
+    assert!(
+        matches!(err, Error::GateFollowUpChain { .. }),
+        "got {err:?}"
+    );
+    let phase = rdm_core::io::load_phase(&store, PROJECT, ROADMAP, STEM).unwrap();
+    assert_eq!(phase.frontmatter.status, PhaseStatus::NeedsReview);
+
+    amend(&mut store, ROOT, |r| r.state = ReviewState::Addressed);
+    let phase = write(&mut store).unwrap();
+    assert_eq!(phase.frontmatter.status, PhaseStatus::Reviewed);
+}
+
+// ---------------------------------------------------------------------------
+// Stale selection — the stale refusal names the chain tip
+// ---------------------------------------------------------------------------
+
+/// Unwraps a [`Error::GateStaleChangeReview`] into `(review_id, message)`.
+fn stale_refusal(result: rdm_core::error::Result<GateDecision>) -> (String, String) {
+    let err = result.expect_err("the gate must refuse");
+    let message = err.to_string();
+    match err {
+        Error::GateStaleChangeReview { review_id, .. } => (review_id, message),
+        other => panic!("expected GateStaleChangeReview, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_stale_refusal_names_the_follow_up_whatever_order_the_ids_sort_in() {
+    // After a commit past the follow-up's head BOTH the full review and the
+    // follow-up are stale candidates. Review ids created in the same minute
+    // order by a random suffix, so the follow-up is named by chain position,
+    // never by id order.
+    for (root_id, tip_id) in [
+        ("2026-09-13-1000-aaaa", "2026-09-13-1000-bbbb"),
+        ("2026-09-13-1000-bbbb", "2026-09-13-1000-aaaa"),
+    ] {
+        let mut store = seed_with_plan();
+        put(&mut store, link(root_id, 'a', None, None));
+        put(&mut store, link(tip_id, 'b', Some('a'), Some(root_id)));
+        let (named, message) = stale_refusal(gate_at(&store, 'c'));
+        assert_eq!(
+            named, tip_id,
+            "root {root_id} / follow-up {tip_id}: the chain tip must be named"
+        );
+        assert!(
+            message.contains(&format!(
+                "rdm review start --on change/HEAD --follows {tip_id}"
+            )),
+            "the follow-up hint must name the same review: {message}"
+        );
+        assert!(
+            message.contains("bbbbbbbbbbbb") && message.contains("cccccccccccc"),
+            "the tip's head and the observed head must be named: {message}"
+        );
+        assert!(
+            message.contains("--implements plan/<slug>"),
+            "the full re-review remedy must stay: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_stale_refusal_names_the_tip_of_a_three_link_chain() {
+    // Ids chosen so the tip sorts in the MIDDLE: neither first nor last.
+    let mut store = seed_with_plan();
+    put(&mut store, link("2026-09-13-1000-cccc", 'a', None, None));
+    put(
+        &mut store,
+        link(
+            "2026-09-13-1000-aaaa",
+            'b',
+            Some('a'),
+            Some("2026-09-13-1000-cccc"),
+        ),
+    );
+    put(
+        &mut store,
+        link(
+            "2026-09-13-1000-bbbb",
+            'c',
+            Some('b'),
+            Some("2026-09-13-1000-aaaa"),
+        ),
+    );
+    let (named, _) = stale_refusal(gate_at(&store, 'd'));
+    assert_eq!(named, "2026-09-13-1000-bbbb");
+}
+
+#[test]
+fn unrelated_stale_reviews_tie_break_by_review_id() {
+    // Two full reviews, neither following the other: the existing
+    // first-by-id rule decides.
+    let mut store = seed_with_plan();
+    put(&mut store, link("2026-09-13-1000-bbbb", 'b', None, None));
+    put(&mut store, link("2026-09-13-1000-aaaa", 'a', None, None));
+    let (named, _) = stale_refusal(gate_at(&store, 'c'));
+    assert_eq!(named, "2026-09-13-1000-aaaa");
+}
+
+#[test]
+fn stale_reviews_that_all_follow_each_other_still_name_one_deterministically() {
+    // A hand-written cycle leaves no candidate un-followed; the refusal must
+    // still be the stale one, naming the first by id.
+    let mut store = seed_with_plan();
+    put(
+        &mut store,
+        link(
+            "2026-09-13-1000-aaaa",
+            'a',
+            Some('b'),
+            Some("2026-09-13-1000-bbbb"),
+        ),
+    );
+    put(
+        &mut store,
+        link(
+            "2026-09-13-1000-bbbb",
+            'b',
+            Some('a'),
+            Some("2026-09-13-1000-aaaa"),
+        ),
+    );
+    let (named, _) = stale_refusal(gate_at(&store, 'c'));
+    assert_eq!(named, "2026-09-13-1000-aaaa");
+}
+
+#[test]
+fn a_stale_follow_up_is_never_reported_as_a_chain_failure() {
+    // The chain is only walked for a follow-up that passed the HEAD match.
+    let mut store = seed_two_link_chain();
+    amend(&mut store, ROOT, |r| {
+        r.verdict = Some(Verdict::RequestChanges);
+    });
+    let (named, _) = stale_refusal(gate_at(&store, 'c'));
+    assert_eq!(named, TIP);
 }

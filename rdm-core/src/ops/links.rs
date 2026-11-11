@@ -2363,6 +2363,7 @@ mod tests {
                 }],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: "Whole-document summary, no link here.".to_string(),
         };
@@ -2549,6 +2550,7 @@ mod tests {
                 }],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: String::new(),
         };
@@ -2615,6 +2617,7 @@ mod tests {
                 }],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: "Summary references [the fix](rdm:task/fix-login) directly.".to_string(),
         };
@@ -2872,6 +2875,7 @@ mod tests {
                 created_commit: None,
                 implements,
                 change_branch: None,
+                follows: None,
                 comments: Vec::new(),
             },
             body: "Summary.".to_string(),
@@ -3248,6 +3252,7 @@ mod tests {
                 created_commit: None,
                 implements: None,
                 change_branch: None,
+                follows: None,
                 comments,
             },
             body: "Summary.".to_string(),

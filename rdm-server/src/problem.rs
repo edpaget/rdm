@@ -129,6 +129,9 @@ impl From<&Error> for ProblemDetail {
             Error::GateNoApprovedPlan(_)
             | Error::GateNoApprovedChangeReview { .. }
             | Error::GateStaleChangeReview { .. }
+            // An approving follow-up review whose chain is broken: the
+            // detail names the link to fix.
+            | Error::GateFollowUpChain { .. }
             | Error::GateWorktreeDirty { .. }
             | Error::GateWorktreeUnobservable { .. }
             // Conflict-shaped for the same reason: the request is
@@ -150,6 +153,14 @@ impl From<&Error> for ProblemDetail {
             | Error::ReviewImplementsNotApplicable(_)
             | Error::ReviewImplementsNoApprovedPlan(_)
             | Error::ReviewImplementsAmbiguous { .. }
+            // Follow-up usage errors, the same class as the `implements`
+            // rules above. No route creates a follow-up yet, so these can
+            // only surface via a shared code path.
+            | Error::ReviewFollowsNotApplicable(_)
+            | Error::ReviewFollowsNotAChange { .. }
+            | Error::ReviewFollowsImplementsMismatch { .. }
+            | Error::ChangeFollowUpNotAncestor { .. }
+            | Error::ChangeFollowUpEmptyRange { .. }
             | Error::ChangeTargetHasNoDocument(_)
             | Error::ChangePathNotInRevision { .. }
             | Error::ChangePathNotLinkable { .. }

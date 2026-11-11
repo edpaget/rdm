@@ -614,6 +614,7 @@ mod tests {
             created_commit: None,
             implements: None,
             change_branch: None,
+            follows: None,
             comments: vec![ReviewComment {
                 id: 1,
                 doc: None,

@@ -465,6 +465,14 @@ impl Describe for crate::model::Review {
                     ..FieldInfo::default()
                 },
                 FieldInfo {
+                    name: "follows",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Id of the change review this one follows (change reviews only). A follow-up covers the commits from the followed review's head, recorded as its target base, to its own head. Set with `rdm review start --follows <id>` and never changed afterwards; absent on a review that follows nothing.",
+                    ..FieldInfo::default()
+                },
+                FieldInfo {
                     name: "comments",
                     type_name: "list of comment objects",
                     required: true,
@@ -832,6 +840,9 @@ mod tests {
             comments: vec![],
             implements: None,
             change_branch: None,
+            // Set so the optional key is serialized and compared against
+            // the described `follows` field.
+            follows: Some("2026-06-30-0900-c3d4".to_string()),
         };
         assert_fields_match(&sample);
     }

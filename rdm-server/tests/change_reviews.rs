@@ -294,6 +294,7 @@ fn seed_plan_repo(base: &str, head: &str) -> TempDir {
                     slug: PLAN.to_string(),
                 }),
                 change_branch: Some("topic".to_string()),
+                follows: None,
                 comments: vec![
                     comment(1, RESOLVING_QUOTE, 2),
                     comment(2, DRIFTING_QUOTE, 4),
@@ -332,6 +333,7 @@ fn seed_degraded_review(plan: &Path, head: &str) {
                 created_commit: None,
                 implements: None,
                 change_branch: Some("topic".to_string()),
+                follows: None,
                 comments: Vec::new(),
             },
             body: "Degraded findings.\n".to_string(),
@@ -606,6 +608,7 @@ async fn rest_plan_repo_review_still_resolves_against_the_plan_store() {
                 created_commit: None,
                 implements: None,
                 change_branch: None,
+                follows: None,
                 comments: vec![ReviewComment {
                     anchor_state: None,
                     intended_path: None,
@@ -864,6 +867,7 @@ async fn applied_commit_document_review_records_the_source_repo_for_a_source_sha
                     created_commit: None,
                     implements: None,
                     change_branch: None,
+                    follows: None,
                     comments: vec![ReviewComment {
                         anchor_state: None,
                         intended_path: None,
@@ -905,4 +909,81 @@ async fn applied_commit_document_review_records_the_source_repo_for_a_source_sha
         format!("rdm:src@{head}").as_str(),
         "{comment}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up reviews: the review detail reports `follows` and links to it
+// ---------------------------------------------------------------------------
+
+const FOLLOW_UP_REVIEW_ID: &str = "2026-09-19-0930-f00d";
+
+/// Writes [`FOLLOW_UP_REVIEW_ID`]: a draft follow-up of [`REVIEW_ID`] whose
+/// base is that review's head.
+fn seed_follow_up_review(plan: &Path, followed_head: &str) {
+    let mut store = FsStore::new(plan);
+    rdm_core::io::write_review(
+        &mut store,
+        PROJECT,
+        FOLLOW_UP_REVIEW_ID,
+        &Document {
+            frontmatter: Review {
+                id: FOLLOW_UP_REVIEW_ID.to_string(),
+                author: "reviewer".to_string(),
+                target: ReviewTarget::Change {
+                    head: "f".repeat(40),
+                    base: Some(followed_head.to_string()),
+                },
+                state: ReviewState::Draft,
+                verdict: None,
+                created: Utc::now(),
+                submitted: None,
+                created_commit: None,
+                implements: Some(ReviewTarget::Plan {
+                    slug: PLAN.to_string(),
+                }),
+                change_branch: Some("topic".to_string()),
+                follows: Some(REVIEW_ID.to_string()),
+                comments: Vec::new(),
+            },
+            body: "The triage delta.\n".to_string(),
+        },
+    )
+    .unwrap();
+    flush(&mut store);
+}
+
+async fn get_review_hal(addr: SocketAddr, client: &Client, id: &str) -> Value {
+    let res = client
+        .get(format!("http://{addr}/projects/{PROJECT}/reviews/{id}"))
+        .header("Accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    res.json().await.unwrap()
+}
+
+#[tokio::test]
+async fn a_follow_up_review_detail_carries_follows_and_a_link_to_the_followed_review() {
+    let (_src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    seed_follow_up_review(plan.path(), &head);
+    set_project_source(plan.path(), None);
+    let (addr, client) = spawn(plan.path()).await;
+
+    let follow_up = get_review_hal(addr, &client, FOLLOW_UP_REVIEW_ID).await;
+    assert_eq!(follow_up["follows"], REVIEW_ID, "{follow_up}");
+    assert_eq!(follow_up["target"]["base"], head.as_str(), "{follow_up}");
+    assert_eq!(
+        follow_up["_links"]["follows"]["href"],
+        format!("/projects/{PROJECT}/reviews/{REVIEW_ID}"),
+        "{follow_up}"
+    );
+
+    // The link resolves to the followed review, which follows nothing and so
+    // carries neither the field nor the link.
+    let followed = get_review_hal(addr, &client, REVIEW_ID).await;
+    assert_eq!(followed["id"], REVIEW_ID);
+    assert!(followed.get("follows").is_none(), "{followed}");
+    assert!(followed["_links"].get("follows").is_none(), "{followed}");
 }

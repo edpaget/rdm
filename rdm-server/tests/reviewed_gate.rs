@@ -184,6 +184,7 @@ fn add_approving_change_review(dir: &Path, id: &str, plan_slug: &str) {
                     slug: plan_slug.to_string(),
                 }),
                 change_branch: None,
+                follows: None,
                 comments: Vec::new(),
             },
             body: "Looks right.".to_string(),
@@ -591,4 +592,191 @@ fn an_unlinkable_source_path_is_a_400() {
         });
     assert_eq!(p.status, 400);
     assert!(p.detail.is_some_and(|d| d.contains('@')));
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up chains over HTTP
+// ---------------------------------------------------------------------------
+
+/// Writes a change review at `head` implementing `plan_slug`, optionally
+/// following another review, with the given verdict and state.
+#[allow(clippy::too_many_arguments)]
+fn add_chain_review(
+    dir: &Path,
+    id: &str,
+    plan_slug: &str,
+    head: char,
+    base: Option<char>,
+    follows: Option<&str>,
+    verdict: Verdict,
+    state: ReviewState,
+) {
+    let mut store = store_at(dir);
+    rdm_core::io::write_review(
+        &mut store,
+        PROJECT,
+        id,
+        &Document {
+            frontmatter: Review {
+                id: id.to_string(),
+                author: "reviewer".to_string(),
+                target: ReviewTarget::Change {
+                    head: head.to_string().repeat(40),
+                    base: base.map(|digit| digit.to_string().repeat(40)),
+                },
+                state,
+                verdict: Some(verdict),
+                created: Utc::now(),
+                submitted: Some(Utc::now()),
+                created_commit: None,
+                implements: Some(ReviewTarget::Plan {
+                    slug: plan_slug.to_string(),
+                }),
+                change_branch: None,
+                follows: follows.map(str::to_string),
+                comments: Vec::new(),
+            },
+            body: "Reviewed.".to_string(),
+        },
+    )
+    .unwrap();
+    flush(&mut store);
+}
+
+/// The server observes no checkout, so a follow-up approve is a candidate
+/// whatever HEAD is — and it must still be refused when the review it
+/// follows requested changes. Then the same shape over an approving,
+/// addressed full review lets the write through.
+#[tokio::test]
+async fn a_follow_up_over_a_request_changes_root_is_a_409_naming_the_link() {
+    for (path, item, plan_slug) in [
+        (phase_path(), phase_item(), "design-plan"),
+        (task_path(), task_item(), "solo-plan"),
+    ] {
+        let dir = seed_plan_repo(Some(true));
+        let (addr, client) = spawn(dir.path()).await;
+        add_approved_plan(dir.path(), plan_slug, &item);
+        add_chain_review(
+            dir.path(),
+            "2026-09-13-1000-root",
+            plan_slug,
+            'a',
+            None,
+            None,
+            Verdict::RequestChanges,
+            ReviewState::Addressed,
+        );
+        add_chain_review(
+            dir.path(),
+            "2026-09-13-1100-tipp",
+            plan_slug,
+            'b',
+            Some('a'),
+            Some("2026-09-13-1000-root"),
+            Verdict::Approve,
+            ReviewState::Submitted,
+        );
+
+        let (code, body) = patch_status(&client, addr, &path, "reviewed").await;
+        assert_eq!(code, 409, "{path}: {body}");
+        let d = detail(&body);
+        assert!(
+            d.contains("2026-09-13-1000-root"),
+            "{path}: the detail must name the broken link: {d}"
+        );
+        assert!(
+            d.contains("request-changes"),
+            "{path}: the detail must name its verdict: {d}"
+        );
+        assert!(
+            d.contains("2026-09-13-1100-tipp"),
+            "{path}: the detail must name the follow-up: {d}"
+        );
+
+        // Repair the root and the identical PATCH lands.
+        add_chain_review(
+            dir.path(),
+            "2026-09-13-1000-root",
+            plan_slug,
+            'a',
+            None,
+            None,
+            Verdict::Approve,
+            ReviewState::Addressed,
+        );
+        let (code, body) = patch_status(&client, addr, &path, "reviewed").await;
+        assert_eq!(code, 200, "{path}: {body}");
+        assert_eq!(body["status"], "reviewed");
+    }
+}
+
+/// The chain refusal's problem-detail mapping, for every problem it can
+/// carry: an unmapped variant would silently land in the 500 bucket.
+#[test]
+fn a_follow_up_chain_refusal_is_a_409_with_a_detail() {
+    use rdm_core::ops::gate::FollowUpChainProblem as Problem;
+    for problem in [
+        Problem::Cycle,
+        Problem::Missing {
+            follower: "2026-09-13-1100-tipp".to_string(),
+        },
+        Problem::WrongPlan {
+            expected: "design-plan".to_string(),
+            target: format!("change/{}", "a".repeat(40)),
+            implements: None,
+        },
+        Problem::NotApproving {
+            verdict: Some(Verdict::RequestChanges),
+        },
+        Problem::NotAddressed {
+            state: ReviewState::Submitted,
+        },
+        Problem::Discontinuous {
+            follower: "2026-09-13-1100-tipp".to_string(),
+            follower_base: Some("c".repeat(40)),
+            link_head: "a".repeat(40),
+        },
+    ] {
+        let err = rdm_core::error::Error::GateFollowUpChain {
+            item: "phase/auth/phase-1-design".to_string(),
+            tip: "2026-09-13-1100-tipp".to_string(),
+            link: "2026-09-13-1000-root".to_string(),
+            problem: Box::new(problem),
+        };
+        let p = rdm_server::problem::ProblemDetail::from(&err);
+        assert_eq!(p.status, 409, "{err:?} must be conflict-shaped");
+        assert_eq!(p.title, "Conflict");
+        let d = p.detail.expect("a refusal must carry a detail");
+        assert!(d.contains("2026-09-13-1000-root"), "names the link: {d}");
+    }
+}
+
+/// The `review start --follows` refusals are caller-fixable input.
+#[test]
+fn the_follow_up_start_refusals_are_400s_with_details() {
+    for err in [
+        rdm_core::error::Error::ReviewFollowsNotApplicable("task/solo".to_string()),
+        rdm_core::error::Error::ReviewFollowsNotAChange {
+            followed: "r1".to_string(),
+            target: "task/solo".to_string(),
+        },
+        rdm_core::error::Error::ReviewFollowsImplementsMismatch {
+            followed: "r1".to_string(),
+            given: "plan/other".to_string(),
+            recorded: Some("plan/design-plan".to_string()),
+        },
+        rdm_core::error::Error::ChangeFollowUpNotAncestor {
+            followed: "r1".to_string(),
+            followed_head: "a".repeat(40),
+            head: "b".repeat(40),
+        },
+        rdm_core::error::Error::ChangeFollowUpEmptyRange {
+            followed: "r1".to_string(),
+            head: "a".repeat(40),
+        },
+    ] {
+        let p = rdm_server::problem::ProblemDetail::from(&err);
+        assert_eq!(p.status, 400, "{err:?} must be a bad request");
+        assert!(p.detail.is_some(), "{err:?} must carry a detail");
+    }
 }

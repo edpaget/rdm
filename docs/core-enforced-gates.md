@@ -30,7 +30,7 @@ refuse unless all three hold:
 | | Precondition | Refusal |
 |---|---|---|
 | (a) | An `approved` implementation plan `implements` this item | `Error::GateNoApprovedPlan` |
-| (b) | A `submitted` or `addressed` `change/` review with verdict `approve` records `implements` pointing at that plan, and matches the observed checkout's HEAD | `Error::GateNoApprovedChangeReview` (none exists) / `Error::GateStaleChangeReview` (one exists at a different HEAD) |
+| (b) | A `submitted` or `addressed` `change/` review with verdict `approve` records `implements` pointing at that plan, and matches the observed checkout's HEAD. If that review is a follow-up (it records `follows`), its whole chain must hold | `Error::GateNoApprovedChangeReview` (none exists) / `Error::GateStaleChangeReview` (one exists at a different HEAD) / `Error::GateFollowUpChain` (a follow-up is at HEAD but its chain is broken) |
 | (c) | The item's worktree, if `rdm worktree` knows one, has a clean `git status --porcelain` | `Error::GateWorktreeDirty` |
 
 Each refusal names the missing record **and** the command that would create it.
@@ -78,13 +78,106 @@ message would tell the operator to create a review that already exists. A
 dismissed approval is filtered out before the HEAD comparison, so it is never
 a stale candidate; it reads as absent. The gate searches all approving
 records for a matching one, so an older stale review does not hide a later
-matching review, and the stale candidate reported is deterministic (reviews
-are id-sorted).
+matching review.
+
+**Which stale review is named.** When several approving reviews are stale,
+the refusal names the **chain tip**: the first candidate, by plan slug then
+review id, that no other stale candidate follows. A full review and the
+follow-ups after it all go stale together when HEAD moves again, and their
+ids can sort in any order (ids minted in the same minute order by a random
+suffix), so the one to act on is picked by its position in the chain, not by
+its id. Unrelated stale reviews tie-break by the first-by-id order. The
+refusal offers two remedies and names the same review in both: a full
+re-review of the current HEAD, or `rdm review start --on change/HEAD
+--follows <that review>` to review only the commits since it.
 
 Several approved plans can implement one item. (a) is satisfied by any of them;
 (b) must find an approving review naming the **same** plan. When it finds none,
 the refusal lists every candidate plan it checked (the
 `Error::ReviewImplementsAmbiguous` precedent).
+
+### Follow-up chains
+
+A change review started with `rdm review start --follows <id>` is a
+**follow-up**: it covers only the commits from the followed review's head to
+its own head ([`docs/change-reviews.md`](change-reviews.md) § "Follow-up
+reviews"). An approving follow-up at HEAD therefore approved a delta, not the
+change, and it satisfies (b) only when the reviews behind it account for the
+rest. A review that follows nothing is judged exactly as described above.
+
+For a follow-up that passes the HEAD match (the **tip**), the gate walks
+`follows` back to a review that follows nothing, the full review. With
+`follower` starting as the tip, every followed link `L = follower.follows`
+must hold all of these, checked in this order:
+
+| # | Invariant on the link `L` | `FollowUpChainProblem` when violated |
+|---|---|---|
+| 1 | `L` is not already part of the chain | `Cycle` |
+| 2 | review `L` exists | `Missing` (names `L` and `follower`) |
+| 3 | `L` reviews a change and `L.implements` is the tip's plan | `WrongPlan` |
+| 4 | `L.verdict` is `approve` | `NotApproving` (names the verdict it has) |
+| 5 | `L.state` is `addressed` | `NotAddressed` (names the state it has) |
+| 6 | `follower.target.base` is `L.target.head` | `Discontinuous` (names `follower`, its base, and `L`'s head) |
+
+The walk then continues with `follower = L` until it reaches a review with no
+`follows`. The first violation is `Error::GateFollowUpChain`, carrying the
+item, the tip's id, the link's id and the problem; its message names the link
+and says what to do. For a `submitted` link that is to resolve its comments
+and run `rdm review update <link> --state addressed`. For every other case it
+is a full review of the current HEAD (`rdm review start --on change/HEAD
+--implements plan/<slug>`, without `--follows`).
+
+What the rules mean:
+
+- **Only followed links must be `addressed`.** The tip keeps the ordinary
+  rule for (b): `approve`, and `submitted` or `addressed`.
+- **`addressed` carries "every comment is terminal".** Core refuses
+  `--state addressed` while a comment is open (`Error::ReviewOpenComments`)
+  and refuses to change a comment's status on a closed review
+  (`Error::ReviewClosed`), so invariant 5 needs no separate walk over the
+  comments.
+- **Invariant 3 keeps a chain inside one plan.** A roadmap worktree is shared
+  by sibling phases, so without it a follow-up could borrow another item's
+  full review.
+- **Invariant 6 is continuity.** The ranges of consecutive reviews must meet,
+  with no unreviewed commit between them.
+- **A link that cannot be read fails closed.** Any store error other than
+  "not found" while loading a link is returned as that error.
+
+**Ancestry is proven once, when the follow-up is started, not at the gate.**
+`rdm review start --follows` refuses unless the followed review's head is an
+ancestor of the new head (`rdm_core::change::resolve_follow_up_target`). The
+gate has no source-repository access (`check_reviewed_gate` takes a `Store`
+and a `WorktreeProbe`), the server and a cwd outside a project repo run with
+no probe at all, and ancestry between two fixed commits cannot change
+afterwards. The gate checks what a *record* can get wrong, which is
+continuity. Re-proving ancestry at each evaluation would be a second read of
+a value that is already authoritative, and would hold on some surfaces only.
+
+**The search and the refusal order.** A follow-up with a broken chain does not
+end the search: the gate records the first such failure (by plan slug, then
+review id) and keeps looking, so a full approve at HEAD still satisfies (b)
+beside a broken follow-up. When no candidate is accepted, the refusal is the
+first of:
+
+1. `Error::GateFollowUpChain`, for a follow-up that passed the HEAD match. It
+   outranks the stale refusal because it is about the review that *is* at
+   HEAD.
+2. `Error::GateStaleChangeReview`, for an approving review at another HEAD.
+3. `Error::GateNoApprovedChangeReview`.
+
+The chain is walked whether or not a checkout was observed. With no probe
+(the server, a cwd outside a project repo) every approving review is a
+candidate whatever its head, and a follow-up among them still needs its chain:
+a follow-up never satisfies (b) on its own on any surface.
+
+`--override-gate` waives (a) and (b), so it waives a chain failure too; it
+never waives (c). `GateDecision::Satisfied` names the tip. Phases and tasks
+share `check_reviewed_gate`, so both get all of this with no per-kind code.
+
+The gate does not check that a chain's full review covered the item's whole
+range. It checks no review's base for a review that follows nothing, and that
+is unchanged.
 
 ### Explicit source binding
 
@@ -398,8 +491,11 @@ actually fail rather than only where its call site can be grepped:
 | Surface | Coverage |
 |---|---|
 | the rule itself | `rdm-core/tests/gate.rs` — every branch, the fixed order, and the fail-closed probe cases against `MemoryStore` + `MemoryWorktreeProbe` |
-| `rdm-cli` | `rdm-cli/tests/cli_gate.rs` — the full ladder end to end through the real binary, against a temp plan repo and a real `rdm worktree add` worktree |
-| `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases |
+| follow-up chains | `rdm-core/tests/gate.rs` — one negative per chain invariant (`a_review_that_follows_itself_terminates_and_is_refused` and `a_hand_written_cycle_terminates_and_is_refused` for 1; `a_follow_up_whose_followed_review_is_missing_is_refused` and `a_follows_id_that_can_name_no_review_file_is_a_missing_link` for 2; `a_chain_cannot_borrow_another_plans_full_review` and `a_followed_review_that_is_not_a_change_review_is_refused` for 3; `a_followed_review_that_did_not_approve_breaks_the_chain` for 4; `a_followed_review_left_submitted_breaks_the_chain_and_names_the_fix` and `a_followed_review_that_was_dismissed_or_never_submitted_breaks_the_chain` for 5; `a_follow_up_that_does_not_start_where_the_followed_review_ended_is_refused` for 6), the two- and three-link accepted chains, the middle-link and through-a-valid-middle cases, the fail-closed link read, the search rules (`a_full_approve_at_head_satisfies_the_gate_beside_a_broken_follow_up`, `a_chain_failure_at_head_is_reported_in_preference_to_a_stale_review`, `the_first_chain_failure_by_review_id_is_the_one_reported`), the no-probe cases, the override, and a task item |
+| stale selection | `rdm-core/tests/gate.rs` — `a_stale_refusal_names_the_follow_up_whatever_order_the_ids_sort_in` (both id orders), `a_stale_refusal_names_the_tip_of_a_three_link_chain`, `unrelated_stale_reviews_tie_break_by_review_id`, `stale_reviews_that_all_follow_each_other_still_name_one_deterministically` |
+| starting a follow-up | `rdm-core/src/change.rs` tests (`resolve_follow_up_target_*`: ancestry, the reverse direction, no merge base, the empty range) and `rdm-core/tests/ops.rs` (`create_review_*follow*`: the stamped base, the inherited plan, each refusal) |
+| `rdm-cli` | `rdm-cli/tests/cli_gate.rs` — the full ladder end to end through the real binary, against a temp plan repo and a real `rdm worktree add` worktree; the follow-up chain accepted and refused for a phase and a task, the three-link chain, and the stale refusal naming the follow-up. `rdm-cli/tests/cli_review_change.rs` — `review start --follows` and each of its refusals |
+| `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases, and a follow-up over a `request-changes` full review refused **409** naming the link |
 | the worktree probe | `rdm-git/src/worktree.rs` tests — the roadmap-over-stale-phase resolution (`probe_prefers_shared_roadmap_over_stale_phase`, `probe_falls_back_to_the_roadmap_worktree_for_a_phase`), the task branch (`probe_resolves_a_task_worktree`), dirty-path reporting (`probe_reports_a_dirty_worktree_with_its_paths`), benign misses (`probe_reports_no_worktree_rather_than_failing_on_a_miss`), and `status_porcelain_at` erroring outside a repo |
 
 The threading (the ungated allowlist and the `_gated`-entry boundary) was

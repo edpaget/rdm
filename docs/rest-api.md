@@ -60,6 +60,23 @@ the stored `line-range` anchor's `snippet`; the request never supplies it.
 | `line` with `anchor` or `anchor_state`, or on a `change/` review | `400` |
 | A hand-built `line-range` `anchor` (here or on `PATCH …/comments/:id`) | `400`, pointing at `line` |
 
+## Follow-up reviews
+
+A change review that follows an earlier one (started with
+`rdm review start --follows <id>`, see
+[`change-reviews.md`](change-reviews.md#follow-up-reviews---follows)) reports
+it on every review response:
+
+| Where | What |
+|-------|------|
+| `follows` | the followed review's id; absent on a review that follows nothing |
+| `target.base`, `base_link` | the followed review's head, which is where the follow-up's range starts |
+| `_links.follows` (HAL) | the followed review's resource, `/projects/:project/reviews/:id`; absent when `follows` is |
+
+`POST /projects/:project/reviews` does not accept `follows` (it accepts
+neither `base` nor `implements`, and has no source checkout to prove ancestry
+against). A follow-up is started with the CLI.
+
 ## Code-location annotations
 
 `GET /projects/:project/annotations?target=<reference>` is the web UI's reverse
@@ -216,3 +233,18 @@ safe to retry after re-reading:
 |------------|------|------------|
 | `StaleWrite` | The document changed on disk between this request reading it and writing it back — another session wrote it concurrently. | Re-issue the request so the change applies on top of the current content. |
 | `ChangesetPathOverwritten` | At commit time, another session had overwritten a path this changeset wrote, so committing would land their content under your message. | Re-run the request that produced your change, then commit. |
+
+### `reviewed` gate refusals (`409 Conflict`)
+
+With `gates.reviewed` enabled, a `PATCH` that sets a phase's or task's
+`status` to `reviewed` is refused with `409` until the review records exist
+([`core-enforced-gates.md`](core-enforced-gates.md)). The `detail` is the core
+error's message, which names the missing or broken record and the command
+that fixes it. The server observes no checkout, so the worktree and HEAD
+checks do not apply to it:
+
+| Core error | When |
+|------------|------|
+| `GateNoApprovedPlan` | No `approved` plan implements the item. |
+| `GateNoApprovedChangeReview` | No approving `change/` review implements any of its approved plans. |
+| `GateFollowUpChain` | The only approving reviews are follow-ups whose chain is broken: a review they follow did not approve, is not `addressed`, is missing, implements another plan, or does not end where the follow-up starts. The `detail` names that review. |

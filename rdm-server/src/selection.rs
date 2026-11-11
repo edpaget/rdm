@@ -466,6 +466,7 @@ mod tests {
             comments: Vec::new(),
             implements: None,
             change_branch: None,
+            follows: None,
         };
 
         // WEB path: the browser selected "Added since review" in the

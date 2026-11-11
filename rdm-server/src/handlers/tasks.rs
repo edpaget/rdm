@@ -1447,6 +1447,7 @@ mod tests {
                 body: Some("Task review summary."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -1596,6 +1597,7 @@ mod tests {
                 body: Some("See [the other task](rdm:task/feature) for context."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -1651,6 +1653,7 @@ mod tests {
                 body: Some("Summary."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();

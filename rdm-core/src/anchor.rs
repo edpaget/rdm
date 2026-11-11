@@ -1371,6 +1371,7 @@ mod tests {
             created_commit: created_commit.map(str::to_string),
             implements: None,
             change_branch: None,
+            follows: None,
             comments: Vec::new(),
         }
     }

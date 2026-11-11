@@ -1416,6 +1416,7 @@ mod tests {
                 body: Some("Overall **summary** text."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();

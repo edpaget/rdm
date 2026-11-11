@@ -299,8 +299,8 @@ pub fn update_phase(
 /// Everything [`update_phase`] returns, plus — only when `status` is
 /// `Some(`[`PhaseStatus::Reviewed`]`)` and the gate is **enforcing** —
 /// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
-/// [`Error::GateStaleChangeReview`], [`Error::GateWorktreeDirty`],
-/// [`Error::GateWorktreeUnobservable`] and
+/// [`Error::GateStaleChangeReview`], [`Error::GateFollowUpChain`],
+/// [`Error::GateWorktreeDirty`], [`Error::GateWorktreeUnobservable`] and
 /// [`Error::GateOverrideEmptyReason`].
 ///
 /// Independently of that, [`Error::GateOverrideGateDisabled`] is returned
@@ -568,8 +568,8 @@ pub fn update_phase_with_estimate(
 /// Everything [`update_phase_with_estimate`] returns, plus — only when `status` is
 /// `Some(`[`PhaseStatus::Reviewed`]`)` and the gate is **enforcing** —
 /// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
-/// [`Error::GateStaleChangeReview`], [`Error::GateWorktreeDirty`],
-/// [`Error::GateWorktreeUnobservable`] and
+/// [`Error::GateStaleChangeReview`], [`Error::GateFollowUpChain`],
+/// [`Error::GateWorktreeDirty`], [`Error::GateWorktreeUnobservable`] and
 /// [`Error::GateOverrideEmptyReason`].
 ///
 /// Independently of that, [`Error::GateOverrideGateDisabled`] is returned

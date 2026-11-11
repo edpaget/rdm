@@ -1820,6 +1820,7 @@ mod tests {
                 body: Some("Summary."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -1991,6 +1992,7 @@ mod tests {
                 body: None,
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -2075,6 +2077,7 @@ mod tests {
                 body: None,
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();

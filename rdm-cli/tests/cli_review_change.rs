@@ -5256,3 +5256,352 @@ Summary.
     // Resolving a comment does not restore its anchor.
     assert_eq!(j["anchors_degraded"], 1);
 }
+
+// --- Follow-up reviews: `review start --on change/<head> --follows <id>` ---
+
+/// Commits one more change on the source checkout's current branch and
+/// returns the new HEAD.
+fn commit_follow_up_change(source: &Path) -> String {
+    std::fs::write(
+        source.join("src/lib.rs"),
+        "fn one() {}\nfn two_renamed() {}\nfn three() {}\nfn four() {}\n",
+    )
+    .unwrap();
+    git(source, &["add", "."]);
+    git(source, &["commit", "-m", "address the review"]);
+    git_out(source, &["rev-parse", "HEAD"])
+}
+
+/// A source checkout and plan repo with an approved `design-plan` and a full
+/// change review of the `topic` tip implementing it. Returns
+/// `(source, plan, full review id, the head it was recorded at)`.
+fn fixture_with_a_full_review() -> (TempDir, TempDir, String, String) {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let reviewed_head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let full = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "plan/design-plan"],
+    );
+    (src, plan, full, reviewed_head)
+}
+
+/// The ids of every review in the plan repo.
+fn review_ids(plan: &Path, cwd: &Path) -> Vec<String> {
+    rdm_json(plan, cwd, &["review", "list"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// AC1. A follow-up records the review it follows and takes that review's
+/// head as its base, and `review show --format json` reports both.
+#[test]
+fn a_follow_up_review_records_the_followed_review_and_its_head_as_the_base() {
+    let (src, plan, full, reviewed_head) = fixture_with_a_full_review();
+    let new_head = commit_follow_up_change(src.path());
+
+    // No `--implements`, and the cwd is not a registered worktree: without
+    // `--follows` this would be refused for want of a plan to infer.
+    let follow_up = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--follows", &full],
+    );
+    let j = review_json(plan.path(), src.path(), &follow_up);
+    assert_eq!(j["follows"], full.as_str());
+    assert_eq!(j["target"]["head"], new_head.as_str());
+    assert_eq!(j["target"]["base"], reviewed_head.as_str());
+    assert_eq!(
+        j["base_link"],
+        format!("rdm:src@{reviewed_head}"),
+        "the base is reported as the ordinary base link too"
+    );
+    assert_eq!(
+        j["implements"], "rdm:plan/design-plan",
+        "a follow-up inherits the followed review's plan"
+    );
+    assert_eq!(j["state"], "draft");
+    assert_eq!(j["change_branch"], "topic");
+
+    // The followed review is untouched and reports no `follows`.
+    let followed = review_json(plan.path(), src.path(), &full);
+    assert!(followed.get("follows").is_none(), "{followed}");
+    assert_eq!(followed["target"]["head"], reviewed_head.as_str());
+
+    // Text output names the followed review right after the base.
+    let (ok, stdout, stderr) = run_rdm(plan.path(), src.path(), &["review", "show", &follow_up]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains(&format!("Base: {reviewed_head}\nFollows: {full}\n")),
+        "{stdout}"
+    );
+}
+
+/// `review start --format json` reports `follows` through the shared
+/// serializer, and an explicit `--implements` naming the followed review's
+/// plan is accepted.
+#[test]
+fn a_follow_up_start_reports_follows_in_its_json_output() {
+    let (src, plan, full, reviewed_head) = fixture_with_a_full_review();
+    commit_follow_up_change(src.path());
+    let j = rdm_json(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--follows",
+            &full,
+            "--implements",
+            "rdm:plan/design-plan",
+            "--no-edit",
+        ],
+    );
+    assert_eq!(j["follows"], full.as_str());
+    assert_eq!(j["target"]["base"], reviewed_head.as_str());
+    assert_eq!(j["implements"], "rdm:plan/design-plan");
+}
+
+/// AC2. When the followed review's head is not an ancestor of the new head
+/// (here: the reviewed commit was amended away), the follow-up is refused,
+/// naming both heads, and no review is created.
+#[test]
+fn a_follow_up_is_refused_naming_both_heads_when_the_followed_head_is_not_an_ancestor() {
+    let (src, plan, full, reviewed_head) = fixture_with_a_full_review();
+    git(
+        src.path(),
+        &["commit", "--amend", "-m", "rename two, reworded"],
+    );
+    let amended_head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(amended_head, reviewed_head);
+    let before = review_ids(plan.path(), src.path());
+
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--follows",
+            &full,
+            "--no-edit",
+        ],
+    );
+    assert!(!ok, "a non-ancestor follow-up must be refused");
+    assert!(
+        stderr.contains(&reviewed_head[..12]),
+        "the followed review's head must be named: {stderr}"
+    );
+    assert!(
+        stderr.contains(&amended_head[..12]),
+        "the new head must be named: {stderr}"
+    );
+    assert!(
+        stderr.contains(&full),
+        "the followed review must be named: {stderr}"
+    );
+    assert!(
+        stderr.contains("without --follows"),
+        "the remedy is a full review: {stderr}"
+    );
+    assert_eq!(
+        review_ids(plan.path(), src.path()),
+        before,
+        "a refused follow-up must not create a review"
+    );
+}
+
+/// A follow-up whose head is the followed review's head covers no commits.
+#[test]
+fn a_follow_up_at_the_followed_reviews_own_head_is_refused_as_an_empty_range() {
+    let (src, plan, full, reviewed_head) = fixture_with_a_full_review();
+    let before = review_ids(plan.path(), src.path());
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--follows",
+            &full,
+            "--no-edit",
+        ],
+    );
+    assert!(!ok, "an empty follow-up range must be refused");
+    assert!(stderr.contains("would cover no commits"), "{stderr}");
+    assert!(
+        stderr.contains(&full) && stderr.contains(&reviewed_head[..12]),
+        "{stderr}"
+    );
+    assert_eq!(review_ids(plan.path(), src.path()), before);
+}
+
+/// The base of a follow-up is derived, so `--base` cannot accompany it.
+#[test]
+fn follows_cannot_be_combined_with_base() {
+    let (src, plan, full, reviewed_head) = fixture_with_a_full_review();
+    commit_follow_up_change(src.path());
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--follows",
+            &full,
+            "--base",
+            &reviewed_head,
+            "--no-edit",
+        ],
+    );
+    assert!(!ok);
+    assert!(
+        stderr.contains("--follows") && stderr.contains("--base"),
+        "the usage error must name both flags: {stderr}"
+    );
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+}
+
+#[test]
+fn follows_is_refused_on_every_non_change_target() {
+    let (src, plan, full, _) = fixture_with_a_full_review();
+    for on in [
+        "phase/auth/phase-1-design",
+        "roadmap/auth",
+        "plan/design-plan",
+    ] {
+        let (ok, _, stderr) = run_rdm(
+            plan.path(),
+            src.path(),
+            &[
+                "review",
+                "start",
+                "--on",
+                on,
+                "--follows",
+                &full,
+                "--no-edit",
+            ],
+        );
+        assert!(!ok, "`--on {on} --follows` must be refused");
+        assert!(
+            stderr.contains("--follows records which earlier *change* review"),
+            "for {on}: {stderr}"
+        );
+        assert!(stderr.contains(on), "the target must be named: {stderr}");
+        assert!(stderr.contains("change/<sha>"), "for {on}: {stderr}");
+    }
+}
+
+#[test]
+fn following_an_unknown_review_is_refused_naming_it() {
+    let (src, plan, _, _) = fixture_with_a_full_review();
+    commit_follow_up_change(src.path());
+    let before = review_ids(plan.path(), src.path());
+    for unknown in ["2026-01-01-0000-nope", "../escape"] {
+        let (ok, _, stderr) = run_rdm(
+            plan.path(),
+            src.path(),
+            &[
+                "review",
+                "start",
+                "--on",
+                "change/HEAD",
+                "--follows",
+                unknown,
+                "--no-edit",
+            ],
+        );
+        assert!(!ok, "following {unknown} must be refused");
+        assert!(
+            stderr.contains(&format!("review not found: {unknown}")),
+            "{stderr}"
+        );
+    }
+    assert_eq!(review_ids(plan.path(), src.path()), before);
+}
+
+#[test]
+fn following_a_review_that_is_not_a_change_review_is_refused() {
+    let (src, plan, _, _) = fixture_with_a_full_review();
+    commit_follow_up_change(src.path());
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "phase/auth/phase-1-design",
+            "--no-edit",
+        ],
+    );
+    assert!(ok, "{stderr}");
+    let document_review = stdout.split('\'').nth(1).unwrap().to_string();
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--follows",
+            &document_review,
+            "--no-edit",
+        ],
+    );
+    assert!(!ok);
+    assert!(
+        stderr.contains(&document_review) && stderr.contains("phase/auth/phase-1-design"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("not a change"), "{stderr}");
+}
+
+/// A follow-up inherits the followed review's plan; naming a different one
+/// is refused, naming both.
+#[test]
+fn a_follow_up_naming_a_different_plan_is_refused() {
+    let (src, plan, full, _) = fixture_with_a_full_review();
+    create_plan(plan.path(), "other-plan", true);
+    commit_follow_up_change(src.path());
+    let before = review_ids(plan.path(), src.path());
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--follows",
+            &full,
+            "--implements",
+            "plan/other-plan",
+            "--no-edit",
+        ],
+    );
+    assert!(!ok);
+    assert!(
+        stderr.contains("plan/other-plan") && stderr.contains("plan/design-plan"),
+        "both plans must be named: {stderr}"
+    );
+    assert!(stderr.contains(&full), "{stderr}");
+    assert_eq!(review_ids(plan.path(), src.path()), before);
+}

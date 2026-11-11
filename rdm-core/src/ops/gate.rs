@@ -14,9 +14,42 @@
 //! 1. **(a)** an `approved` implementation plan implements the item;
 //! 2. **(b)** an approving `change/` review's `implements` names that same
 //!    plan, and — whenever a checkout was observed at all, dirty or clean —
-//!    was recorded at that checkout's HEAD;
+//!    was recorded at that checkout's HEAD. When that review is a
+//!    **follow-up** (it carries `follows`), it approves only the commits
+//!    since the review it follows, so it counts only if its whole chain
+//!    holds — see [Follow-up chains](#follow-up-chains);
 //! 3. **(c)** the item's worktree, if [`rdm worktree`](crate::worktree) knows
 //!    one, is clean.
+//!
+//! # Follow-up chains
+//!
+//! A follow-up review at HEAD is accepted only after walking `follows` back
+//! to a review that follows nothing (the full review). Every followed link
+//! `L`, with `follower` being the review that names it, must hold all of:
+//!
+//! 1. `L` is not already part of the chain (no cycle);
+//! 2. `L` exists;
+//! 3. `L` reviews a change and implements the same plan as the chain's tip;
+//! 4. `L`'s verdict is `approve`;
+//! 5. `L` is `addressed` — which carries "every comment is terminal", since
+//!    core refuses to close a review as `addressed` over an open comment;
+//! 6. `follower`'s recorded base is `L`'s head, so the reviewed ranges meet
+//!    with no commit between them.
+//!
+//! The first violation is a
+//! [`Error::GateFollowUpChain`](crate::error::Error::GateFollowUpChain) naming
+//! the link, its [`FollowUpChainProblem`](crate::ops::gate::FollowUpChainProblem)
+//! and the tip. Only the followed links must be
+//! `addressed`; the tip keeps the ordinary rule (`approve`, and `submitted`
+//! or `addressed`). A review that follows nothing is judged exactly as it
+//! was before follow-ups existed.
+//!
+//! Ancestry between a follow-up's head and the head it follows is proven once,
+//! when the follow-up is started
+//! ([`crate::change::resolve_follow_up_target`]), not here: the gate has no
+//! source-repository access, and ancestry between two fixed commits cannot
+//! change afterwards. What a *record* can get wrong is continuity, which is
+//! invariant 6.
 //!
 //! `--override-gate` waives **(a) and (b) only** — cleanliness always applies,
 //! because a dirty worktree means the reviewed code is not the committed code
@@ -28,11 +61,191 @@
 //! The gate is opt-in behind the repo-only `gates.reviewed` config key and
 //! defaults to `false`. See `docs/core-enforced-gates.md`.
 
+use std::collections::HashSet;
+
 use crate::error::{Error, Result};
 use crate::link::ItemRef;
-use crate::model::GateOverride;
+use crate::model::{GateOverride, Review, ReviewState, ReviewTarget, Verdict};
 use crate::store::Store;
 use crate::worktree::WorktreeProbe;
+
+/// What is wrong with one link of a follow-up review's chain.
+///
+/// Carried by [`Error::GateFollowUpChain`] beside the id of the link it
+/// describes. See the [module documentation](self#follow-up-chains) for the
+/// invariants; each variant is the violation of one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FollowUpChainProblem {
+    /// The link is already part of the chain: the `follows` records form a
+    /// cycle and never reach a review that follows nothing.
+    Cycle,
+    /// No review with the link's id exists.
+    Missing {
+        /// Id of the review whose `follows` names the missing link.
+        follower: String,
+    },
+    /// The link does not review a change, or does not implement the plan the
+    /// chain's tip implements.
+    WrongPlan {
+        /// Slug of the plan the chain's tip implements.
+        expected: String,
+        /// Label of what the link reviews.
+        target: String,
+        /// Label of the plan the link implements, or `None` when it
+        /// implements none.
+        implements: Option<String>,
+    },
+    /// The link's verdict is not `approve`.
+    NotApproving {
+        /// The link's verdict, or `None` when it has none.
+        verdict: Option<Verdict>,
+    },
+    /// The link is not `addressed`.
+    NotAddressed {
+        /// The link's state.
+        state: ReviewState,
+    },
+    /// The review that follows the link does not start where the link
+    /// ended: its recorded base is not the link's head.
+    Discontinuous {
+        /// Id of the review whose `follows` names the link.
+        follower: String,
+        /// The base that review recorded, or `None` when it recorded none.
+        follower_base: Option<String>,
+        /// The head the link was recorded at.
+        link_head: String,
+    },
+}
+
+/// Walks the `follows` chain of the approving follow-up `tip` back to a
+/// review that follows nothing.
+///
+/// Returns `None` when every link holds, or the id of the first broken link
+/// with its problem. `plan` is the slug of the plan `tip` implements; every
+/// link must implement it too.
+///
+/// # Errors
+///
+/// Returns whatever [`crate::io::load_review`] reports for a link other than
+/// [`Error::ReviewNotFound`] (which is the "missing link" problem): a link
+/// that cannot be read never counts as a link that holds.
+fn follow_up_chain_failure(
+    store: &impl Store,
+    project: &str,
+    plan: &str,
+    tip_id: &str,
+    tip: &Review,
+) -> Result<Option<(String, FollowUpChainProblem)>> {
+    let wanted = ItemRef::Plan {
+        slug: plan.to_string(),
+    };
+    let mut seen: HashSet<String> = HashSet::from([tip_id.to_string()]);
+    let mut follower_id = tip_id.to_string();
+    let mut follower = tip.clone();
+    loop {
+        let Some(link_id) = follower.follows.clone() else {
+            // `follower` follows nothing: it is the full review the chain
+            // ends at.
+            return Ok(None);
+        };
+        let broken = |problem| Ok(Some((link_id.clone(), problem)));
+        // 1. No cycle. Checked before the load so a hand-written cycle
+        //    terminates.
+        if seen.contains(&link_id) {
+            return broken(FollowUpChainProblem::Cycle);
+        }
+        // 2. The link exists. An id that is not a single path component can
+        //    name no review file.
+        let missing = || FollowUpChainProblem::Missing {
+            follower: follower_id.clone(),
+        };
+        if !crate::paths::is_single_component(&link_id) {
+            return broken(missing());
+        }
+        let link = match crate::io::load_review(store, project, &link_id) {
+            Ok(doc) => doc.frontmatter,
+            Err(Error::ReviewNotFound(_)) => return broken(missing()),
+            Err(e) => return Err(e),
+        };
+        // 3. The link reviews a change and implements the tip's plan, so a
+        //    chain cannot borrow another item's full review.
+        let wrong_plan = || FollowUpChainProblem::WrongPlan {
+            expected: plan.to_string(),
+            target: link.target.label(),
+            implements: link.implements.as_ref().map(ItemRef::label),
+        };
+        let ReviewTarget::Change {
+            head: link_head, ..
+        } = &link.target
+        else {
+            return broken(wrong_plan());
+        };
+        if link.implements.as_ref() != Some(&wanted) {
+            return broken(wrong_plan());
+        }
+        // 4. The link approved.
+        if link.verdict != Some(Verdict::Approve) {
+            return broken(FollowUpChainProblem::NotApproving {
+                verdict: link.verdict,
+            });
+        }
+        // 5. The link is addressed: its comments were worked and it was
+        //    closed, not left open and not dismissed.
+        if link.state != ReviewState::Addressed {
+            return broken(FollowUpChainProblem::NotAddressed { state: link.state });
+        }
+        // 6. The follower starts where the link ended.
+        let follower_base = match &follower.target {
+            ReviewTarget::Change { base, .. } => base.clone(),
+            _ => None,
+        };
+        if follower_base.as_ref() != Some(link_head) {
+            return broken(FollowUpChainProblem::Discontinuous {
+                follower: follower_id.clone(),
+                follower_base,
+                link_head: link_head.clone(),
+            });
+        }
+        seen.insert(link_id.clone());
+        follower_id = link_id;
+        follower = link;
+    }
+}
+
+/// An approving candidate rejected only by the HEAD match.
+struct StaleCandidate {
+    /// The candidate's review id.
+    review_id: String,
+    /// The head it was recorded at.
+    head: String,
+    /// The review it follows, if it is a follow-up.
+    follows: Option<String>,
+}
+
+/// Picks the stale candidate a [`Error::GateStaleChangeReview`] names: the
+/// **chain tip**, the first candidate that no other candidate follows.
+///
+/// A full review and the follow-ups after it are all stale together once
+/// HEAD moves again, and the one worth naming — and worth following — is the
+/// latest of them, whatever order their ids sort in. `rejected` is in plan
+/// slug then review id order, so candidates that are tips of unrelated
+/// chains tie-break by that order, as does a set in which every candidate is
+/// followed (a hand-written cycle).
+fn stale_chain_tip(rejected: &[StaleCandidate]) -> Option<&StaleCandidate> {
+    let followed: HashSet<&str> = rejected
+        .iter()
+        .filter_map(|candidate| {
+            candidate
+                .follows
+                .as_deref()
+                .filter(|followed| *followed != candidate.review_id)
+        })
+        .collect();
+    rejected
+        .iter()
+        .find(|candidate| !followed.contains(candidate.review_id.as_str()))
+        .or_else(|| rejected.first())
+}
 
 /// An operator's request to bypass the gate's record preconditions.
 #[derive(Debug, Clone, Copy)]
@@ -131,7 +344,9 @@ pub enum GateDecision {
     Satisfied {
         /// Slug of the approved plan that satisfied (a).
         plan: String,
-        /// Id of the approving change review that satisfied (b).
+        /// Id of the approving change review that satisfied (b). For a
+        /// follow-up this is the follow-up itself (the chain's tip), not
+        /// the full review its chain ends at.
         review_id: String,
     },
     /// An operator bypassed (a) and (b); (c) still held.
@@ -169,7 +384,10 @@ pub enum GateDecision {
 ///   supplied, the probe errored, or rdm manages no worktree for the item.
 ///   Decoupling it from cleanliness moves only which refusal is reported,
 ///   never which writes are accepted — every observed-but-not-clean checkout
-///   already fails (c);
+///   already fails (c). When several approving reviews are stale, the one
+///   named is the **chain tip**: the first, by plan slug then review id,
+///   that no other stale candidate follows — so a follow-up is named in
+///   preference to the review it follows, whatever order their ids sort in;
 /// - [`Error::GateWorktreeDirty`] when the item's worktree has uncommitted
 ///   changes;
 /// - [`Error::GateWorktreeUnobservable`] when the worktree could not be
@@ -179,6 +397,16 @@ pub enum GateDecision {
 ///   condition in the `cause`. A probe `Err` short-circuits (b)'s HEAD
 ///   comparison — nothing was observed — so it can never surface as a stale
 ///   refusal;
+/// - [`Error::GateFollowUpChain`] when the only approving reviews that pass
+///   the HEAD match are follow-ups whose chain is broken (see the
+///   [module documentation](self#follow-up-chains)), naming the first such
+///   follow-up by plan slug then review id and the link its chain breaks
+///   at. It is reported in preference to [`Error::GateStaleChangeReview`],
+///   and it also fires when nothing was observed: a follow-up never
+///   satisfies (b) without its chain on any surface. An override waives it
+///   with the rest of (b);
+/// - anything [`crate::io::load_review`] returns for a chain link other than
+///   "not found" (a link that cannot be read fails closed);
 /// - anything [`crate::ops::plan::approved_plans_for`] or
 ///   [`crate::ops::plan::approving_change_reviews_for_plan`] returns.
 pub fn check_reviewed_gate(
@@ -241,20 +469,28 @@ pub fn check_reviewed_gate(
         // Approving candidates rejected *only* by the HEAD match, so a
         // failure can say "stale" instead of "absent". Deterministic:
         // `change_reviews_for_plan` yields id-sorted reviews and `approved`
-        // is slug-sorted, so the first entry is stable — no clock, no
-        // randomness.
-        let mut rejected: Vec<(String, String)> = Vec::new();
+        // is slug-sorted, so the order is stable — no clock, no randomness.
+        let mut rejected: Vec<StaleCandidate> = Vec::new();
+        // The first follow-up that passed the HEAD match but whose chain is
+        // broken: `(tip, link, problem)`. The search continues past it, so a
+        // full approve at HEAD still satisfies (b) beside a broken follow-up.
+        let mut chain_failure: Option<(String, String, FollowUpChainProblem)> = None;
         for (slug, _) in &approved {
             let reviews =
                 crate::ops::plan::approving_change_reviews_for_plan(store, project, slug)?;
             for (review_id, doc) in reviews {
-                let accepted = match &observed {
-                    Some(Ok(Some(check))) => match &doc.frontmatter.target {
-                        crate::model::ReviewTarget::Change { head, .. } => {
+                let review = &doc.frontmatter;
+                let at_head = match &observed {
+                    Some(Ok(Some(check))) => match &review.target {
+                        ReviewTarget::Change { head, .. } => {
                             if check.head.as_ref() == Some(head) {
                                 true
                             } else {
-                                rejected.push((review_id.clone(), head.clone()));
+                                rejected.push(StaleCandidate {
+                                    review_id: review_id.clone(),
+                                    head: head.clone(),
+                                    follows: review.follows.clone(),
+                                });
                                 false
                             }
                         }
@@ -264,21 +500,43 @@ pub fn check_reviewed_gate(
                     // nothing was observed, so nothing can be compared.
                     _ => true,
                 };
-                if accepted {
-                    hit = Some((slug.clone(), review_id));
-                    break;
+                if !at_head {
+                    continue;
                 }
+                // A follow-up approves only the commits since the review it
+                // follows, so it is accepted only through its chain. This
+                // runs whether or not a checkout was observed: a follow-up
+                // never satisfies (b) on its own on any surface.
+                if review.follows.is_some()
+                    && let Some((link, problem)) =
+                        follow_up_chain_failure(store, project, slug, &review_id, review)?
+                {
+                    chain_failure.get_or_insert((review_id, link, problem));
+                    continue;
+                }
+                hit = Some((slug.clone(), review_id));
+                break;
             }
             if hit.is_some() {
                 break;
             }
         }
         let Some((plan, review_id)) = hit else {
-            if let Some((review_id, reviewed_head)) = rejected.into_iter().next() {
+            // A chain failure outranks a stale review: it is about the
+            // review that IS at the observed HEAD.
+            if let Some((tip, link, problem)) = chain_failure {
+                return Err(Error::GateFollowUpChain {
+                    item: item.label(),
+                    tip,
+                    link,
+                    problem: Box::new(problem),
+                });
+            }
+            if let Some(stale) = stale_chain_tip(&rejected) {
                 return Err(Error::GateStaleChangeReview {
                     item: item.label(),
-                    review_id,
-                    reviewed_head,
+                    review_id: stale.review_id.clone(),
+                    reviewed_head: stale.head.clone(),
                     observed_head: match &observed {
                         Some(Ok(Some(check))) => check.head.clone(),
                         _ => None,

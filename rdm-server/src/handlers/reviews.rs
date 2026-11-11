@@ -80,7 +80,8 @@ fn target_link(project: &str, target: &ReviewTarget) -> HalLink {
 }
 
 /// Wraps a full review detail (metadata, summary, comments with resolution)
-/// as a HAL resource with `self`, `project`, and `target` links.
+/// as a HAL resource with `self`, `project`, and `target` links, plus a
+/// `follows` link to the followed review when the review is a follow-up.
 ///
 /// `reading` is the one per-review read from
 /// [`crate::source_repo::resolve_review_for_project`] — every endpoint that
@@ -93,7 +94,7 @@ fn review_resource(
     doc: &Document<Review>,
     reading: &ReviewResolution,
 ) -> HalResource<ReviewJson> {
-    HalResource::new(
+    let resource = HalResource::new(
         rdm_core::json::review_to_json(
             id,
             doc,
@@ -105,7 +106,14 @@ fn review_resource(
         format!("/projects/{project}/reviews/{id}"),
     )
     .with_link("project", HalLink::new(format!("/projects/{project}")))
-    .with_link("target", target_link(project, &doc.frontmatter.target))
+    .with_link("target", target_link(project, &doc.frontmatter.target));
+    match &doc.frontmatter.follows {
+        Some(followed) => resource.with_link(
+            "follows",
+            HalLink::new(format!("/projects/{project}/reviews/{followed}")),
+        ),
+        None => resource,
+    }
 }
 
 /// Empty data for the reviews collection wrapper.
@@ -285,6 +293,7 @@ pub async fn create_review(
                 body: req.summary.as_deref(),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
     })

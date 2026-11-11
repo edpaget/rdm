@@ -1214,6 +1214,9 @@ fn build_review_detail(
             {
                 items.push(meta_bullet("Base", base));
             }
+            if let Some(follows) = &fm.follows {
+                items.push(meta_bullet("Follows", follows));
+            }
             if let Some(branch) = &fm.change_branch {
                 items.push(meta_bullet("Branch", branch));
             }
@@ -1250,6 +1253,9 @@ fn build_review_detail(
             } = &fm.target
             {
                 d.paragraph(&format!("Base: {base}"));
+            }
+            if let Some(follows) = &fm.follows {
+                d.paragraph(&format!("Follows: {follows}"));
             }
             if let Some(branch) = &fm.change_branch {
                 d.paragraph(&format!("Branch: {branch}"));
@@ -2508,6 +2514,7 @@ mod tests {
                 ],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: "Overall summary.".to_string(),
         }
@@ -2705,6 +2712,7 @@ mod tests {
                     slug: "rename-fns".to_string(),
                 }),
                 change_branch: Some("topic".to_string()),
+                follows: None,
             },
             body: "Change summary.".to_string(),
         }
@@ -2747,6 +2755,34 @@ mod tests {
             output.contains(&format!("Source: rdm:src/src/lib.rs@{head}#L2-L3")),
             "{output}"
         );
+    }
+
+    #[test]
+    fn review_detail_renders_follows_after_base_only_on_a_follow_up() {
+        let mut doc = make_change_review_doc();
+        for output in [
+            format_review_detail("id", &doc, &make_change_resolutions(), &[], None),
+            format_review_detail_md("id", &doc, &make_change_resolutions(), &[], None),
+        ] {
+            assert!(!output.contains("Follows"), "{output}");
+        }
+
+        doc.frontmatter.follows = Some("2026-08-31-1700-f00d".to_string());
+        let terminal = format_review_detail("id", &doc, &make_change_resolutions(), &[], None);
+        assert!(
+            terminal.contains(&format!(
+                "Base: {}\nFollows: 2026-08-31-1700-f00d\nBranch: topic",
+                "b".repeat(40)
+            )),
+            "{terminal}"
+        );
+        let markdown = format_review_detail_md("id", &doc, &make_change_resolutions(), &[], None);
+        let base = markdown.find("**Base:**").expect("base bullet");
+        let follows = markdown
+            .find("**Follows:** 2026-08-31-1700-f00d")
+            .expect("follows bullet");
+        let branch = markdown.find("**Branch:**").expect("branch bullet");
+        assert!(base < follows && follows < branch, "{markdown}");
     }
 
     /// [`make_change_review_doc`] plus a comment about the reviewed phase's
@@ -3100,6 +3136,7 @@ mod tests {
                 comments: Vec::new(),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: String::new(),
         }

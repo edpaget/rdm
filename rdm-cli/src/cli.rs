@@ -1560,6 +1560,8 @@ pub(crate) enum ReviewCommand {
     /// checkout) the review targets the *code* instead: the revision is
     /// rev-parsed to a full SHA and pinned, and its base is recorded
     /// (`--base`, else the merge-base with the project's default branch).
+    /// With `--follows <review-id>` the change review is a follow-up of an
+    /// earlier one and covers only the commits since that review's head.
     Start {
         /// The item under review: `roadmap/<slug>`,
         /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
@@ -1578,6 +1580,13 @@ pub(crate) enum ReviewCommand {
         /// `approved` plan.
         #[arg(long)]
         implements: Option<String>,
+        /// For a `change/` review: the id of the earlier change review this
+        /// one follows. The new review covers the commits from that
+        /// review's head to `<head>`, so its base is that head (`--base`
+        /// cannot be combined with it) and it implements the same plan.
+        /// Refused when that head is not an ancestor of `<head>`.
+        #[arg(long, value_name = "REVIEW_ID", conflicts_with = "base")]
+        follows: Option<String>,
         /// Review author (defaults to $RDM_REVIEW_AUTHOR, then $USER).
         #[arg(long)]
         author: Option<String>,

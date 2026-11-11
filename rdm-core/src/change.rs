@@ -460,6 +460,91 @@ pub fn resolve_change_target(
     ))
 }
 
+/// Resolves the target of a **follow-up** `change/<rev>` review: one that
+/// follows the earlier change review `followed_id`, recorded at
+/// `followed_head`, and covers only the commits after it.
+///
+/// `rev` is rev-parsed to the full head exactly as
+/// [`resolve_change_target`] does. The base is never derived or chosen: it is
+/// `followed_head`, so the follow-up's range is `followed_head..head`. That
+/// range is only a range of *this* change when `followed_head` is an
+/// ancestor of the head, which is proven here, through
+/// [`SourceRepo::merge_base`]: the merge base of an ancestor and its
+/// descendant is the ancestor itself. No merge base at all (unrelated
+/// history, a shallow clone, a followed head this checkout does not contain)
+/// and any other commit both refuse.
+///
+/// This is the only place ancestry is checked. The `reviewed` gate has no
+/// source-repository access and re-checks only the recorded continuity (see
+/// [`crate::ops::gate`]), so a caller creating a follow-up must come through
+/// this function.
+///
+/// Also returns the checkout's current branch, as [`resolve_change_target`]
+/// does.
+///
+/// # Errors
+///
+/// Returns [`Error::ChangeRevisionNotFound`] when `rev` names no commit,
+/// [`Error::ChangeFollowUpEmptyRange`] when the head *is* `followed_head`
+/// (nothing was committed after the followed review, so its verdict already
+/// stands at that head), [`Error::ChangeFollowUpNotAncestor`] when
+/// `followed_head` is not an ancestor of the head,
+/// [`Error::InvalidStoredChangeRevision`] when the head or `followed_head`
+/// is not 40 lowercase ASCII hex characters,
+/// [`Error::InvalidChangeRevisionInput`] when the source adapter rejects an
+/// option-shaped operand, or whatever error the [`SourceRepo`] itself
+/// reports when it cannot be queried.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::change::resolve_follow_up_target;
+/// use rdm_core::model::ReviewTarget;
+/// use rdm_core::source::MemorySourceRepo;
+///
+/// let reviewed = "a".repeat(40);
+/// let head = "b".repeat(40);
+/// let source = MemorySourceRepo::new()
+///     .with_rev("HEAD", &head)
+///     .with_merge_base(&reviewed, &head, &reviewed);
+///
+/// let (target, _) =
+///     resolve_follow_up_target(&source, "HEAD", "2026-07-01-1430-a1b2", &reviewed).unwrap();
+/// assert_eq!(target, ReviewTarget::Change { head, base: Some(reviewed) });
+/// ```
+pub fn resolve_follow_up_target(
+    source: &impl SourceRepo,
+    rev: &str,
+    followed_id: &str,
+    followed_head: &str,
+) -> Result<(ReviewTarget, Option<String>)> {
+    let head = source
+        .rev_parse(rev)?
+        .ok_or_else(|| Error::ChangeRevisionNotFound(rev.to_string()))?;
+    ReviewTarget::validate_change_identity(&head, Some(followed_head))?;
+    if head == followed_head {
+        return Err(Error::ChangeFollowUpEmptyRange {
+            followed: followed_id.to_string(),
+            head,
+        });
+    }
+    if source.merge_base(followed_head, &head)?.as_deref() != Some(followed_head) {
+        return Err(Error::ChangeFollowUpNotAncestor {
+            followed: followed_id.to_string(),
+            followed_head: followed_head.to_string(),
+            head,
+        });
+    }
+    let branch = source.current_branch().ok().flatten();
+    Ok((
+        ReviewTarget::Change {
+            head,
+            base: Some(followed_head.to_string()),
+        },
+        branch,
+    ))
+}
+
 /// Derives a `change/` review comment's anchor from an optional
 /// `--path`/`--quote` pair.
 ///
@@ -1094,6 +1179,7 @@ pub(crate) fn ineligibility_note(
 ///     created_commit: None,
 ///     implements: None,
 ///     change_branch: None,
+///     follows: None,
 ///     comments: vec![ReviewComment {
 ///         anchor_state: None,
 ///         intended_path: None,
@@ -1405,6 +1491,7 @@ mod tests {
             created_commit: None,
             implements: None,
             change_branch: None,
+            follows: None,
             comments: vec![ReviewComment {
                 anchor_state: None,
                 intended_path: None,
@@ -2256,6 +2343,137 @@ mod tests {
             .with_rev("HEAD", &head)
             .with_merge_base(&head, "main", &base);
         assert!(resolve_change_target(&real, "HEAD", None, "main").is_ok());
+    }
+
+    // ---- resolve_follow_up_target ----------------------------------------
+
+    const FOLLOWED: &str = "2026-07-01-1430-a1b2";
+
+    /// A repository where `HEAD` (`b…`) descends from the followed review's
+    /// head (`a…`).
+    fn follow_up_repo() -> (String, String, MemorySourceRepo) {
+        let followed_head = "a".repeat(40);
+        let head = "b".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_rev("topic", &head)
+            .with_merge_base(&followed_head, &head, &followed_head)
+            .with_branch("roadmap/auth");
+        (followed_head, head, source)
+    }
+
+    #[test]
+    fn resolve_follow_up_target_uses_the_followed_head_as_the_base() {
+        let (followed_head, head, source) = follow_up_repo();
+        for rev in ["HEAD", "topic"] {
+            let (target, branch) =
+                resolve_follow_up_target(&source, rev, FOLLOWED, &followed_head).unwrap();
+            assert_eq!(
+                target,
+                ReviewTarget::Change {
+                    head: head.clone(),
+                    base: Some(followed_head.clone()),
+                }
+            );
+            assert_eq!(branch.as_deref(), Some("roadmap/auth"));
+        }
+    }
+
+    #[test]
+    fn resolve_follow_up_target_refuses_a_head_that_does_not_descend_from_the_followed_head() {
+        let followed_head = "a".repeat(40);
+        let head = "b".repeat(40);
+        let fork_point = "c".repeat(40);
+        // The two heads forked from a common commit: related, not ancestral.
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_merge_base(&followed_head, &head, &fork_point);
+        let err = resolve_follow_up_target(&source, "HEAD", FOLLOWED, &followed_head).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::ChangeFollowUpNotAncestor { followed, followed_head: f, head: h }
+                    if followed == FOLLOWED && *f == followed_head && *h == head
+            ),
+            "{err:?}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("aaaaaaaaaaaa") && text.contains("bbbbbbbbbbbb"),
+            "both heads must be named: {text}"
+        );
+        assert!(text.contains(FOLLOWED), "the followed review: {text}");
+        assert!(
+            text.contains("without --follows"),
+            "the remedy must be a full review: {text}"
+        );
+    }
+
+    #[test]
+    fn resolve_follow_up_target_refuses_when_the_new_head_is_behind_the_followed_head() {
+        // The reverse direction: the new head is an ANCESTOR of the followed
+        // head (the branch was reset back), so the merge base is the new head.
+        let followed_head = "a".repeat(40);
+        let head = "b".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_merge_base(&followed_head, &head, &head);
+        assert!(matches!(
+            resolve_follow_up_target(&source, "HEAD", FOLLOWED, &followed_head),
+            Err(Error::ChangeFollowUpNotAncestor { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_follow_up_target_refuses_when_there_is_no_merge_base() {
+        // Unrelated history, a shallow clone, or a followed head this
+        // checkout does not contain: ancestry is unproven, so it refuses.
+        let followed_head = "a".repeat(40);
+        let source = MemorySourceRepo::new().with_rev("HEAD", &"b".repeat(40));
+        assert!(matches!(
+            resolve_follow_up_target(&source, "HEAD", FOLLOWED, &followed_head),
+            Err(Error::ChangeFollowUpNotAncestor { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_follow_up_target_refuses_an_empty_follow_up_range() {
+        let followed_head = "a".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &followed_head)
+            .with_merge_base(&followed_head, &followed_head, &followed_head);
+        let err = resolve_follow_up_target(&source, "HEAD", FOLLOWED, &followed_head).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::ChangeFollowUpEmptyRange { followed, head }
+                    if followed == FOLLOWED && *head == followed_head
+            ),
+            "{err:?}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains(FOLLOWED) && text.contains("aaaaaaaaaaaa"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn resolve_follow_up_target_rejects_an_unknown_rev() {
+        let (followed_head, _, source) = follow_up_repo();
+        assert!(matches!(
+            resolve_follow_up_target(&source, "nope", FOLLOWED, &followed_head),
+            Err(Error::ChangeRevisionNotFound(rev)) if rev == "nope"
+        ));
+    }
+
+    #[test]
+    fn resolve_follow_up_target_rejects_a_malformed_followed_head() {
+        let (_, _, source) = follow_up_repo();
+        assert!(matches!(
+            resolve_follow_up_target(&source, "HEAD", FOLLOWED, "HEAD"),
+            Err(Error::InvalidStoredChangeRevision { field: "base", .. })
+        ));
     }
 
     // ---- derive_change_anchor --------------------------------------------

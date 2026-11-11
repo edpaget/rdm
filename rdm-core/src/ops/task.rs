@@ -288,8 +288,8 @@ pub fn update_task(
 /// Everything [`update_task`] returns, plus — only when `status` is
 /// `Some(`[`TaskStatus::Reviewed`]`)` and the gate is **enforcing** —
 /// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
-/// [`Error::GateStaleChangeReview`], [`Error::GateWorktreeDirty`],
-/// [`Error::GateWorktreeUnobservable`] and
+/// [`Error::GateStaleChangeReview`], [`Error::GateFollowUpChain`],
+/// [`Error::GateWorktreeDirty`], [`Error::GateWorktreeUnobservable`] and
 /// [`Error::GateOverrideEmptyReason`].
 ///
 /// Independently of that, [`Error::GateOverrideGateDisabled`] is returned

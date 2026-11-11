@@ -1467,6 +1467,7 @@ mod tests {
                 body: Some("Summary mentions zanzibar explicitly."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -1505,6 +1506,7 @@ mod tests {
                 created_commit: None,
                 implements: None,
                 change_branch: None,
+                follows: None,
                 comments: vec![crate::model::ReviewComment {
                     anchor_state: None,
                     intended_path: None,

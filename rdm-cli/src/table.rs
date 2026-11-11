@@ -364,6 +364,7 @@ mod tests {
                 ],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: String::new(),
         };

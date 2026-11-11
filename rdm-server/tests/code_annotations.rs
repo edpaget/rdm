@@ -243,6 +243,7 @@ fn seed_plan_repo(base: &str, head: &str) -> TempDir {
                     slug: PLAN.to_string(),
                 }),
                 change_branch: Some("topic".to_string()),
+                follows: None,
                 comments: vec![c1, c2, c3, c4],
             },
             body: "Four findings.\n".to_string(),

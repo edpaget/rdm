@@ -2063,6 +2063,21 @@ pub struct Review {
     /// one. A deleted or renamed branch degrades to the repo's current HEAD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_branch: Option<String>,
+    /// Id of the change review this one follows, making this review a
+    /// **follow-up**.
+    ///
+    /// Only meaningful on a [`ReviewTarget::Change`] review. A follow-up
+    /// covers the commits from the followed review's head to its own head
+    /// (`followed.head..head`), and its `target.base` is the followed
+    /// review's head. Written only at creation
+    /// ([`crate::ops::reviews::create_review`]) and never changed afterwards.
+    /// Absent on a review that follows nothing, so every pre-existing review
+    /// file still loads and re-serializes unchanged.
+    ///
+    /// The `reviewed` gate accepts an approving follow-up only through its
+    /// chain — see [`crate::ops::gate::check_reviewed_gate`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follows: Option<String>,
     /// The inline comments attached to this review.
     pub comments: Vec<ReviewComment>,
 }
@@ -2518,6 +2533,43 @@ comments: []
         let out = serde_yaml::to_string(&review).unwrap();
         assert!(!out.contains("implements"), "{out}");
         assert!(!out.contains("change_branch"), "{out}");
+    }
+
+    #[test]
+    fn a_review_without_follows_loads_and_reserializes_without_the_key() {
+        let yaml = "id: r1
+author: a
+target:
+  kind: change
+  head: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+state: draft
+created: 2026-07-01T00:00:00Z
+comments: []
+";
+        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        assert!(review.follows.is_none());
+        let out = serde_yaml::to_string(&review).unwrap();
+        assert!(!out.contains("follows"), "{out}");
+    }
+
+    #[test]
+    fn a_follow_up_review_round_trips_its_follows_id() {
+        let yaml = "id: r2
+author: a
+target:
+  kind: change
+  head: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  base: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+state: draft
+created: 2026-07-01T00:00:00Z
+follows: r1
+comments: []
+";
+        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(review.follows.as_deref(), Some("r1"));
+        let out = serde_yaml::to_string(&review).unwrap();
+        assert!(out.contains("follows: r1"), "{out}");
+        assert_eq!(serde_yaml::from_str::<Review>(&out).unwrap(), review);
     }
 
     #[test]

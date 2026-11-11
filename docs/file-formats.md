@@ -393,6 +393,32 @@ comments:
 | `base` | no | string | The revision the change is diffed against — `--base`, else the merge-base with the project's default branch. **Provenance, not identity**: the reference grammar is `change/<head>` only |
 | `change_branch` | no | string | Source-repo branch the change was on, used to pick the tip anchor drift is measured against. Absent on a detached HEAD |
 | `implements` | no | item ref | The `rdm:plan/<slug>` this change implements. Only meaningful on a `change` target; absent on every other kind, so every pre-existing review file still loads |
+| `follows` | no | string | Id of the earlier `change` review this one follows. Present only on a follow-up, written once by `rdm review start --follows <id>` |
+
+A **follow-up** review covers only the commits after the review it follows, so
+its `base` is that review's `head`:
+
+```yaml
+---
+id: 2026-07-01-1512-c3d4
+author: ed
+target:
+  kind: change
+  head: 5e7a3b9c5e7a3b9c5e7a3b9c5e7a3b9c5e7a3b9c
+  base: 1f0c9a4e1f0c9a4e1f0c9a4e1f0c9a4e1f0c9a4e   # the followed review's head
+change_branch: roadmap/auth
+implements: rdm:plan/impl-auth-v2                  # inherited from the followed review
+follows: 2026-07-01-1430-a1b2
+state: submitted
+verdict: approve
+created: 2026-07-01T15:12:00Z
+comments: []
+---
+```
+
+See [`change-reviews.md`](change-reviews.md#follow-up-reviews---follows) for
+the rules, and [`core-enforced-gates.md`](core-enforced-gates.md#follow-up-chains)
+for how the `reviewed` gate reads a chain of them.
 
 `head`, `base` and a comment's `applied_commit` stay raw SHAs on disk; rdm
 derives `rdm:src@<sha>` commit links from the source-repository ones on read

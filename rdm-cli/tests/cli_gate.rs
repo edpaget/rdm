@@ -2133,3 +2133,386 @@ fn review_source_base_follows_the_projects_default_branch() {
     let source: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(source["base"], develop_base);
 }
+
+// ---------------------------------------------------------------------------
+// Follow-up chains: an approving follow-up at HEAD counts only through the
+// reviews it follows (`rdm review start --follows`)
+// ---------------------------------------------------------------------------
+
+/// Runs `rdm --root <plan> <args> --project demo` from `cwd`, requiring
+/// success.
+fn rdm_ok(plan: &Path, cwd: &Path, args: &[&str]) {
+    rdm()
+        .arg("--root")
+        .arg(plan)
+        .args(args)
+        .args(["--project", "demo"])
+        .current_dir(cwd)
+        .assert()
+        .success();
+}
+
+/// Commits a new file in `wt` and returns the new HEAD.
+fn commit_in(wt: &Path, file: &str) -> String {
+    std::fs::write(wt.join(file), format!("// {file}\n")).unwrap();
+    git(wt, &["add", file]);
+    git(wt, &["commit", "-m", &format!("add {file}")]);
+    rev_parse(wt, "HEAD")
+}
+
+fn submit_with_verdict(plan: &Path, id: &str, verdict: &str) {
+    rdm()
+        .arg("--root")
+        .arg(plan)
+        .args([
+            "review",
+            "submit",
+            id,
+            "--verdict",
+            verdict,
+            "--body",
+            "Reviewed.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+}
+
+fn close_addressed(plan: &Path, cwd: &Path, id: &str) {
+    rdm_ok(plan, cwd, &["review", "update", id, "--state", "addressed"]);
+}
+
+/// Marks the `solo` task reviewed from `cwd`.
+fn mark_task_reviewed(plan: &Path, cwd: &Path) -> assert_cmd::assert::Assert {
+    let mut cmd = rdm();
+    cmd.arg("--root")
+        .arg(plan)
+        .args([
+            "task",
+            "update",
+            "solo",
+            "--status",
+            "reviewed",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(cwd);
+    cmd.assert()
+}
+
+/// Adds an rdm worktree for the `solo` task with one commit on its branch.
+fn add_task_worktree(plan: &Path, source: &Path) -> std::path::PathBuf {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan)
+        .args(["worktree", "add", "task/solo", "--project", "demo"])
+        .current_dir(source)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let path = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    std::fs::write(path.join("src/lib.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+    git(&path, &["add", "src/lib.rs"]);
+    git(&path, &["commit", "-m", "the task work under review"]);
+    path
+}
+
+/// The full review of the worktree's current HEAD implementing `plan_slug`,
+/// left as a draft.
+fn start_full_review(plan: &Path, wt: &Path, plan_slug: &str) -> String {
+    start_review(
+        plan,
+        Some(wt),
+        "change/HEAD",
+        &["--implements", &format!("plan/{plan_slug}")],
+    )
+}
+
+/// A follow-up of `followed` at the worktree's current HEAD, submitted
+/// `approve`.
+fn approve_follow_up(plan: &Path, wt: &Path, followed: &str) -> String {
+    let id = start_review(plan, Some(wt), "change/HEAD", &["--follows", followed]);
+    submit_approve(plan, &id);
+    id
+}
+
+/// AC3. An approving full review with one comment is addressed and closed, a
+/// triage commit moves HEAD, and an approving follow-up of just that commit
+/// lets the gated write through.
+#[test]
+fn a_follow_up_approve_over_an_addressed_full_review_lets_reviewed_through() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "design-plan", "phase/auth/phase-1-design");
+
+    let reviewed_head = rev_parse(&wt, "HEAD");
+    let full = start_full_review(plan.path(), &wt, "design-plan");
+    rdm_ok(
+        plan.path(),
+        &wt,
+        &[
+            "review",
+            "comment",
+            &full,
+            "--body",
+            "Name this helper.",
+            "--no-edit",
+        ],
+    );
+    submit_approve(plan.path(), &full);
+
+    // Triage: the fix is committed, the comment addressed, the review closed.
+    let triage_head = commit_in(&wt, "src/helper.rs");
+    rdm_ok(
+        plan.path(),
+        &wt,
+        &[
+            "review",
+            "update",
+            &full,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            "HEAD",
+            "--reply",
+            "Named.",
+        ],
+    );
+    close_addressed(plan.path(), &wt, &full);
+
+    // HEAD moved, so the full review alone is stale — and the refusal now
+    // offers the follow-up beside the full re-review.
+    let err = stderr_of(mark_reviewed(plan.path(), &wt, &[]).failure());
+    assert!(err.contains("was recorded at HEAD"), "{err}");
+    assert!(
+        err.contains(&format!(
+            "rdm review start --on change/HEAD --follows {full}"
+        )),
+        "the stale refusal must offer the follow-up: {err}"
+    );
+    assert!(
+        err.contains("--implements plan/<slug>"),
+        "the full re-review remedy must stay: {err}"
+    );
+
+    // AC1 from inside the roadmap worktree: the follow-up records the review
+    // it follows, starts at that review's head, and inherits its plan — a
+    // roadmap worktree has no single plan to infer one from.
+    let follow_up = approve_follow_up(plan.path(), &wt, &full);
+    let j = review_show_json(plan.path(), &wt, &follow_up);
+    assert_eq!(j["follows"], full.as_str());
+    assert_eq!(j["target"]["head"], triage_head.as_str());
+    assert_eq!(j["target"]["base"], reviewed_head.as_str());
+    assert_eq!(j["implements"], "rdm:plan/design-plan");
+
+    mark_reviewed(plan.path(), &wt, &[]).success();
+    assert_eq!(phase_json(plan.path())["status"], "reviewed");
+}
+
+/// AC4a. The same shape with the full review submitted `request-changes`
+/// (and closed `addressed`): the follow-up approve cannot stand in for it.
+#[test]
+fn a_follow_up_over_a_request_changes_review_is_refused_naming_that_review() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "design-plan", "phase/auth/phase-1-design");
+
+    let full = start_full_review(plan.path(), &wt, "design-plan");
+    submit_with_verdict(plan.path(), &full, "request-changes");
+    commit_in(&wt, "src/helper.rs");
+    close_addressed(plan.path(), &wt, &full);
+    let follow_up = approve_follow_up(plan.path(), &wt, &full);
+
+    let err = stderr_of(mark_reviewed(plan.path(), &wt, &[]).failure());
+    assert!(
+        err.contains(&full),
+        "the refusal must name the broken link: {err}"
+    );
+    assert!(
+        err.contains("request-changes"),
+        "the refusal must name that review's verdict: {err}"
+    );
+    assert!(
+        err.contains(&follow_up),
+        "the refusal must name the follow-up it walked from: {err}"
+    );
+    assert!(
+        err.contains("rdm review start --on change/HEAD"),
+        "the remedy is a full review: {err}"
+    );
+    assert!(
+        !err.contains("no approving change review"),
+        "an existing follow-up approve must not be reported as absent: {err}"
+    );
+    assert_eq!(
+        phase_json(plan.path())["status"],
+        "not-started",
+        "a refused write must leave the phase untouched"
+    );
+
+    // The override still waives the record checks, chain included.
+    mark_reviewed(
+        plan.path(),
+        &wt,
+        &["--override-gate", "operator: chain waived"],
+    )
+    .success();
+    assert_eq!(phase_json(plan.path())["status"], "reviewed");
+}
+
+/// AC4b. The full review approves but is left `submitted`: refused, naming
+/// it and the state it needs; closing it makes the identical write succeed.
+#[test]
+fn a_follow_up_over_an_unaddressed_review_is_refused_until_that_review_is_addressed() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "design-plan", "phase/auth/phase-1-design");
+
+    let full = start_full_review(plan.path(), &wt, "design-plan");
+    submit_approve(plan.path(), &full);
+    commit_in(&wt, "src/helper.rs");
+    approve_follow_up(plan.path(), &wt, &full);
+
+    let err = stderr_of(mark_reviewed(plan.path(), &wt, &[]).failure());
+    assert!(err.contains(&full), "the refusal must name the link: {err}");
+    assert!(
+        err.contains("`submitted`, not `addressed`"),
+        "the refusal must name the state it has and the one it needs: {err}"
+    );
+    assert!(
+        err.contains(&format!("rdm review update {full} --state addressed")),
+        "the remedy must be the command that closes the link: {err}"
+    );
+
+    close_addressed(plan.path(), &wt, &full);
+    mark_reviewed(plan.path(), &wt, &[]).success();
+    assert_eq!(phase_json(plan.path())["status"], "reviewed");
+}
+
+/// AC5. A task's chain gets the same two outcomes through
+/// `task update --status reviewed`, on a real task worktree.
+#[test]
+fn a_task_follow_up_chain_gets_the_same_two_outcomes() {
+    // Accepted: approving, addressed full review ← approving follow-up.
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_task_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "solo-plan", "task/solo");
+    let full = start_full_review(plan.path(), &wt, "solo-plan");
+    submit_approve(plan.path(), &full);
+    close_addressed(plan.path(), &wt, &full);
+    commit_in(&wt, "src/helper.rs");
+    approve_follow_up(plan.path(), &wt, &full);
+    mark_task_reviewed(plan.path(), &wt).success();
+    assert_eq!(task_json_for(plan.path(), "solo")["status"], "reviewed");
+
+    // Refused: the full review requested changes.
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_task_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "solo-plan", "task/solo");
+    let full = start_full_review(plan.path(), &wt, "solo-plan");
+    submit_with_verdict(plan.path(), &full, "request-changes");
+    close_addressed(plan.path(), &wt, &full);
+    commit_in(&wt, "src/helper.rs");
+    approve_follow_up(plan.path(), &wt, &full);
+    let err = stderr_of(mark_task_reviewed(plan.path(), &wt).failure());
+    assert!(err.contains("task/solo"), "{err}");
+    assert!(
+        err.contains(&full) && err.contains("request-changes"),
+        "the refusal must name the link and its verdict: {err}"
+    );
+    assert_eq!(task_json_for(plan.path(), "solo")["status"], "open");
+}
+
+/// A chain of three: the full review, a follow-up, and a follow-up of that.
+#[test]
+fn a_three_link_follow_up_chain_lets_reviewed_through() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "design-plan", "phase/auth/phase-1-design");
+
+    let full = start_full_review(plan.path(), &wt, "design-plan");
+    submit_approve(plan.path(), &full);
+    close_addressed(plan.path(), &wt, &full);
+
+    let second_head = commit_in(&wt, "src/second.rs");
+    let second = approve_follow_up(plan.path(), &wt, &full);
+    close_addressed(plan.path(), &wt, &second);
+
+    commit_in(&wt, "src/third.rs");
+    let third = approve_follow_up(plan.path(), &wt, &second);
+    let j = review_show_json(plan.path(), &wt, &third);
+    assert_eq!(j["follows"], second.as_str());
+    assert_eq!(j["target"]["base"], second_head.as_str());
+
+    mark_reviewed(plan.path(), &wt, &[]).success();
+    assert_eq!(phase_json(plan.path())["status"], "reviewed");
+}
+
+/// After a commit past the follow-up's head, both the full review and the
+/// follow-up are stale. The refusal is the stale one and names the
+/// follow-up — the chain tip — as does its `--follows` hint.
+#[test]
+fn a_commit_past_the_follow_up_is_a_stale_refusal_naming_the_follow_up() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "design-plan", "phase/auth/phase-1-design");
+
+    let full = start_full_review(plan.path(), &wt, "design-plan");
+    submit_approve(plan.path(), &full);
+    close_addressed(plan.path(), &wt, &full);
+    let follow_up_head = commit_in(&wt, "src/second.rs");
+    let follow_up = approve_follow_up(plan.path(), &wt, &full);
+    mark_reviewed(plan.path(), &wt, &[]).success();
+
+    // Back to needs-review, then one more commit.
+    rdm_ok(
+        plan.path(),
+        &wt,
+        &[
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "needs-review",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+        ],
+    );
+    let new_head = commit_in(&wt, "src/third.rs");
+
+    let err = stderr_of(mark_reviewed(plan.path(), &wt, &[]).failure());
+    assert!(err.contains("was recorded at HEAD"), "{err}");
+    assert!(
+        err.contains(&format!("the approving change review {follow_up} ")),
+        "the stale refusal must name the follow-up, not the review it follows: {err}"
+    );
+    assert!(
+        err.contains(&follow_up_head[..12]) && err.contains(&new_head[..12]),
+        "the follow-up's head and the checkout's head must be named: {err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "rdm review start --on change/HEAD --follows {follow_up}"
+        )),
+        "the follow-up hint must name the same review: {err}"
+    );
+    assert!(
+        !err.contains(&full),
+        "the followed review is not the one to act on: {err}"
+    );
+}

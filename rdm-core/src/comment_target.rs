@@ -172,6 +172,7 @@ enum Existence {
 ///     created_commit: None,
 ///     implements: None,
 ///     change_branch: None,
+///     follows: None,
 ///     comments: vec![comment.clone()],
 /// };
 /// let source = MemorySourceRepo::new().with_file(&head, "src/lib.rs", "fn main() {}\n");
@@ -344,6 +345,7 @@ mod tests {
             created_commit: None,
             implements: None,
             change_branch: None,
+            follows: None,
             comments: vec![],
         }
     }

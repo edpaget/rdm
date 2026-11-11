@@ -1015,6 +1015,7 @@ mod tests {
                 body: None,
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();

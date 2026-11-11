@@ -232,9 +232,70 @@ pub struct CreateReview<'a> {
     /// checkout had one. Stamped by the caller; used only to pick the tip
     /// drift is measured against.
     pub change_branch: Option<String>,
+    /// Id of the earlier change review this review follows, making it a
+    /// follow-up that covers only the commits after that review's head.
+    ///
+    /// Only accepted on a [`ReviewTarget::Change`] review, and only when the
+    /// named review exists and itself reviews a change. [`create_review`]
+    /// then stamps the new review's base from the followed review's head —
+    /// whatever base `target` carries is overwritten — and inherits its
+    /// `implements`.
+    ///
+    /// [`create_review`] has no source-repository access, so it cannot prove
+    /// that the followed head is an ancestor of this review's head. A caller
+    /// setting this field must have resolved `target` through
+    /// [`crate::change::resolve_follow_up_target`], which does.
+    pub follows: Option<&'a str>,
+}
+
+/// Loads the review a follow-up names in `follows`, returning its
+/// frontmatter and the head it was recorded at.
+fn load_followed_review(
+    store: &impl Store,
+    project: &str,
+    followed_id: &str,
+) -> Result<(Review, String)> {
+    // An id that is not a single path component can name no review file.
+    if !crate::paths::is_single_component(followed_id) {
+        return Err(Error::ReviewNotFound(followed_id.to_string()));
+    }
+    let followed = crate::io::load_review(store, project, followed_id)?.frontmatter;
+    let ReviewTarget::Change { head, .. } = &followed.target else {
+        return Err(Error::ReviewFollowsNotAChange {
+            followed: followed_id.to_string(),
+            target: followed.target.label(),
+        });
+    };
+    let head = head.clone();
+    Ok((followed, head))
+}
+
+/// The head the change review `followed_id` was recorded at — the base of
+/// any review that follows it.
+///
+/// A caller starting a follow-up hands this to
+/// [`crate::change::resolve_follow_up_target`].
+///
+/// # Errors
+///
+/// Returns [`Error::ReviewNotFound`] if no such review exists,
+/// [`Error::ReviewFollowsNotAChange`] if it does not review a change, or
+/// whatever [`get_review`] returns for a review file that cannot be read.
+pub fn followed_review_head(
+    store: &impl Store,
+    project: &str,
+    followed_id: &str,
+) -> Result<String> {
+    load_followed_review(store, project, followed_id).map(|(_, head)| head)
 }
 
 /// Creates a new draft review of an existing plan item.
+///
+/// With [`CreateReview::follows`] set the review is a **follow-up** of an
+/// earlier change review: its base is that review's head and it implements
+/// the same plan. Only structure is judged here — the followed review's
+/// verdict and state are recorded as they are and judged later, by the
+/// `reviewed` gate ([`crate::ops::gate::check_reviewed_gate`]).
 ///
 /// The review id is generated from the current UTC time plus a short
 /// collision-resistant suffix (e.g. `2026-07-01-1430-a1b2`) and is unique
@@ -255,6 +316,11 @@ pub struct CreateReview<'a> {
 /// anything but a change review, [`Error::ReviewImplementsInvalidKind`] if
 /// it names something other than `plan/<slug>`,
 /// [`Error::ReviewImplementsMissing`] if that plan doesn't exist,
+/// [`Error::ReviewFollowsNotApplicable`] if `follows` is set on anything but
+/// a change review, [`Error::ReviewNotFound`] if the followed review doesn't
+/// exist, [`Error::ReviewFollowsNotAChange`] if it does not review a change,
+/// [`Error::ReviewFollowsImplementsMismatch`] if `implements` is set and
+/// differs from what the followed review implements,
 /// [`Error::ReviewIdExhausted`] if repeated id-generation attempts all
 /// collided, [`Error::Git`] if the store's git state cannot be read (a
 /// `head_sha` failure other than an unborn HEAD), [`Error::Io`] if file
@@ -271,6 +337,7 @@ pub fn create_review(
         body,
         implements,
         change_branch,
+        follows,
     } = req;
     target.validate_stored_identity()?;
     if !store.exists(&crate::paths::project_md_path(project)) {
@@ -288,6 +355,34 @@ pub fn create_review(
             return Err(Error::ReviewImplementsMissing(slug.clone()));
         }
     }
+    // A follow-up's base and plan are not the caller's to choose: both come
+    // from the review it follows, so no caller can record a follow-up that
+    // starts anywhere else or approves on behalf of another plan.
+    let (target, implements) = match follows {
+        None => (target, implements),
+        Some(followed_id) => {
+            let ReviewTarget::Change { head, .. } = target else {
+                return Err(Error::ReviewFollowsNotApplicable(target.label()));
+            };
+            let (followed, followed_head) = load_followed_review(store, project, followed_id)?;
+            if let Some(given) = &implements
+                && followed.implements.as_ref() != Some(given)
+            {
+                return Err(Error::ReviewFollowsImplementsMismatch {
+                    followed: followed_id.to_string(),
+                    given: given.label(),
+                    recorded: followed.implements.as_ref().map(ReviewTarget::label),
+                });
+            }
+            (
+                ReviewTarget::Change {
+                    head,
+                    base: Some(followed_head),
+                },
+                followed.implements,
+            )
+        }
+    };
 
     let created_commit = match store.head_sha() {
         Ok(sha) => Some(sha),
@@ -309,6 +404,7 @@ pub fn create_review(
             created_commit,
             implements,
             change_branch,
+            follows: follows.map(str::to_string),
             comments: Vec::new(),
         },
         body: body.unwrap_or_default().to_string(),
@@ -1631,6 +1727,7 @@ pub struct ReviewResolution {
 ///     created_commit: None,
 ///     implements: None,
 ///     change_branch: None,
+///     follows: None,
 ///     comments: vec![comment],
 /// };
 ///
@@ -1722,6 +1819,7 @@ mod tests {
                 comments: vec![],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: "Review summary.".to_string(),
         }
@@ -1956,6 +2054,7 @@ mod tests {
             created_commit: None,
             implements: None,
             change_branch: None,
+            follows: None,
             comments: vec![],
         }
     }
@@ -2433,6 +2532,7 @@ mod tests {
                 body: Some("first draft"),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -2461,6 +2561,7 @@ mod tests {
                 body: Some("existing summary"),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -2492,6 +2593,7 @@ mod tests {
                 body: Some("summary"),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -2546,6 +2648,7 @@ mod tests {
                 body: Some("Looks reasonable."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -2587,6 +2690,7 @@ mod tests {
                     body: Some("Looks reasonable."),
                     implements: None,
                     change_branch: None,
+                    follows: None,
                 },
             )
             .unwrap();
@@ -2670,6 +2774,7 @@ mod tests {
                 body: Some("Looks reasonable."),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -2696,6 +2801,7 @@ mod tests {
                 body: Some("summary"),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap_err();
@@ -2720,6 +2826,7 @@ mod tests {
                 body: Some("summary"),
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap();
@@ -3046,6 +3153,7 @@ mod tests {
                             body: None,
                             implements: None,
                             change_branch: None,
+                            follows: None,
                         },
                     )
                     .unwrap_err(),
@@ -3118,7 +3226,7 @@ mod tests {
         ] {
             assert!(matches!(create_review(&mut NoPlanAccess, CreateReview {
                 project: "test", author: "test", target: ReviewTarget::Change { head, base },
-                body: None, implements: None, change_branch: None,
+                body: None, implements: None, change_branch: None, follows: None,
             }), Err(Error::InvalidStoredChangeRevision { field: f, .. }) if f == field));
         }
     }
@@ -4209,6 +4317,7 @@ mod resolve_review_tests {
             created_commit: None,
             implements: None,
             change_branch: None,
+            follows: None,
             comments,
         }
     }

@@ -319,6 +319,7 @@ pub fn run(
             on,
             base,
             implements,
+            follows,
             author,
             project,
             body,
@@ -341,23 +342,39 @@ pub fn run(
                         rdm_core::error::Error::ReviewImplementsNotApplicable(parsed.label()),
                     ));
                 }
+                if follows.is_some() {
+                    return Err(anyhow::Error::new(
+                        rdm_core::error::Error::ReviewFollowsNotApplicable(parsed.label()),
+                    ));
+                }
             }
-            let (target, change_branch) = if is_change {
-                resolve_change_target(
+            let (target, change_branch) = match (is_change, follows.as_deref()) {
+                (false, _) => (parsed, None),
+                // A follow-up's base is the followed review's head, never
+                // `--base` (clap rejects the pair) and never a merge base.
+                (true, Some(followed_id)) => {
+                    resolve_follow_up_target(store, &project, &parsed, followed_id)?
+                }
+                (true, None) => resolve_change_target(
                     store,
                     &project,
                     raw_repo_config,
                     global_config,
                     &parsed,
                     base.as_deref(),
-                )?
-            } else {
-                (parsed, None)
+                )?,
             };
-            let implements_ref = if is_change {
-                resolve_implements(store, &project, implements.as_deref())?
-            } else {
-                None
+            let implements_ref = match (is_change, follows.is_some()) {
+                (false, _) => None,
+                // A follow-up inherits the followed review's plan, so nothing
+                // is inferred from the worktree: an explicit value is passed
+                // through for core to compare, and an omitted one stays
+                // omitted.
+                (true, true) => implements
+                    .as_deref()
+                    .map(rdm_core::ops::plan::parse_implements_reference)
+                    .transpose()?,
+                (true, false) => resolve_implements(store, &project, implements.as_deref())?,
             };
             let doc = commit_mutation(store, "failed to start review", |s| {
                 rdm_core::ops::reviews::create_review(
@@ -369,6 +386,7 @@ pub fn run(
                         body: body.as_deref(),
                         implements: implements_ref.clone(),
                         change_branch: change_branch.clone(),
+                        follows: follows.as_deref(),
                     },
                 )
             })?;
@@ -843,6 +861,40 @@ fn resolve_change_target(
             rev,
             base,
             &default_branch,
+        )?)
+    }
+}
+
+/// Resolves the target of a follow-up `change/<rev>` review: loads the
+/// followed review's head through core, discovers the source checkout, and
+/// hands both to [`rdm_core::change::resolve_follow_up_target`], which owns
+/// the ancestry and empty-range rules.
+fn resolve_follow_up_target(
+    store: &AppStore,
+    project: &str,
+    parsed: &ReviewTarget,
+    followed_id: &str,
+) -> Result<(ReviewTarget, Option<String>)> {
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = (store, project, parsed, followed_id);
+        bail!("this build has no git support — `change/` reviews require the `git` feature");
+    }
+    #[cfg(feature = "git")]
+    {
+        let ReviewTarget::Change { head: rev, .. } = parsed else {
+            bail!("internal: resolve_follow_up_target called on a non-change target");
+        };
+        // Before source discovery, so an unknown id is reported as such
+        // wherever the command runs.
+        let followed_head =
+            rdm_core::ops::reviews::followed_review_head(store, project, followed_id)?;
+        let source = crate::source_repo::discover_source_repo(store, project)?;
+        Ok(rdm_core::change::resolve_follow_up_target(
+            &source,
+            rev,
+            followed_id,
+            &followed_head,
         )?)
     }
 }

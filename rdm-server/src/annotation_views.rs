@@ -425,6 +425,7 @@ mod tests {
                         slug: "p".to_string(),
                     }),
                     change_branch: None,
+                    follows: None,
                     comments: vec![
                         comment(
                             1,

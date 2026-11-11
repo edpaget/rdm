@@ -491,6 +491,7 @@ Still loads.
                 ],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: "Overall summary.\n".to_string(),
         };
@@ -531,6 +532,7 @@ Still loads.
                 comments: vec![],
                 implements: None,
                 change_branch: None,
+                follows: None,
             },
             body: String::new(),
         };

@@ -120,6 +120,64 @@ pub enum Error {
         /// read.
         observed_head: Option<String>,
     },
+    /// The `reviewed` transition gate refused: an approving `change/` review
+    /// implementing the item's plan passed the HEAD match, but it is a
+    /// follow-up (it carries `follows`) and its chain back to a review that
+    /// follows nothing is broken. A follow-up approves only the commits
+    /// since the review it follows, so it stands in for a full approval only
+    /// when every link behind it holds.
+    GateFollowUpChain {
+        /// Label of the item being transitioned.
+        item: String,
+        /// Id of the approving follow-up review the chain was walked from.
+        tip: String,
+        /// Id of the link the chain is broken at.
+        link: String,
+        /// What is wrong with that link. Boxed so this variant does not
+        /// widen every [`Result`] in the crate.
+        problem: Box<crate::ops::gate::FollowUpChainProblem>,
+    },
+    /// `--follows` was given on a review whose target is not a
+    /// `change/<sha>`; the payload is the target's label.
+    ReviewFollowsNotApplicable(String),
+    /// `--follows` named a review that does not review a change, so there is
+    /// no head for a follow-up to start from.
+    ReviewFollowsNotAChange {
+        /// Id of the review that was to be followed.
+        followed: String,
+        /// Label of what that review targets.
+        target: String,
+    },
+    /// A follow-up review was given an `--implements` that differs from the
+    /// plan the followed review implements. A follow-up inherits that plan.
+    ReviewFollowsImplementsMismatch {
+        /// Id of the review that was to be followed.
+        followed: String,
+        /// The plan the caller passed, as a `plan/<slug>` label.
+        given: String,
+        /// The plan the followed review implements, as a `plan/<slug>`
+        /// label, or `None` when it implements none.
+        recorded: Option<String>,
+    },
+    /// A follow-up review's head does not descend from the head of the
+    /// review it would follow, so "the commits since that review" is not a
+    /// range of this change.
+    ChangeFollowUpNotAncestor {
+        /// Id of the review that was to be followed.
+        followed: String,
+        /// The head that review was recorded at, as a full SHA.
+        followed_head: String,
+        /// The head the follow-up would review, as a full SHA.
+        head: String,
+    },
+    /// A follow-up review's head is the head of the review it would follow,
+    /// so the follow-up range holds no commits.
+    ChangeFollowUpEmptyRange {
+        /// Id of the review that was to be followed.
+        followed: String,
+        /// The shared head, as a full SHA.
+        head: String,
+    },
     /// `--override-gate` was passed an empty or whitespace-only reason.
     GateOverrideEmptyReason,
     /// `--override-gate` was passed while the `reviewed` transition gate is
@@ -653,6 +711,16 @@ pub enum Error {
     },
 }
 
+/// The first 12 characters of `rev`, the abbreviation every operator-facing
+/// message uses for a commit SHA.
+fn short_rev(rev: &str) -> String {
+    let mut at = rev.len().min(12);
+    while at > 0 && !rev.is_char_boundary(at) {
+        at -= 1;
+    }
+    rev[..at].to_string()
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -827,21 +895,17 @@ impl std::fmt::Display for Error {
                 reviewed_head,
                 observed_head,
             } => {
-                let short = |rev: &str| {
-                    let mut at = rev.len().min(12);
-                    while at > 0 && !rev.is_char_boundary(at) {
-                        at -= 1;
-                    }
-                    rev[..at].to_string()
-                };
+                let short = short_rev;
                 match observed_head {
                     Some(observed) => write!(
                         f,
                         "refusing to mark {item} reviewed: the approving change review {review_id} \
                          was recorded at HEAD {} but the checkout is at HEAD {} — re-review the \
                          current HEAD with `rdm review start --on change/HEAD --implements \
-                         plan/<slug>` then `rdm review submit <id> --verdict approve` (or bypass \
-                         the record checks with `--override-gate \"<reason>\"`)",
+                         plan/<slug>` then `rdm review submit <id> --verdict approve`, or review \
+                         only the commits since that review with `rdm review start --on \
+                         change/HEAD --follows {review_id}` once that review is `addressed` (or \
+                         bypass the record checks with `--override-gate \"<reason>\"`)",
                         short(reviewed_head),
                         short(observed),
                     ),
@@ -851,11 +915,119 @@ impl std::fmt::Display for Error {
                          was recorded at HEAD {}, but the checkout's own HEAD could not be \
                          observed, so no approval can be matched to it — re-review the current \
                          HEAD with `rdm review start --on change/HEAD --implements plan/<slug>` \
-                         then `rdm review submit <id> --verdict approve` (or bypass the record \
-                         checks with `--override-gate \"<reason>\"`)",
+                         then `rdm review submit <id> --verdict approve`, or review only the \
+                         commits since that review with `rdm review start --on change/HEAD \
+                         --follows {review_id}` once that review is `addressed` (or bypass the \
+                         record checks with `--override-gate \"<reason>\"`)",
                         short(reviewed_head),
                     ),
                 }
+            }
+            Error::GateFollowUpChain {
+                item,
+                tip,
+                link,
+                problem,
+            } => {
+                use crate::ops::gate::FollowUpChainProblem as Problem;
+                let what = match problem.as_ref() {
+                    Problem::Cycle => {
+                        "it is already part of the chain, so the `follows` records form a cycle"
+                            .to_string()
+                    }
+                    Problem::Missing { follower } => {
+                        format!("review {follower} follows it, but no such review exists")
+                    }
+                    Problem::WrongPlan {
+                        expected,
+                        target,
+                        implements,
+                    } => format!(
+                        "it is not a change review implementing plan/{expected} (it reviews \
+                         {target} and implements {})",
+                        implements.as_deref().unwrap_or("no plan"),
+                    ),
+                    Problem::NotApproving { verdict } => match verdict {
+                        Some(verdict) => format!("its verdict is `{verdict}`, not `approve`"),
+                        None => "it has no verdict, not `approve`".to_string(),
+                    },
+                    Problem::NotAddressed { state } => {
+                        format!("it is `{state}`, not `addressed`")
+                    }
+                    Problem::Discontinuous {
+                        follower,
+                        follower_base,
+                        link_head,
+                    } => format!(
+                        "review {follower} follows it from {}, but it was recorded at HEAD {}",
+                        match follower_base {
+                            Some(base) => format!("base {}", short_rev(base)),
+                            None => "no recorded base".to_string(),
+                        },
+                        short_rev(link_head),
+                    ),
+                };
+                let full_review = "run a full review of the current HEAD with `rdm review start \
+                                   --on change/HEAD --implements plan/<slug>` (without \
+                                   `--follows`) then `rdm review submit <id> --verdict approve`";
+                let remedy = match problem.as_ref() {
+                    Problem::NotAddressed {
+                        state: ReviewState::Submitted,
+                    } => format!(
+                        "resolve its comments and close it with `rdm review update {link} \
+                         --state addressed`, then retry, or {full_review}"
+                    ),
+                    _ => full_review.to_string(),
+                };
+                write!(
+                    f,
+                    "refusing to mark {item} reviewed: the approving change review {tip} is a \
+                     follow-up, and its chain back to a full review is broken at review {link}: \
+                     {what} — {remedy} (or bypass the record checks with `--override-gate \
+                     \"<reason>\"`)"
+                )
+            }
+            Error::ReviewFollowsNotApplicable(label) => {
+                write!(
+                    f,
+                    "--follows records which earlier *change* review a change review follows, so it does not apply to a review of '{label}' — start the review with --on change/<sha> to use it"
+                )
+            }
+            Error::ReviewFollowsNotAChange { followed, target } => {
+                write!(
+                    f,
+                    "review {followed} reviews '{target}', not a change, so it cannot be followed — pass --follows the id of a `change/` review, or start a full review without --follows"
+                )
+            }
+            Error::ReviewFollowsImplementsMismatch {
+                followed,
+                given,
+                recorded,
+            } => {
+                write!(
+                    f,
+                    "--implements {given} differs from what review {followed} implements ({}) — a follow-up inherits the followed review's plan, so drop --implements, or start a full review without --follows",
+                    recorded.as_deref().unwrap_or("no plan"),
+                )
+            }
+            Error::ChangeFollowUpNotAncestor {
+                followed,
+                followed_head,
+                head,
+            } => {
+                write!(
+                    f,
+                    "review {followed} was recorded at HEAD {}, which is not an ancestor of {} — a follow-up covers only the commits after the review it follows, so start a full review without --follows",
+                    short_rev(followed_head),
+                    short_rev(head),
+                )
+            }
+            Error::ChangeFollowUpEmptyRange { followed, head } => {
+                write!(
+                    f,
+                    "a follow-up of review {followed} at {} would cover no commits — that review was recorded at this same HEAD, so its verdict already stands there; commit the follow-up changes first, or drop --follows",
+                    short_rev(head),
+                )
             }
             Error::GateOverrideGateDisabled => {
                 write!(
@@ -1531,6 +1703,16 @@ mod tests {
     /// at once rather than per message.
     #[test]
     fn operator_facing_gate_and_review_source_messages_render_without_space_runs() {
+        use crate::ops::gate::FollowUpChainProblem as Problem;
+        let follow_up_chain = |problem: Problem| {
+            Error::GateFollowUpChain {
+                item: "task/fix-bug".to_string(),
+                tip: "r3".to_string(),
+                link: "r1".to_string(),
+                problem: Box::new(problem),
+            }
+            .to_string()
+        };
         let rendered: Vec<(&str, String)> = vec![
             (
                 "GateNoApprovedPlan",
@@ -1578,6 +1760,114 @@ mod tests {
                     review_id: "r1".to_string(),
                     reviewed_head: "a".repeat(40),
                     observed_head: None,
+                }
+                .to_string(),
+            ),
+            ("GateFollowUpChain (cycle)", follow_up_chain(Problem::Cycle)),
+            (
+                "GateFollowUpChain (missing)",
+                follow_up_chain(Problem::Missing {
+                    follower: "r2".to_string(),
+                }),
+            ),
+            (
+                "GateFollowUpChain (wrong plan)",
+                follow_up_chain(Problem::WrongPlan {
+                    expected: "fix-bug".to_string(),
+                    target: format!("change/{}", "a".repeat(40)),
+                    implements: Some("plan/other".to_string()),
+                }),
+            ),
+            (
+                "GateFollowUpChain (no plan)",
+                follow_up_chain(Problem::WrongPlan {
+                    expected: "fix-bug".to_string(),
+                    target: "task/fix-bug".to_string(),
+                    implements: None,
+                }),
+            ),
+            (
+                "GateFollowUpChain (verdict)",
+                follow_up_chain(Problem::NotApproving {
+                    verdict: Some(crate::model::Verdict::RequestChanges),
+                }),
+            ),
+            (
+                "GateFollowUpChain (no verdict)",
+                follow_up_chain(Problem::NotApproving { verdict: None }),
+            ),
+            (
+                "GateFollowUpChain (submitted)",
+                follow_up_chain(Problem::NotAddressed {
+                    state: crate::model::ReviewState::Submitted,
+                }),
+            ),
+            (
+                "GateFollowUpChain (dismissed)",
+                follow_up_chain(Problem::NotAddressed {
+                    state: crate::model::ReviewState::Dismissed,
+                }),
+            ),
+            (
+                "GateFollowUpChain (discontinuous)",
+                follow_up_chain(Problem::Discontinuous {
+                    follower: "r2".to_string(),
+                    follower_base: Some("c".repeat(40)),
+                    link_head: "a".repeat(40),
+                }),
+            ),
+            (
+                "GateFollowUpChain (no base)",
+                follow_up_chain(Problem::Discontinuous {
+                    follower: "r2".to_string(),
+                    follower_base: None,
+                    link_head: "a".repeat(40),
+                }),
+            ),
+            (
+                "ReviewFollowsNotApplicable",
+                Error::ReviewFollowsNotApplicable("task/fix-bug".to_string()).to_string(),
+            ),
+            (
+                "ReviewFollowsNotAChange",
+                Error::ReviewFollowsNotAChange {
+                    followed: "r1".to_string(),
+                    target: "task/fix-bug".to_string(),
+                }
+                .to_string(),
+            ),
+            (
+                "ReviewFollowsImplementsMismatch",
+                Error::ReviewFollowsImplementsMismatch {
+                    followed: "r1".to_string(),
+                    given: "plan/other".to_string(),
+                    recorded: Some("plan/fix-bug".to_string()),
+                }
+                .to_string(),
+            ),
+            (
+                "ReviewFollowsImplementsMismatch (followed implements none)",
+                Error::ReviewFollowsImplementsMismatch {
+                    followed: "r1".to_string(),
+                    given: "plan/other".to_string(),
+                    recorded: None,
+                }
+                .to_string(),
+            ),
+            (
+                "ChangeFollowUpNotAncestor",
+                Error::ChangeFollowUpNotAncestor {
+                    followed: "r1".to_string(),
+                    followed_head: "a".repeat(40),
+                    head: "b".repeat(40),
+                }
+                .to_string(),
+            ),
+            (
+                "ChangeFollowUpEmptyRange",
+                Error::ChangeFollowUpEmptyRange {
+                    followed: "r1".to_string(),
+                    head: "a".repeat(40),
                 }
                 .to_string(),
             ),

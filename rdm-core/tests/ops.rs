@@ -7137,6 +7137,7 @@ fn sample_review_doc(id: &str) -> Document<Review> {
             }],
             implements: None,
             change_branch: None,
+            follows: None,
         },
         body: "Overall review summary.".to_string(),
     }
@@ -7232,6 +7233,7 @@ fn draft_task_review(store: &mut MemoryStore) -> String {
             body: Some("Summary."),
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap()
@@ -7276,6 +7278,7 @@ fn create_review_stamps_draft_state_and_created_commit() {
             body: Some("Looks solid overall."),
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -7331,6 +7334,7 @@ fn create_review_target_missing_for_roadmap_phase_and_task() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     );
     assert!(matches!(
@@ -7350,6 +7354,7 @@ fn create_review_target_missing_for_roadmap_phase_and_task() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     );
     assert!(matches!(missing_phase, Err(Error::ReviewTargetMissing(_))));
@@ -7365,6 +7370,7 @@ fn create_review_target_missing_for_roadmap_phase_and_task() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     );
     assert!(matches!(missing_task, Err(Error::ReviewTargetMissing(_))));
@@ -7382,6 +7388,7 @@ fn create_review_project_not_found() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     );
     assert!(matches!(result, Err(Error::ProjectNotFound(_))));
@@ -7415,6 +7422,7 @@ fn create_review_body_defaults_to_empty() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -7509,6 +7517,7 @@ fn add_comment_doc_valid_phase_in_roadmap_review() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -7548,6 +7557,7 @@ fn add_comment_doc_out_of_scope_phase_not_in_roadmap() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -7584,6 +7594,7 @@ fn add_comment_doc_rejected_on_phase_review() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -7670,6 +7681,7 @@ fn update_comment_body_anchor_doc_while_draft() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -8061,6 +8073,7 @@ fn update_comment_doc_clear_and_set_validation() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -8201,6 +8214,7 @@ fn submit_review_rejects_empty_review() {
             body: None,
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -8236,6 +8250,7 @@ fn submit_review_with_only_comments_is_not_empty() {
             body: None, // empty summary
             implements: None,
             change_branch: None,
+            follows: None,
         },
     )
     .unwrap();
@@ -8804,6 +8819,7 @@ fn create_review_rejects_implements_on_every_non_change_target() {
                 body: None,
                 implements: Some(existing_plan.clone()),
                 change_branch: None,
+                follows: None,
             },
         )
         .unwrap_err();
@@ -8816,6 +8832,268 @@ fn create_review_rejects_implements_on_every_non_change_target() {
         assert!(text.contains("--implements"), "for {label}: {text}");
         assert!(text.contains("change/<sha>"), "for {label}: {text}");
     }
+}
+
+// -- Follow-up change reviews (CreateReview::follows) --
+
+fn plan_ref(slug: &str) -> ReviewTarget {
+    ReviewTarget::Plan {
+        slug: slug.to_string(),
+    }
+}
+
+fn change_target(head: char, base: Option<char>) -> ReviewTarget {
+    ReviewTarget::Change {
+        head: head.to_string().repeat(40),
+        base: base.map(|digit| digit.to_string().repeat(40)),
+    }
+}
+
+/// A project with the `fix-login` task, two plans implementing it, and a
+/// full change review at `a…` implementing `the-plan`. Returns the store and
+/// that review's id.
+fn store_with_a_full_change_review() -> (MemoryStore, String) {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    for slug in ["the-plan", "other-plan"] {
+        rdm_core::ops::plan::create_plan(
+            &mut store,
+            rdm_core::ops::plan::CreatePlan {
+                project: "fbm",
+                slug,
+                title: "A plan",
+                implements: task_review_target(),
+                supersedes: None,
+                body: None,
+            },
+        )
+        .unwrap();
+    }
+    let full = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: change_target('a', Some('9')),
+            body: None,
+            implements: Some(plan_ref("the-plan")),
+            change_branch: None,
+            follows: None,
+        },
+    )
+    .unwrap();
+    (store, full.frontmatter.id)
+}
+
+/// Starts a follow-up of `followed` at `b…`, passing `base` and `implements`
+/// through as a caller would.
+fn start_follow_up(
+    store: &mut MemoryStore,
+    followed: &str,
+    base: Option<char>,
+    implements: Option<ReviewTarget>,
+) -> rdm_core::error::Result<Document<Review>> {
+    rdm_core::ops::reviews::create_review(
+        store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: change_target('b', base),
+            body: None,
+            implements,
+            change_branch: Some("topic".to_string()),
+            follows: Some(followed),
+        },
+    )
+}
+
+#[test]
+fn create_review_records_follows_and_inherits_the_followed_reviews_plan() {
+    let (mut store, full) = store_with_a_full_change_review();
+    let doc = start_follow_up(&mut store, &full, Some('a'), None).unwrap();
+    let review = &doc.frontmatter;
+    assert_eq!(review.follows.as_deref(), Some(full.as_str()));
+    assert_eq!(review.target, change_target('b', Some('a')));
+    assert_eq!(review.implements, Some(plan_ref("the-plan")));
+    assert_eq!(review.state, ReviewState::Draft);
+
+    // What was written is what was returned.
+    let stored = rdm_core::io::load_review(&store, "fbm", &review.id).unwrap();
+    assert_eq!(&stored.frontmatter, review);
+}
+
+#[test]
+fn create_review_stamps_a_follow_ups_base_from_the_followed_head_whatever_the_caller_passed() {
+    let (mut store, full) = store_with_a_full_change_review();
+    for passed in [None, Some('c')] {
+        let doc = start_follow_up(&mut store, &full, passed, None).unwrap();
+        assert_eq!(
+            doc.frontmatter.target,
+            change_target('b', Some('a')),
+            "a caller-supplied base of {passed:?} must be overwritten"
+        );
+    }
+}
+
+#[test]
+fn create_review_accepts_an_explicit_implements_that_names_the_followed_reviews_plan() {
+    let (mut store, full) = store_with_a_full_change_review();
+    let doc = start_follow_up(&mut store, &full, None, Some(plan_ref("the-plan"))).unwrap();
+    assert_eq!(doc.frontmatter.implements, Some(plan_ref("the-plan")));
+}
+
+#[test]
+fn create_review_refuses_a_follow_up_implementing_a_different_plan() {
+    let (mut store, full) = store_with_a_full_change_review();
+    let err = start_follow_up(&mut store, &full, None, Some(plan_ref("other-plan"))).unwrap_err();
+    match &err {
+        Error::ReviewFollowsImplementsMismatch {
+            followed,
+            given,
+            recorded,
+        } => {
+            assert_eq!(followed, &full);
+            assert_eq!(given, "plan/other-plan");
+            assert_eq!(recorded.as_deref(), Some("plan/the-plan"));
+        }
+        other => panic!("expected ReviewFollowsImplementsMismatch, got {other:?}"),
+    }
+    let text = err.to_string();
+    assert!(
+        text.contains("plan/other-plan") && text.contains("plan/the-plan"),
+        "both plans must be named: {text}"
+    );
+}
+
+#[test]
+fn create_review_refuses_an_explicit_implements_when_the_followed_review_implements_nothing() {
+    let (mut store, _) = store_with_a_full_change_review();
+    let bare = rdm_core::ops::reviews::create_review(
+        &mut store,
+        CreateReview {
+            project: "fbm",
+            author: "ed",
+            target: change_target('a', None),
+            body: None,
+            implements: None,
+            change_branch: None,
+            follows: None,
+        },
+    )
+    .unwrap()
+    .frontmatter
+    .id;
+    let err = start_follow_up(&mut store, &bare, None, Some(plan_ref("the-plan"))).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            Error::ReviewFollowsImplementsMismatch { recorded: None, .. }
+        ),
+        "{err:?}"
+    );
+    // With no explicit plan the follow-up inherits "none", truthfully.
+    let doc = start_follow_up(&mut store, &bare, None, None).unwrap();
+    assert_eq!(doc.frontmatter.implements, None);
+}
+
+#[test]
+fn create_review_refuses_follows_on_every_non_change_target() {
+    let (mut store, full) = store_with_a_full_change_review();
+    add_roadmap_alpha_with_phase(&mut store);
+    for target in [
+        task_review_target(),
+        ReviewTarget::Phase {
+            roadmap: "alpha".to_string(),
+            stem: "phase-1-core".to_string(),
+        },
+        ReviewTarget::Roadmap {
+            roadmap: "alpha".to_string(),
+        },
+        plan_ref("the-plan"),
+    ] {
+        let label = target.label();
+        let err = rdm_core::ops::reviews::create_review(
+            &mut store,
+            CreateReview {
+                project: "fbm",
+                author: "ed",
+                target,
+                body: None,
+                implements: None,
+                change_branch: None,
+                follows: Some(&full),
+            },
+        )
+        .unwrap_err();
+        match &err {
+            Error::ReviewFollowsNotApplicable(named) => assert_eq!(named, &label),
+            other => panic!("expected ReviewFollowsNotApplicable for {label}, got {other:?}"),
+        }
+        assert!(err.to_string().contains("--follows"), "{err}");
+    }
+}
+
+#[test]
+fn create_review_refuses_to_follow_a_missing_review() {
+    let (mut store, _) = store_with_a_full_change_review();
+    for missing in ["2026-01-01-0000-nope", "../escape", ""] {
+        let err = start_follow_up(&mut store, missing, None, None).unwrap_err();
+        assert!(
+            matches!(&err, Error::ReviewNotFound(id) if id == missing),
+            "for {missing:?}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn create_review_refuses_to_follow_a_review_that_is_not_a_change_review() {
+    let (mut store, _) = store_with_a_full_change_review();
+    let task_review = draft_task_review(&mut store);
+    let err = start_follow_up(&mut store, &task_review, None, None).unwrap_err();
+    match &err {
+        Error::ReviewFollowsNotAChange { followed, target } => {
+            assert_eq!(followed, &task_review);
+            assert_eq!(target, "task/fix-login");
+        }
+        other => panic!("expected ReviewFollowsNotAChange, got {other:?}"),
+    }
+    let text = err.to_string();
+    assert!(
+        text.contains(&task_review) && text.contains("task/fix-login"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_refused_follow_up_writes_no_review() {
+    let (mut store, full) = store_with_a_full_change_review();
+    let before = rdm_core::ops::reviews::list_reviews(&store, "fbm")
+        .unwrap()
+        .len();
+    start_follow_up(&mut store, &full, None, Some(plan_ref("other-plan"))).unwrap_err();
+    start_follow_up(&mut store, "2026-01-01-0000-nope", None, None).unwrap_err();
+    let after = rdm_core::ops::reviews::list_reviews(&store, "fbm")
+        .unwrap()
+        .len();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn followed_review_head_reports_the_head_a_follow_up_starts_from() {
+    let (mut store, full) = store_with_a_full_change_review();
+    assert_eq!(
+        rdm_core::ops::reviews::followed_review_head(&store, "fbm", &full).unwrap(),
+        "a".repeat(40)
+    );
+    assert!(matches!(
+        rdm_core::ops::reviews::followed_review_head(&store, "fbm", "2026-01-01-0000-nope"),
+        Err(Error::ReviewNotFound(_))
+    ));
+    let task_review = draft_task_review(&mut store);
+    assert!(matches!(
+        rdm_core::ops::reviews::followed_review_head(&store, "fbm", &task_review),
+        Err(Error::ReviewFollowsNotAChange { .. })
+    ));
 }
 
 /// A roadmap with one phase per phase status and one task per task status,
