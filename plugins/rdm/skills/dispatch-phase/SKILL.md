@@ -799,18 +799,42 @@ a reason to block this write.
 Bounded by `--max-code-rework`; on exhaustion park `blocked` with `[code] rework budget exhausted;
 unresolved comments on review <id>` so the review id is in the reason.
 
-### 14. Re-review at the post-triage HEAD
+### 14. Re-review at the post-triage HEAD — the engine decides
 
-Every source fix moves HEAD, and the core gate requires an **approving** change review recorded at
-the HEAD the write observes. Triage only moves a review to `addressed`; it never changes a verdict,
-and the persist map sends `rework`/`escalated` to `request-changes`. So after the **last**
-source-touching act: re-run `review source --on <item>`, restate the new pinned head, and re-run
-step 12. Writing `reviewed` off an `addressed` `request-changes` review is refused as
-`GateNoApprovedChangeReview`; writing it off an approve recorded at an older head is refused as
-`GateStaleChangeReview`, which names both SHAs.
+The core gate requires an **approving** change review recorded at the HEAD the write observes.
+Triage only moves a review to `addressed`; it never changes a verdict, and the persist map sends
+`rework`/`escalated` to `request-changes`. Which review the post-triage HEAD still needs is a rule
+with three outcomes, and the engine applies it. **You MUST NOT** decide it yourself.
 
-Apply the same proportionate-reviewer judgment on this re-run: a re-review of a delta that changed
-nothing but documentation, comments, or CHANGELOG prose does not need the full fleet either.
+1. After step 13's commit, re-run `review source --on <item>` and restate `identity.head`.
+2. The **prior review** is the item's latest change review: the last one this run persisted or
+   resumed. Read its `verdict` and its `target.head`:
+   ```bash
+   <rdmBin> review show <prior-id><proj-flag> --format json
+   ```
+3. Invoke the engine exactly as in step 12, with `expectedHead` set to the new `identity.head`,
+   plus one more argument:
+   ```js
+   prior: { review: '<prior-id>', verdict: '<its verdict>', head: '<its target.head>' },
+   ```
+4. Act on the `reReview` the result carries:
+   - `'none'`: the prior review approved this exact head. Triage made no source commit (replies,
+     `wont-fix` resolutions, or plan-repo fixes only), so the approval stands. No agent ran and the
+     result carries no `outcome` and no persist script. Go to step 15.
+   - `'follow-up'`: the prior review approved and commits were made after it. The engine reviewed
+     only those commits, with its one `follow-up` reviewer; `reviewers` is not consulted. Run
+     `result.persistScript` as in step 12 (it records a review that follows the prior one), append
+     the printed id to `reviewIds`, and obey `outcome` as in step 12. If the follow-up left
+     comments, triage them (step 13) and return here with **this** review as the prior.
+   - `'full'`: the prior review did not approve, so the whole change is reviewed again. Handle the
+     result exactly as in step 12.
+5. A follow-up ladder whose `review start` is refused because the prior review's head is no longer
+   an ancestor of HEAD (the branch was amended or rebased) is the one refusal you do not park on:
+   re-run the review as a full one, with the same engine call and **no** `prior`.
+
+Writing `reviewed` off an `addressed` `request-changes` review is refused as
+`GateNoApprovedChangeReview`. Writing it off an approve recorded at an older head, with no follow-up
+at HEAD, is refused as `GateStaleChangeReview`, which names both SHAs.
 
 ### 15. The terminal write — through the gate, never around it
 
@@ -831,51 +855,14 @@ nothing but documentation, comments, or CHANGELOG prose does not need the full f
 project repo and the worktree probe degrades to *no probe*, silently skipping the cleanliness
 precondition.
 
-**The gate may be overridden, but only for one refusal and only within narrow conditions.** You —
-the `dispatch-phase` orchestrator — are authorized to invoke rdm's `--override-gate "<reason>"`
-flag for exactly one case: a `GateStaleChangeReview` refusal, when, in your judgment, all four
-conditions below hold. A human operator may invoke the same flag more broadly; either way it waives
-the gate's *record* preconditions and is refused outright unless the gate is enforcing.
-
-- the change review at the reviewed HEAD returned verdict `approve` and is `addressed`, with every
-  comment terminal and replied; and
-- every commit between that HEAD and the current HEAD came from triaging comments on that same
-  review; and
-- that delta changes **no executable behavior** — documentation, comments, CHANGELOG, test names,
-  and nothing else; and
-- `<reason>` names the review id, both HEADs (the reviewed HEAD and the current HEAD), the comments
-  addressed, and cites this authorization by section name — e.g. "per dispatch-phase § 'The
-  terminal write' stale-review waiver" — so the citation stays correct however this section is later
-  renumbered.
-
-**You judge the "no executable behavior changed" condition yourself**, from the diff and the review
-already in your context. rdm does not classify it, and nothing here re-derives eligibility by
-parsing the persisted comment header — judge it from the review record. A misjudgment is recorded in
-the audited reason string, which is the point of overriding rather than fabricating a verdict.
-
-Still forbidden, unconditionally: overriding a missing or `request-changes` review
-(`GateNoApprovedChangeReview`), a missing approved plan (`GateNoApprovedPlan`), or a dirty worktree
-(`GateWorktreeDirty`); overriding to skip a re-review after a genuine code fix; and creating your own
-approve review to satisfy the gate. The waiver above covers **staleness only** — never reach for it
-on any other refusal.
-
-When the four conditions hold:
-
-```bash
-<rdmBin> phase update <phase> --status reviewed --override-gate "<reason>" \
-  --source <identity.path> --base <identity.base> \
-  --expected-head <identity.head> --expected-branch <identity.branch> \
-  --no-edit --roadmap <slug><proj-flag>
-# read-back — the staged status is readable before it is committed:
-<rdmBin> phase show <phase> --roadmap <slug><proj-flag> --format json   # status == "reviewed"
-# only when the write exited 0 AND the read-back confirmed "reviewed":
-<rdmBin> run unit-end <runId> --outcome reviewed<proj-flag>
-<rdmBin> commit -m "chore(plan): finalize <item>"
-```
+This is the one gated write. **You MUST NOT** pass `--override-gate`, on any refusal: it is an
+operator's flag, for a human who has decided to waive the gate's record checks, and nothing in this
+procedure invokes it. A stale approval is cleared by step 14's follow-up review. **You MUST NOT**
+create your own approve review to satisfy the gate either.
 
 On a nonzero exit, capture stderr **verbatim** — `GateNoApprovedPlan`, `GateNoApprovedChangeReview`,
-`GateStaleChangeReview`, `GateWorktreeDirty`, `GateWorktreeUnobservable` each already name the
-missing record *and* the command that would create it — then:
+`GateStaleChangeReview`, `GateFollowUpChain`, `GateWorktreeDirty`, `GateWorktreeUnobservable` each
+already name the missing record *and* the command that would create it — then:
 
 ```bash
 <rdmBin> phase update <phase> --status blocked --reason "[code] reviewed-gate refused: <verbatim refusal>" --no-edit --roadmap <slug><proj-flag>
@@ -887,7 +874,7 @@ uncommitted edit trips it even when this item is clean, and `git reset --hard`/`
 `git stash -u` are denied under `--permission-mode auto` anyway.
 
 On success, read the status back (`phase show --format json` → `status == "reviewed"`) and treat a
-mismatch as an escalation, not a success. In both blocks above that read-back runs immediately after
+mismatch as an escalation, not a success. In the block above that read-back runs immediately after
 the status write and **before** the finalize commit, and the `reviewed` unit-end is written only when
 the write exited 0 **and** the read-back confirmed `reviewed`, so it lands in the finalize commit. On
 a gate refusal or a read-back mismatch write no `reviewed` unit-end: that path escalates, and step 16

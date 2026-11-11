@@ -955,10 +955,9 @@ pub(crate) enum PhaseCommand {
         ///
         /// Waives the approved-plan and approving-change-review preconditions
         /// only — a dirty worktree still refuses. Requires
-        /// `--status reviewed`. Operator-only for a human; the
-        /// `rdm-dispatch-phase` orchestrator may also pass it, but only to
-        /// override a stale-change-review refusal on a delta that changed no
-        /// executable behavior since an already-approved review.
+        /// `--status reviewed`. Operator-only: it is for a human who has
+        /// decided to waive the record checks, and no automated lane passes
+        /// it.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
         /// Records this phase's write-once `started_head` — the full commit
@@ -1311,10 +1310,9 @@ pub(crate) enum TaskCommand {
         ///
         /// Waives the approved-plan and approving-change-review preconditions
         /// only — a dirty worktree still refuses. Requires
-        /// `--status reviewed`. Operator-only for a human; the
-        /// `rdm-dispatch-phase` orchestrator may also pass it, but only to
-        /// override a stale-change-review refusal on a delta that changed no
-        /// executable behavior since an already-approved review.
+        /// `--status reviewed`. Operator-only: it is for a human who has
+        /// decided to waive the record checks, and no automated lane passes
+        /// it.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
         /// Records this task's write-once `started_head` — the full commit

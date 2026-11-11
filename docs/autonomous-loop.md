@@ -105,7 +105,7 @@ Skill(rdm-dispatch-phase)
   9  verify run (exit 2 → the plan-recorded command, run in the pinned checkout)
  10  Workflow: rdm-wf-review-refute-fix persist → change/<head>, gate:false
  11  triage every comment: addressed(--applied-commit) | wont-fix, each with a reply
- 12  re-review at the post-triage HEAD (a source fix moved it)
+ 12  re-review by rule: the engine, given the prior review, returns none | follow-up | full
  13  phase/task update --status reviewed, source-bound, through the core gate
  14  return OUTCOME + planId + reviewIds
 ```
@@ -146,14 +146,28 @@ the fix: `--applied-commit` accepts a source-repo or a plan-repo SHA and stores 
 it resolved in. A finding marked `unrefutedReason: budget` was never
 graded, so its reply says so explicitly on either branch.
 
+**Re-review by rule.** After triage the orchestrator does not choose what to review again. It
+calls the code-review engine once more with the item's latest change review as `prior` (its id,
+verdict and head), and the engine returns one of three `reReview` results:
+
+- `none`: the prior review approved and HEAD has not moved. Triage committed nothing to source
+  (replies, `wont-fix` resolutions, or plan-repo fixes), so the approval stands and no agent runs.
+- `follow-up`: the prior review approved and triage committed source fixes. One dedicated reviewer
+  looks at only the commits since the reviewed head and at the comments they were meant to address.
+  The review is persisted as following the prior one, and the gate accepts it through that chain.
+- `full`: the prior review requested changes, so the whole change is reviewed again.
+
+A follow-up that leaves comments is triaged like any other review and becomes the next `prior`.
+See [`docs/workflow-schemas.md`](workflow-schemas.md) § "Source-bound standalone code review" for
+the engine side and [`docs/change-reviews.md`](change-reviews.md) § "Follow-up reviews" for the
+record.
+
 **Refusal as escalation.** The terminal write is source-bound
 (`--source`/`--base`/`--expected-head`/`--expected-branch`) and goes through the core
 `gates.reviewed` gate, which is enabled for rdm's own plan repo. A refusal is captured verbatim,
-parked as `blocked` with that text in the reason, and returned as `outcome: 'escalated'` — except
-for one narrow case: a `GateStaleChangeReview` refusal on a delta that changed no executable
-behavior since an already-approved review, which the procedure now permits the orchestrator to
-override itself, under the four conditions its "terminal write" step spells out. Every other
-refusal is still escalated rather than bypassed.
+parked as `blocked` with that text in the reason, and returned as `outcome: 'escalated'`. The
+orchestrator never passes `--override-gate`: a refusal is escalated, never bypassed, and an
+approval made stale by triage commits is cleared by the follow-up review above.
 
 **No downstream divergence.** The distributed `skill-dispatch-phase-cli.md` makes the same
 `rdm-wf-plan-review` call as the local copy (since `task/sync-dogfood-and-shipped-skills`).

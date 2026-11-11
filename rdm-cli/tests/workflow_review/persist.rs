@@ -3,6 +3,7 @@
 
 use std::process::{Command, Output};
 
+use rdm_devtools::workflow::Host;
 use serde_json::{Value, json};
 
 use crate::git_test_support::git;
@@ -1946,6 +1947,54 @@ fn documents_are_refused_on_a_document_target_and_for_bad_entries() {
             ],
         )?;
         check!(ok.is_ok(), "well-formed documents are accepted: {ok:?}");
+        Ok(())
+    });
+}
+
+#[test]
+fn follows_is_refused_on_a_document_target_and_for_bad_values() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let cfg = json!({ "rdmBin": "/fake/bin/rdm", "project": "demo" });
+        let result = json!({ "mode": "code", "outcome": "reviewed", "survivors": [] });
+        let mut persist = |target: &str, opts: Value| {
+            js.try_call(
+                "persistReviewCommands",
+                vec![result.clone(), json!(target), cfg.clone(), opts],
+            )
+        };
+        let on_task = persist("task/x", json!({ "follows": "2026-11-11-0900-abcd" }))?;
+        check!(
+            on_task
+                .as_ref()
+                .is_err_and(|e| e.message.contains("opts.follows")),
+            "follows on a plan-repo document target throws: {on_task:?}"
+        );
+        for bad in [
+            json!(""),
+            json!("   "),
+            json!(42),
+            json!(true),
+            json!(["id"]),
+        ] {
+            let r = persist("change/abc123", json!({ "follows": bad }))?;
+            check!(
+                r.as_ref()
+                    .is_err_and(|e| e.message.contains("opts.follows")),
+                "follows {bad} throws: {r:?}"
+            );
+        }
+        let ok = persist(
+            "change/abc123",
+            json!({ "follows": "2026-11-11-0900-abcd" }),
+        )?;
+        check!(ok.is_ok(), "a review id is accepted: {ok:?}");
+        let absent = persist("change/abc123", json!({}))?;
+        let undefined = persist("change/abc123", json!({ "follows": Host::undefined() }))?;
+        check!(
+            absent.is_ok() && absent.as_ref().ok() == undefined.as_ref().ok(),
+            "an undefined follows emits what an absent one does"
+        );
         Ok(())
     });
 }

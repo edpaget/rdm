@@ -690,6 +690,20 @@ resource adds a `follows` link to the followed review.
 A follow-up is otherwise an ordinary change review: comments anchor into its
 own range, so a quote must fall inside a hunk of `followed.head..head`.
 
+**How the review engine produces one.** The `rdm-wf-review-refute-fix` engine
+takes the earlier review as `prior: { review, verdict, head }` and decides the
+re-review itself. When that review approved and commits were made since, the
+run is a follow-up: one dedicated reviewer reads the range
+`prior.head..head` and the followed review's comments (through
+`rdm review show <prior.review> --format json`, which it runs itself), and the
+returned persist script starts the review with `--follows <prior.review>` and
+no `--base`. `rdm-dispatch-phase` makes that call after triage, so a triage
+round that fixed comments ends with a follow-up on record instead of a second
+full review. A prior review that requested changes gets a full review, and one
+that approved the current head gets none. The engine side is in
+[`workflow-schemas.md`](workflow-schemas.md) § "Source-bound standalone code
+review".
+
 ## The never-write-the-source-repo invariant
 
 Every source-repo interaction routes through `rdm_core::source::SourceRepo`, a

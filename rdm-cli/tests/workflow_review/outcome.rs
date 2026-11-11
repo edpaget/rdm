@@ -1,6 +1,7 @@
 //! Outcome classification, the outcome→status mapping, the AC-table channel
 //! and the mode-dispatched gate policy.
 
+use rdm_devtools::workflow::Host;
 use serde_json::{Value, json};
 
 use crate::support::{Agent, Failure, Js, Outcome, Reply, run_real};
@@ -348,6 +349,199 @@ fn classify_outcome_completeness_cases() {
                 classify(&mut js, input)?,
                 json!("reviewed"),
                 "complete evidence case {i} is reviewed"
+            );
+        }
+        Ok(())
+    });
+}
+
+// --- Re-review after triage: the decision and a follow-up's evidence ---------------
+
+const PRIOR_HEAD: &str = "1111111111111111111111111111111111111111";
+const NEW_HEAD: &str = "2222222222222222222222222222222222222222";
+
+#[test]
+fn re_review_decision_table() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        check_eq!(
+            js.get("RE_REVIEW")?,
+            json!(["none", "follow-up", "full"]),
+            "the re-review vocabulary"
+        );
+        let prior = |verdict: Value, head: Value, review: Value| json!({ "review": review, "verdict": verdict, "head": head });
+        let id = json!("2026-11-11-0900-abcd");
+        let cases = [
+            (
+                prior(json!("approve"), json!(PRIOR_HEAD), id.clone()),
+                json!(PRIOR_HEAD),
+                "none",
+                "an approve at the current head stands: triage made no source commit",
+            ),
+            (
+                prior(json!("approve"), json!(PRIOR_HEAD), id.clone()),
+                json!(NEW_HEAD),
+                "follow-up",
+                "an approve followed by a source commit is a follow-up",
+            ),
+            (
+                prior(json!("request-changes"), json!(PRIOR_HEAD), id.clone()),
+                json!(NEW_HEAD),
+                "full",
+                "a request-changes review is followed by a full review",
+            ),
+            (
+                prior(json!("request-changes"), json!(PRIOR_HEAD), id.clone()),
+                json!(PRIOR_HEAD),
+                "full",
+                "request-changes with an unmoved head is still a full review",
+            ),
+            (
+                prior(json!("comment"), json!(PRIOR_HEAD), id.clone()),
+                json!(PRIOR_HEAD),
+                "full",
+                "a comment verdict approved nothing",
+            ),
+            (
+                prior(Host::undefined(), json!(PRIOR_HEAD), id.clone()),
+                json!(NEW_HEAD),
+                "full",
+                "a missing verdict",
+            ),
+            (
+                Host::undefined(),
+                json!(NEW_HEAD),
+                "full",
+                "no prior review at all",
+            ),
+            (json!(null), json!(NEW_HEAD), "full", "a null prior"),
+            (
+                json!("2026-11-11-0900-abcd"),
+                json!(NEW_HEAD),
+                "full",
+                "a prior that is not an object",
+            ),
+            (
+                prior(json!("approve"), json!(PRIOR_HEAD), Host::undefined()),
+                json!(NEW_HEAD),
+                "full",
+                "an approve with no review id cannot be followed",
+            ),
+            (
+                prior(json!("approve"), json!(PRIOR_HEAD), json!("")),
+                json!(NEW_HEAD),
+                "full",
+                "an empty review id cannot be followed",
+            ),
+            (
+                prior(json!("approve"), json!("abc123"), id.clone()),
+                json!(NEW_HEAD),
+                "full",
+                "a short prior head",
+            ),
+            (
+                prior(json!("approve"), Host::undefined(), id.clone()),
+                json!(NEW_HEAD),
+                "full",
+                "a missing prior head",
+            ),
+            (
+                prior(json!("approve"), json!(PRIOR_HEAD), id.clone()),
+                json!("HEAD"),
+                "full",
+                "a current head that is not a full commit id",
+            ),
+            (
+                prior(json!("approve"), Host::undefined(), id.clone()),
+                Host::undefined(),
+                "full",
+                "two missing heads are not an unmoved head",
+            ),
+        ];
+        for (prior, head, want, why) in cases {
+            check_eq!(
+                js.call("reReviewDecision", vec![prior, head])?,
+                json!(want),
+                "{why}"
+            );
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn follow_up_evidence_needs_no_ac_table() {
+    run_real(|lib| -> Outcome {
+        let mut js = Js::open(lib)?;
+        let coverage = |patch: Value| {
+            let mut v = json!({ "complete": true, "selected": ["follow-up"], "ran": ["follow-up"], "failed": [],
+                                "acDimensionRan": null, "acTableAbsent": false, "followUp": true });
+            if let (Some(o), Some(p)) = (v.as_object_mut(), patch.as_object()) {
+                for (k, x) in p {
+                    o.insert(k.clone(), x.clone());
+                }
+            }
+            v
+        };
+        let complete =
+            |js: &mut Js, evidence: Value| js.call("reviewEvidenceComplete", vec![evidence]);
+        check_eq!(
+            complete(
+                &mut js,
+                json!({ "coverage": coverage(json!({})), "budget": {}, "acTable": null, "survivors": [] })
+            )?,
+            json!(true),
+            "a follow-up whose reviewer ran is complete without an AC table"
+        );
+        check_eq!(
+            classify(
+                &mut js,
+                json!({ "codeReviews": [[]], "acTable": null,
+                        "evidence": { "coverage": coverage(json!({})), "budget": {}, "acTable": null, "survivors": [] } })
+            )?,
+            json!("reviewed"),
+            "and a clean one classifies reviewed"
+        );
+        let incomplete = [
+            (
+                json!({ "coverage": coverage(json!({ "complete": false, "ran": [], "failed": ["follow-up"] })),
+                        "budget": {}, "acTable": null, "survivors": [] }),
+                "a follow-up whose reviewer failed",
+            ),
+            (
+                json!({ "coverage": coverage(json!({})), "budget": { "passedThroughBudget": 1 },
+                        "acTable": null, "survivors": [] }),
+                "a follow-up with a finding passed through for budget",
+            ),
+            (
+                json!({ "coverage": coverage(json!({})), "budget": { "refuterErrors": 1 },
+                        "acTable": null, "survivors": [] }),
+                "a follow-up with a refuter error",
+            ),
+            (
+                json!({ "coverage": coverage(json!({})), "budget": {}, "acTable": null,
+                        "survivors": [{ "severity": "blocking", "refuterError": true }] }),
+                "a follow-up survivor whose refuter crashed",
+            ),
+            (
+                json!({ "coverage": coverage(json!({ "followUp": Host::undefined() })), "budget": {},
+                        "acTable": null, "survivors": [] }),
+                "a round that is not a follow-up still needs its AC table",
+            ),
+        ];
+        for (evidence, why) in incomplete {
+            check_eq!(
+                complete(&mut js, evidence.clone())?,
+                json!(false),
+                "{why} is incomplete"
+            );
+            check_eq!(
+                classify(
+                    &mut js,
+                    json!({ "codeReviews": [[]], "acTable": null, "evidence": evidence })
+                )?,
+                json!("escalated"),
+                "{why} escalates"
             );
         }
         Ok(())

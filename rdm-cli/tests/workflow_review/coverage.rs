@@ -544,3 +544,209 @@ fn projection_helpers() {
         Ok(())
     });
 }
+
+// --- A follow-up review: one dedicated reviewer, held to the delta ----------------
+
+/// The context a follow-up run carries: the followed review, its head, and
+/// the command that prints its comments.
+fn follow_up_ctx(extra: Value) -> Value {
+    let mut ctx = json!({
+        "target": TARGET,
+        "followUp": { "review": "2026-11-11-0900-abcd",
+                      "head": "1111111111111111111111111111111111111111",
+                      "reviewCommand": "rdm review show '2026-11-11-0900-abcd' --format json" },
+    });
+    if let (Some(o), Some(p)) = (ctx.as_object_mut(), extra.as_object()) {
+        for (k, v) in p {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    ctx
+}
+
+fn finder_labels(agent: &Agent) -> Vec<String> {
+    agent
+        .labels()
+        .into_iter()
+        .filter(|l| l.starts_with("find:"))
+        .collect()
+}
+
+#[test]
+fn follow_up_runs_one_dedicated_reviewer() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        for (name, extra) in [
+            ("no reviewers key", json!({})),
+            (
+                "a caller-supplied reviewers list",
+                json!({ "reviewers": ["ac", "correctness", "security"] }),
+            ),
+        ] {
+            let agent = scripted(vec![]);
+            let out = js.review_ok("code", &agent, follow_up_ctx(extra))?;
+            check_eq!(
+                finder_labels(&agent),
+                vec!["find:code:follow-up".to_owned()],
+                "{name}: the follow-up reviewer is the only finder"
+            );
+            check_eq!(
+                out["coverage"]["selected"],
+                json!(["follow-up"]),
+                "{name}: coverage names the one reviewer"
+            );
+            check_eq!(
+                out["coverage"]["ran"],
+                json!(["follow-up"]),
+                "{name}: it ran"
+            );
+            check_eq!(
+                out["coverage"]["followUp"],
+                json!(true),
+                "{name}: the round is marked a follow-up"
+            );
+            check_eq!(
+                out["coverage"]["acTableAbsent"],
+                json!(false),
+                "{name}: a follow-up has no AC table to be absent"
+            );
+            check_eq!(
+                out["acTable"],
+                json!(null),
+                "{name}: no AC table is produced"
+            );
+            let clause = js.call("coverageSummaryClause", vec![out["coverage"].clone()])?;
+            check_eq!(
+                clause,
+                json!(""),
+                "{name}: a healthy follow-up appends no clause"
+            );
+        }
+
+        let full = js.review_ok("code", &scripted(vec![]), ctx())?;
+        check!(
+            full["coverage"].get("followUp").is_none(),
+            "a full review's coverage carries no followUp key: {}",
+            full["coverage"]
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn follow_up_blocker_gates_only_inside_the_delta() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        for (in_scope, want) in [(false, "reviewed"), (true, "rework")] {
+            let agent = Agent::scripted(move |call| match parse_label(&call.label) {
+                Label::Find { .. } => Reply::Value(json!({ "findings": [blocking("delta-bug")] })),
+                Label::Refute { .. } => {
+                    Reply::Value(json!({ "refuted": false, "confidence": 90, "inScope": in_scope }))
+                }
+                Label::Consolidate { .. } => Reply::Null,
+                Label::Other => Reply::Throw(format!("unexpected label: {}", call.label)),
+            });
+            let out = js.review_ok("code", &agent, follow_up_ctx(json!({})))?;
+            check_eq!(
+                ids(&out, "survivors"),
+                vec!["delta-bug".to_owned()],
+                "inScope {in_scope}: the blocker survives refutation"
+            );
+            check_eq!(
+                out["survivors"][0]["inScope"],
+                json!(in_scope),
+                "the refuter's scope verdict rides on the survivor"
+            );
+            let evidence = json!({ "coverage": out["coverage"], "budget": out["budget"],
+                                   "acTable": out["acTable"], "survivors": out["survivors"] });
+            check_eq!(
+                js.call(
+                    "classifyOutcome",
+                    vec![
+                        json!({ "codeReviews": [out["survivors"]], "acTable": out["acTable"],
+                                 "evidence": evidence })
+                    ]
+                )?,
+                json!(want),
+                "inScope {in_scope} classifies {want}"
+            );
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn follow_up_prompts_name_the_followed_review_and_grade_delta_scope() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let dim = json!({ "key": "follow-up", "title": "Follow-up", "focus": "focus" });
+        let f = json!({ "id": "f1", "concern": "follow-up", "severity": "blocking", "confidence": 90,
+                        "what_fails": "the fix is incomplete" });
+        let review_command = "rdm review show 'sentinel-review-5c1e' --format json";
+        let plan_command = "rdm plan show sentinel-plan-7f3a --format json";
+        let follow_up = json!({ "review": "sentinel-review-5c1e",
+                                "head": "1111111111111111111111111111111111111111",
+                                "reviewCommand": review_command });
+        // `findPrompt(mode, dim, ctx)` or `refutePrompt(mode, dim, finding, ctx)`.
+        let mut prompt = |name: &str, ctx: &Value| -> Result<String, crate::support::Failure> {
+            let mut args = vec![json!("code"), dim.clone()];
+            if name == "refutePrompt" {
+                args.push(f.clone());
+            }
+            args.push(ctx.clone());
+            Ok(js.call(name, args)?.as_str().unwrap_or_default().to_owned())
+        };
+        let bare = json!({ "target": "T" });
+        let follow = json!({ "target": "T", "followUp": follow_up });
+        let planned = json!({ "target": "T", "planCommand": plan_command });
+        let both = json!({ "target": "T", "planCommand": plan_command, "followUp": follow_up });
+        let only_in = |a: &str, b: &str| -> Vec<String> {
+            let other: std::collections::HashSet<&str> = b.lines().collect();
+            a.lines()
+                .filter(|l| !other.contains(l))
+                .map(str::to_owned)
+                .collect()
+        };
+
+        let find_bare = prompt("findPrompt", &bare)?;
+        let find_follow = prompt("findPrompt", &follow)?;
+        check!(
+            find_follow.contains(review_command),
+            "the finder is handed the command that prints the followed review"
+        );
+        check!(
+            !find_bare.contains("sentinel-review-5c1e"),
+            "a full review's finder is told nothing about a followed review"
+        );
+
+        let refute_bare = prompt("refutePrompt", &bare)?;
+        let refute_follow = prompt("refutePrompt", &follow)?;
+        check!(
+            refute_follow.contains(review_command),
+            "the refuter is handed it too"
+        );
+        // Both prompts gain the target block's follow-up lines; the refuter
+        // gains a scope-grading clause on top of them.
+        let find_added = only_in(&find_follow, &find_bare);
+        let refute_added = only_in(&refute_follow, &refute_bare);
+        check!(
+            refute_added.len() > find_added.len(),
+            "a follow-up refuter gets a clause the finder does not: {refute_added:?} vs {find_added:?}"
+        );
+        // With an approved plan too, that clause stands in place of the
+        // plan-scope clause rather than beside it.
+        let refute_planned = prompt("refutePrompt", &planned)?;
+        let refute_both = prompt("refutePrompt", &both)?;
+        let plan_scope = only_in(&refute_planned, &refute_follow);
+        check!(
+            plan_scope.len() > 1,
+            "a full review's refuter grades scope against the plan: {plan_scope:?}"
+        );
+        let plan_read = only_in(&refute_both, &refute_follow);
+        check!(
+            !plan_read.is_empty() && plan_read.len() < plan_scope.len(),
+            "a follow-up with a plan keeps the plan-read line and drops the plan-scope clause: {plan_read:?}"
+        );
+        Ok(())
+    });
+}

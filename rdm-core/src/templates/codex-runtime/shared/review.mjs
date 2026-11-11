@@ -436,6 +436,42 @@ const DIMENSIONS = {
   ],
 };
 
+// FOLLOW_UP_REVIEWERS — the fleet of a FOLLOW-UP code review: a review of only
+// the commits made since an earlier review of the same change (see
+// `reReviewDecision` and `runReview`'s `context.followUp`). It is a catalogue
+// of its own, not an entry of `DIMENSIONS.code`, so `resolveReviewers` never
+// selects it for a full review and a full review's default fleet is unchanged.
+// It holds ONE reviewer and the mode fixes it: a caller-narrowed subset of the
+// seven code reviewers over a small delta is exactly the judgment call a
+// follow-up exists to remove.
+//|code|
+//|code| **Follow-up reviews.** Given the earlier review of the same change as
+//|code| `prior` (`{ review, verdict, head }`), the engine decides the re-review
+//|code| itself and reports the decision as `reReview`:
+//|code|
+//|code| - `none` — that review approved the head under review and nothing has been
+//|code|   committed since. Nothing is dispatched and its approval stands.
+//|code| - `full` — that review did not approve (or cannot be followed). The ordinary
+//|code|   review above runs over the whole change.
+//|code| - `follow-up` — that review approved and commits were made after it. Only
+//|code|   those commits are reviewed, by ONE dedicated `follow-up` reviewer in place
+//|code|   of the fleet; `reviewers` is not consulted. It reads the earlier review's
+//|code|   comments and asks two things: does each fix do what its comment's reply
+//|code|   says, and do those commits introduce a defect. A finding about code those
+//|code|   commits did not touch is recorded with `inScope: false` and does not gate —
+//|code|   it belonged to the review that already ran. A follow-up produces no
+//|code|   acceptance-criteria table, and it is persisted as following the earlier
+//|code|   review (`review start --follows`), so the `reviewed` gate accepts it only
+//|code|   through that review.
+const FOLLOW_UP_REVIEWERS = [
+  {
+    key: 'follow-up',
+    title: 'Follow-up',
+    focus:
+      'This is a follow-up review: an earlier review of this change already ran, and you review ONLY the commits made since it. Read the followed review with the command named above. Ask exactly two questions. (1) FIXES: for each of its comments whose status is `addressed` and whose `applied_commit` is one of the commits in your range, does that commit actually do what the comment\'s reply says it does, and does it resolve what the comment raised? A fix that is missing, partial, or different from its reply is a finding. (2) REGRESSIONS: do the commits in your range introduce a defect of their own — a logic error, a broken caller, a test that no longer covers what it claims? Do NOT raise a finding about code these commits did not touch unless an addressed comment\'s fix was meant to change it: the rest of the change was reviewed by the followed review and is not under review here. Do NOT reopen a comment resolved `wont-fix`; that decision was already made and recorded.',
+  },
+];
+
 // Plan-stage severity contract: what makes a plan-stage finding `blocking`
 // versus a `concern` that rides along as an implementation note. Of the six
 // findings that drove an observed three-round plan-review escalation, five
@@ -539,6 +575,22 @@ function reviewTargetBlock(mode, context) {
         'Then `cd` into the `path` it reports and review exactly the committed range `base..head` it reports (use `git log` / `git diff` there). Review nothing outside that range, and never review uncommitted work.'
       );
     }
+  }
+  // FOLLOW-UP — rendered ONLY when `c.followUp` is set, for the same corpus
+  // reason as the branch above: the recorded prompts are regenerated from
+  // `{ target }`-only contexts, so nothing here may render without it. The
+  // followed review's comments reach the agent as a COMMAND it runs, never as
+  // transcribed text — the read contract stated above this function.
+  if (c.followUp) {
+    lines.push(
+      'THIS IS A FOLLOW-UP of review ' +
+        c.followUp.review +
+        '. The range the source command reports is ONLY the commits made since that review — its `base` is the head that review covered (' +
+        c.followUp.head +
+        '). Everything before it was already reviewed and is not under review here.',
+      'READ THE FOLLOWED REVIEW YOURSELF. This command prints its comments with their statuses, replies and applied commits:',
+      '  ' + c.followUp.reviewCommand
+    );
   }
   if (c.itemCommand) {
     // Plan mode reads the document under review LINE-NUMBERED (`show
@@ -908,7 +960,22 @@ function refutePrompt(mode, dim, finding, context) {
   // docs/refuter-model-tiering.md § Maintenance gap and
   // rdm:plan/refuters-grade-finding-scope.
   const ctxForScope = context || {};
-  if (mode === 'code' && typeof ctxForScope.planCommand === 'string' && ctxForScope.planCommand.trim() !== '') {
+  // DELTA-SCOPE GRADING — a follow-up review grades scope against the commits
+  // under review INSTEAD of against the plan, and like every clause here it
+  // renders only under its own context key (`followUp`), so no corpus-recorded
+  // prompt moves. It reuses the `inScope` verdict end to end: `hasBlocking`
+  // denies an out-of-scope finding its gating power and triage routes it as
+  // deferred work. That is what holds a follow-up to its delta — a finding
+  // about code the delta never touched cannot cause another fix commit and
+  // another round.
+  if (mode === 'code' && ctxForScope.followUp) {
+    lines.push(
+      'This is a follow-up review, so only the commits in the range above are under review. Grade whether this finding is IN SCOPE of that range — a second, independent question from whether it is refuted:',
+      'It is in scope when the defect is in code or behaviour those commits changed, or when it is about a fix that an `addressed` comment of the followed review claims — the fix is missing, partial, or does not do what the comment\'s reply says. Judge where the DEFECT is, not where its evidence is: a caller those commits broke is in scope even though the caller itself is unchanged.',
+      'It is out of scope when it is about code those commits did not touch and is not about such a fix. That finding belonged to the review that already ran; it is recorded, and it does not hold this follow-up back.',
+      'Set `inScope: false` only when it is out of scope; omit it (or set `true`) otherwise. Being out of scope does NOT mean the finding is wrong, so never conflate `inScope: false` with `refuted: true`.'
+    );
+  } else if (mode === 'code' && typeof ctxForScope.planCommand === 'string' && ctxForScope.planCommand.trim() !== '') {
     lines.push(
       'The change under review implements an approved plan, which you already have (see the plan-read instruction above). Grade whether this finding is IN SCOPE of that plan — a second, independent question from whether it is refuted:',
       '1. Is the defect in code or behaviour the plan actually CHANGED — not merely touched, left in place, or moved? Judge where the DEFECT is, not where its evidence is. A defect in newly written or changed code is in scope even if the plan never enumerated it (a plan cannot anticipate every defect in its own diff), and it stays in scope when the proof sits in code the plan did not change: new behaviour with no test (shown by an unchanged test file), an untouched caller the change breaks or should have updated, or a file the change should also have edited. Evidence located outside the diff does not by itself make a finding out of scope. A genuinely pre-existing defect — already present before this change, in behaviour the plan did not change — is out of scope, even if the plan happens to touch nearby code.',
@@ -2747,7 +2814,21 @@ function persistReviewCommands(result, target, cfg, opts) {
           ', whose comments are already about that document'
       );
     }
+    if (o.follows !== undefined && o.follows !== null) {
+      throw new Error(
+        'review: opts.follows records which earlier CHANGE review this one follows (--follows only applies to a change review) — it cannot accompany the plan-repo document target ' +
+          JSON.stringify(target)
+      );
+    }
   }
+  // `opts.follows` — the id of the change review this one FOLLOWS: the persisted
+  // review covers only the commits made since that review. The id is the
+  // consumer's own value, emitted shell-quoted as `--follows`, so anything that
+  // is not a non-empty string is refused here rather than at run time.
+  if (o.follows !== undefined && o.follows !== null && (typeof o.follows !== 'string' || o.follows.trim() === '')) {
+    throw new Error('review: opts.follows must be a review id — a non-empty string (got ' + JSON.stringify(o.follows) + ')');
+  }
+  const follows = typeof o.follows === 'string' ? o.follows.trim() : null;
   // `opts.documents` — the plan-repo document refs a finding's path may name
   // (see persistDocumentFor). Each is the CONSUMER's own, already-well-formed
   // ref and is emitted verbatim (shell-quoted) as a `--document` value, so a
@@ -2820,7 +2901,16 @@ function persistReviewCommands(result, target, cfg, opts) {
       IND +
       bin +
       ' review start --on ' +
-      (o.source ? shellQuote('change/' + o.source.head) + ' --base ' + shellQuote(o.source.base) + (o.implements ? ' --implements ' + shellQuote(o.implements) : '') : shellQuote(target)) +
+      // A FOLLOW-UP names the review it follows and NO `--base`: the real
+      // binary refuses the pair and stamps the base itself, from the followed
+      // review's head. `--implements` still rides along when the caller named a
+      // plan — core compares it with the followed review's and refuses a
+      // mismatch, and inherits that plan when it is omitted. The `cd` + `review
+      // source` lines above verify `o.source`, which for a follow-up is the
+      // range since the followed review, so an empty or moved delta stops the
+      // ladder before this line.
+      (o.source ? shellQuote('change/' + o.source.head) + (follows === null ? ' --base ' + shellQuote(o.source.base) : '') + (o.implements ? ' --implements ' + shellQuote(o.implements) : '') : shellQuote(target)) +
+      (follows !== null ? ' --follows ' + shellQuote(follows) : '') +
       ' --body "$RDM_PERSIST_SUMMARY" --no-edit --format json' +
       proj +
       ' > "$RDM_PERSIST_START_JSON"' +
@@ -3221,17 +3311,57 @@ function codeReviewRounds(input) {
 // itself, so there is nothing on this side to check it against, and a
 // cross-check would mean fetching the document a second time purely to police
 // the first read.
+//
+// A FOLLOW-UP round (`coverage.followUp === true`) has no acceptance table and
+// is not asked for one: its one reviewer looks at the commits since the
+// followed review, and the table of record is that review's — the gate's chain
+// rule is what ties the two together. Every other condition still applies to
+// it: the reviewer ran, nothing was passed through for budget, no refuter
+// crashed.
 function reviewEvidenceComplete(evidence) {
   if (!evidence) return false;
   const coverage = evidence.coverage && (evidence.coverage.last || evidence.coverage);
   const budget = evidence.budget || {};
   const ac = evidence.acTable;
-  return !!(coverage && coverage.complete === true && coverage.acDimensionRan === true &&
+  const acComplete = !!(coverage && coverage.acDimensionRan === true &&
     Array.isArray(ac) && ac.length > 0 && new Set(ac.map(row => row && row.criterion)).size === ac.length &&
     ac.every((row) => row && typeof row.criterion === 'string' && row.criterion.trim().length > 0 &&
-      typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
+      typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)));
+  return !!(coverage && coverage.complete === true && (coverage.followUp === true || acComplete) &&
     !(budget.passedThroughBudget > 0) && !(budget.refuterErrors > 0) &&
     !(evidence.survivors || []).some((f) => f.refuterError || f.unrefutedReason === 'budget'));
+}
+
+// RE_REVIEW — the three answers `reReviewDecision` gives, in the order of how
+// much they review.
+const RE_REVIEW = ['none', 'follow-up', 'full'];
+
+// reReviewDecision(prior, head) — after triage, what review does the change at
+// `head` still need? `prior` is `{ review, verdict, head }`: the id of the
+// latest change review of the item, its verdict, and the head it reviewed.
+// Pure and total; the answer is one of RE_REVIEW.
+//
+//   * `full`      — the prior review did not approve. A `request-changes`
+//                   verdict means the change as a whole was not accepted, so the
+//                   whole is looked at again — even when HEAD has not moved
+//                   since (a rework fixed in the plan repo alone would otherwise
+//                   have no route to an approving review).
+//   * `none`      — it approved, and `head` is the head it reviewed. Triage made
+//                   no source commit, so the approval at HEAD stands.
+//   * `follow-up` — it approved and HEAD moved. Any commit past the reviewed
+//                   head is unreviewed, whoever made it, so the commits from
+//                   `prior.head` to `head` get a follow-up review.
+//
+// ANYTHING THIS CANNOT CLASSIFY IS `full` — no `prior` at all, a missing review
+// id (a follow-up has to name what it follows), a head that is not a full
+// commit id. `full` is the safe and expensive direction, which is why a caller
+// needs no argument check of its own in front of this.
+function reReviewDecision(prior, head) {
+  const p = prior && typeof prior === 'object' ? prior : {};
+  if (p.verdict !== 'approve') return 'full';
+  if (!isFullHexSha(p.head) || !isFullHexSha(head)) return 'full';
+  if (p.head === head) return 'none';
+  return typeof p.review === 'string' && p.review.trim() !== '' ? 'follow-up' : 'full';
 }
 
 function classifyOutcome(input) {
@@ -3325,9 +3455,15 @@ function buildReviewPipeline(mode, deps) {
 
   return async function runReview(context) {
     const ctx = context || {};
+    // A FOLLOW-UP review (`ctx.followUp`: `{ review, head, reviewCommand }`, code
+    // mode only) reviews just the commits since the review it follows. Its
+    // fleet is FOLLOW_UP_REVIEWERS, fixed by the mode: `ctx.reviewers` is not
+    // read. Everything after the finder fan-out — consolidation, the budget,
+    // refuters, filtering — is the one code path below.
+    const followUp = mode === 'code' && ctx.followUp ? ctx.followUp : null;
     // Deterministic pre-step: which reviewers actually run. The CALLER decides;
     // omitting `reviewers` runs every one for the mode.
-    const dims = resolveReviewers(mode, ctx.reviewers);
+    const dims = followUp ? FOLLOW_UP_REVIEWERS.slice() : resolveReviewers(mode, ctx.reviewers);
     // Optional explicit models for the two review steps. Callers that have no
     // tier context (the standalone review-refute-fix consumer) simply omit them
     // and the agents inherit the session model exactly as before. Passing
@@ -3517,8 +3653,14 @@ function buildReviewPipeline(mode, deps) {
       retried: attempts.filter((a) => a.retried).map((a) => a.dimension),
       complete: attempts.every((a) => a.ran),
       acDimensionRan: acDimensionRan,
-      acTableAbsent: mode === 'code' && acDimensionRan !== true,
+      // A follow-up never selects `ac`, by design rather than by omission, so
+      // its missing table is not an ABSENT one: reporting it would put a "NO AC
+      // TABLE" clause on every healthy follow-up.
+      acTableAbsent: mode === 'code' && !followUp && acDimensionRan !== true,
     };
+    // Present ONLY on a follow-up round, so every other round's coverage object
+    // is what it was. `reviewEvidenceComplete` reads it.
+    if (followUp) coverage.followUp = true;
 
     // Flatten per-dimension → ONE unit-wide candidate list. A finder whose whole
     // dimension errored is dropped to null by the runtime's parallel (a thrown
@@ -4009,6 +4151,9 @@ export {
   codeReviewRounds,
   classifyOutcome,
   reviewEvidenceComplete,
+  RE_REVIEW,
+  reReviewDecision,
+  FOLLOW_UP_REVIEWERS,
   DEFAULT_MAX_CODE_REWORK,
   buildReviewPipeline,
   filterPlanReviewTag,

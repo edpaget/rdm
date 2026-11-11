@@ -1810,6 +1810,523 @@ fn unresolvable_source_escalates_without_dispatch() {
     });
 }
 
+// --- Re-review after triage: `prior` -----------------------------------------------
+
+/// The file the triage commit adds.
+const FIX_FILE: &str = "triage-fix.txt";
+/// The reply triage recorded on the prior review's comment.
+const FIX_REPLY: &str = "Fixed: the fallback path now keeps the write.";
+/// The finding id the prior review's one comment carries.
+const PRIOR_FINDING: &str = "prior-note";
+
+/// [`fixture`] after one triage round on `phase-2-dirty`: a full review that
+/// approved with one comment, a triage commit that fixed it, the comment
+/// resolved `addressed` with that commit and a reply, and the review closed.
+struct Triaged {
+    fx: Fx,
+    /// The full review's id.
+    prior: String,
+    /// The head the full review covered.
+    prior_head: String,
+    /// The head after the triage commit.
+    head: String,
+}
+
+impl Triaged {
+    /// The item's pinned identity at the post-triage head: the original
+    /// base, the new head.
+    fn pin(&self) -> Pin {
+        Pin {
+            expected_head: self.head.clone(),
+            ..self.fx.roadmap_pin.clone()
+        }
+    }
+
+    /// Persist-only engine arguments at the post-triage head, with the full
+    /// review as `prior`.
+    fn args(&self) -> Value {
+        merge(&[
+            persist_args(&self.pin()),
+            json!({ "prior": { "review": self.prior, "verdict": "approve", "head": self.prior_head } }),
+        ])
+    }
+
+    /// The source-bound terminal write for `phase-2-dirty` at the
+    /// post-triage head, run from the worktree.
+    fn mark_reviewed(&self) -> Result<std::process::Output, Failure> {
+        let pin = self.pin();
+        self.fx.repo.rdm_in(
+            "gate",
+            &[
+                "phase",
+                "update",
+                "phase-2-dirty",
+                "--status",
+                "reviewed",
+                "--source",
+                &pin.source,
+                "--base",
+                &pin.base,
+                "--expected-head",
+                &pin.expected_head,
+                "--expected-branch",
+                &pin.expected_branch,
+                "--no-edit",
+                "--roadmap",
+                ROADMAP,
+                "--project",
+                PROJECT,
+            ],
+            &self.fx.roadmap_wt(),
+        )
+    }
+}
+
+/// Runs `rdm <args>` in `session` from the roadmap worktree, requiring
+/// success.
+fn rdm_in_wt(fx: &Fx, session: &str, args: &[&str]) -> Result<String, Failure> {
+    let out = fx.repo.rdm_in(session, args, &fx.roadmap_wt())?;
+    check!(
+        out.status.success(),
+        "rdm {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// See [`Triaged`]. With `gated`, the project runs with `gates.reviewed` on
+/// and the plan is approved by a plan review.
+fn triaged(lib: &Lib, gated: bool) -> Result<Triaged, Failure> {
+    let fx = fixture()?;
+    if gated {
+        fx.repo.ok(
+            "seed",
+            &[
+                "config",
+                "set",
+                "gates.reviewed",
+                "true",
+                "--project",
+                PROJECT,
+            ],
+        )?;
+        let started = fx.repo.ok(
+            "seed",
+            &[
+                "review",
+                "start",
+                "--on",
+                &format!("plan/{PLAN}"),
+                "--no-edit",
+                "--format",
+                "json",
+                "--project",
+                PROJECT,
+            ],
+        )?;
+        let started: Value = serde_json::from_str(&started).map_err(infra)?;
+        let plan_review = started["id"].as_str().unwrap_or_default().to_owned();
+        fx.repo.ok(
+            "seed",
+            &[
+                "review",
+                "submit",
+                &plan_review,
+                "--verdict",
+                "approve",
+                "--body",
+                "The plan is sound.",
+                "--no-edit",
+                "--project",
+                PROJECT,
+            ],
+        )?;
+        fx.repo
+            .ok("seed", &["commit", "-m", "chore(plan): approve the plan"])?;
+    }
+    let (r, _) = drive(
+        lib,
+        persist_args(&fx.roadmap_pin),
+        vec![finding(
+            PRIOR_FINDING,
+            "concern",
+            json!({ "location": "general" }),
+        )],
+    )?;
+    check_eq!(
+        r["outcome"],
+        json!("reviewed"),
+        "a concern does not hold the full review back"
+    );
+    let (full, _) = land(&fx, &r)?;
+    check_eq!(
+        full["verdict"],
+        json!("approve"),
+        "the full review approves"
+    );
+    check_eq!(comments(&full).len(), 1, "with one comment");
+    let prior = full["id"].as_str().unwrap_or_default().to_owned();
+    let prior_head = fx.roadmap_pin.expected_head.clone();
+
+    let head = commit_file(
+        &fx.roadmap_wt(),
+        FIX_FILE,
+        "fixed\n",
+        "fix: keep the write on the fallback path",
+    );
+    rdm_in_wt(
+        &fx,
+        "triage",
+        &[
+            "review",
+            "update",
+            &prior,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            &head,
+            "--reply",
+            FIX_REPLY,
+            "--project",
+            PROJECT,
+        ],
+    )?;
+    rdm_in_wt(
+        &fx,
+        "triage",
+        &[
+            "review",
+            "update",
+            &prior,
+            "--state",
+            "addressed",
+            "--project",
+            PROJECT,
+        ],
+    )?;
+    rdm_in_wt(
+        &fx,
+        "triage",
+        &["commit", "-m", "chore(plan): triage the full review"],
+    )?;
+    Ok(Triaged {
+        fx,
+        prior,
+        prior_head,
+        head,
+    })
+}
+
+/// The command lines `prompt` tells its agent to run through the engine's
+/// binary that carry `needle`.
+fn named_commands(prompt: &str, needle: &str) -> Vec<String> {
+    prompt
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with(rdm_bin()) && l.contains(needle))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Runs the one command of `prompt` carrying `needle` in the fixture shell,
+/// from the source checkout a reviewer works in, and parses what it prints.
+fn run_named(fx: &Fx, prompt: &str, needle: &str) -> Result<Value, Failure> {
+    let cmds = named_commands(prompt, needle);
+    check_eq!(
+        cmds.len(),
+        1,
+        "the prompt names one `{needle}` command: {prompt}"
+    );
+    let out = fx.repo.run_ok(&strict().cwd(&fx.roadmap_wt()), &cmds[0])?;
+    serde_json::from_str(&out).map_err(|e| Failure::Check(format!("{}: {e}: {out}", cmds[0])))
+}
+
+/// AC2: a follow-up run hands its one finder the range from the prior head to
+/// the current head and the text of the comments addressed in it.
+#[test]
+fn follow_up_hands_its_finder_the_triage_delta_and_the_addressed_comments() {
+    run_real(|lib| {
+        let t = triaged(lib, false)?;
+        let (r, agent) = drive(lib, t.args(), vec![])?;
+        check_eq!(r["reReview"], json!("follow-up"), "the engine's decision");
+        check_eq!(
+            r["follows"],
+            json!(t.prior),
+            "the result names the followed review"
+        );
+        let finders = agent.calls_with("find:");
+        check_eq!(
+            finders.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            vec!["find:code:follow-up"],
+            "one dedicated finder, not the fleet"
+        );
+        let prompt = &finders[0].prompt;
+
+        let source = run_named(&t.fx, prompt, " review source ")?;
+        check_eq!(
+            source["base"],
+            json!(t.prior_head),
+            "the range starts at the head the prior review covered"
+        );
+        check_eq!(
+            source["head"],
+            json!(t.head),
+            "and ends at the current head"
+        );
+        check_eq!(
+            source["changedFiles"],
+            json!([FIX_FILE]),
+            "so it holds the triage commit's file and nothing the prior review covered"
+        );
+
+        let followed = run_named(&t.fx, prompt, " review show ")?;
+        check_eq!(
+            followed["id"],
+            json!(t.prior),
+            "the review command prints the followed review"
+        );
+        let c = comment_with(&followed, PRIOR_FINDING)?;
+        check_eq!(c["status"], json!("addressed"), "the comment's status");
+        check_eq!(c["reply"], json!(FIX_REPLY), "its reply");
+        check_eq!(
+            c["applied_commit"],
+            json!(t.head),
+            "and the commit that fixed it, which is inside the range"
+        );
+
+        check_eq!(
+            r["source"]["base"],
+            json!(t.fx.roadmap_pin.base),
+            "the result's source stays the item's pinned identity"
+        );
+        check_eq!(
+            r["outcome"],
+            json!("reviewed"),
+            "a clean follow-up is reviewed with no acceptance table"
+        );
+        Ok(())
+    });
+}
+
+/// AC3: the follow-up's persist script records a change review that follows
+/// the prior review, with the prior review's head as its base.
+#[test]
+fn follow_up_persist_script_records_a_review_following_the_prior() {
+    run_real(|lib| {
+        let t = triaged(lib, false)?;
+        let (r, _) = drive(lib, t.args(), vec![])?;
+        let (review, _) = land(&t.fx, &r)?;
+        check_eq!(
+            review["follows"],
+            json!(t.prior),
+            "review show reports the followed review"
+        );
+        check_eq!(
+            review["target"]["base"],
+            json!(t.prior_head),
+            "its base is the prior review's head"
+        );
+        check_eq!(
+            review["target"]["head"],
+            json!(t.head),
+            "its head is the current head"
+        );
+        check_eq!(
+            review["verdict"],
+            json!("approve"),
+            "a clean follow-up approves"
+        );
+        check_eq!(
+            review["implements"],
+            json!(format!("rdm:plan/{PLAN}")),
+            "it implements the plan the prior review did"
+        );
+        Ok(())
+    });
+}
+
+/// AC4: with the gate on, the stale approval is refused until the follow-up
+/// is persisted, and then the same write succeeds through the chain.
+#[test]
+fn follow_up_persisted_lets_the_gated_reviewed_write_through() {
+    run_real(|lib| {
+        let t = triaged(lib, true)?;
+        let stale = t.mark_reviewed()?;
+        let err = String::from_utf8_lossy(&stale.stderr).into_owned();
+        check!(
+            !stale.status.success(),
+            "the approval at the pre-triage head is stale"
+        );
+        check!(
+            err.contains(&format!("--follows {}", t.prior)),
+            "the refusal is the stale one, offering a follow-up of the prior review: {err}"
+        );
+        check!(
+            phase_status(&t.fx, "phase-2-dirty")? != json!("reviewed"),
+            "the refused write did not stamp reviewed"
+        );
+
+        let (r, _) = drive(lib, t.args(), vec![])?;
+        land(&t.fx, &r)?;
+        let written = t.mark_reviewed()?;
+        check!(
+            written.status.success(),
+            "the same write succeeds once the follow-up is on record: {}",
+            String::from_utf8_lossy(&written.stderr)
+        );
+        check_eq!(
+            phase_status(&t.fx, "phase-2-dirty")?,
+            json!("reviewed"),
+            "the phase reads reviewed"
+        );
+        let plan = t.fx.repo.json(&[
+            "plan",
+            "show",
+            PLAN,
+            "--format",
+            "json",
+            "--project",
+            PROJECT,
+        ])?;
+        check_eq!(
+            plan["change_reviews"].as_array().map(Vec::len),
+            Some(2),
+            "the full review and its follow-up are both on record: {plan}"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn prior_approve_at_the_current_head_reviews_nothing() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let before = fx.repo.snapshot()?;
+        let prior = "2026-11-11-0900-abcd";
+        let (r, agent) = drive(
+            lib,
+            merge(&[
+                phase_args(&fx, "phase-2-dirty", json!({ "persist": true })),
+                json!({ "prior": { "review": prior, "verdict": "approve",
+                                   "head": fx.roadmap_pin.expected_head } }),
+            ]),
+            vec![],
+        )?;
+        check_eq!(r["reReview"], json!("none"), "the engine's decision");
+        check!(
+            agent.calls().is_empty(),
+            "no agent is dispatched: {:?}",
+            agent.labels()
+        );
+        for key in [
+            "outcome",
+            "status",
+            "findings",
+            "persistCommands",
+            "persistScript",
+            "gateCommands",
+            "gateScript",
+        ] {
+            check!(
+                r.get(key).is_none(),
+                "a run that reviewed nothing returns no {key}: {r}"
+            );
+        }
+        check_eq!(
+            r["source"]["head"],
+            json!(fx.roadmap_pin.expected_head),
+            "the pinned identity is returned"
+        );
+        check!(
+            r["summary"].as_str().is_some_and(|s| s.contains(prior)),
+            "the summary names the review whose approval stands: {}",
+            r["summary"]
+        );
+        check_eq!(fx.repo.snapshot()?, before, "the plan repo is untouched");
+        Ok(())
+    });
+}
+
+#[test]
+fn prior_request_changes_runs_the_full_review() {
+    run_real(|lib| {
+        let t = triaged(lib, false)?;
+        let (r, agent) = drive(
+            lib,
+            merge(&[
+                t.args(),
+                json!({ "prior": { "review": t.prior, "verdict": "request-changes", "head": t.prior_head } }),
+            ]),
+            vec![],
+        )?;
+        check_eq!(r["reReview"], json!("full"), "the engine's decision");
+        check!(
+            r.get("follows").is_none(),
+            "a full review follows nothing: {r}"
+        );
+        let labels = agent.labels();
+        check!(
+            labels.contains(&"find:code:ac".to_owned())
+                && !labels.contains(&"find:code:follow-up".to_owned()),
+            "the full fleet ran: {labels:?}"
+        );
+        let (review, _) = land(&t.fx, &r)?;
+        check!(
+            review.get("follows").is_none_or(Value::is_null),
+            "the persisted review follows nothing: {review}"
+        );
+        check_eq!(
+            review["target"]["base"],
+            json!(t.fx.roadmap_pin.base),
+            "it covers the item's whole range"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn follow_up_with_a_blocker_in_the_delta_reworks_and_still_follows() {
+    run_real(|lib| {
+        let t = triaged(lib, false)?;
+        let agent = Agent::scripted(|call| {
+            let label = call.label.as_str();
+            if label == "find:code:follow-up" {
+                Reply::Value(json!({ "findings": [finding(
+                    "delta-bug",
+                    "blocking",
+                    json!({ "what_fails": "the fix drops the write again", "location": "general" }),
+                )] }))
+            } else if label.starts_with("refute:") {
+                Reply::Value(json!({ "refuted": false, "confidence": 95, "inScope": true }))
+            } else {
+                Reply::Throw(format!("unexpected agent label: {label}"))
+            }
+        });
+        let r = run_driver(lib, REVIEW_ENGINE, t.args(), &agent)?.map_err(Failure::Js)?;
+        check_eq!(r["reReview"], json!("follow-up"), "still a follow-up");
+        check_eq!(
+            r["outcome"],
+            json!("rework"),
+            "a blocker in the delta reworks"
+        );
+        let (review, _) = land(&t.fx, &r)?;
+        check_eq!(
+            review["verdict"],
+            json!("request-changes"),
+            "rework persists request-changes"
+        );
+        check_eq!(
+            review["follows"],
+            json!(t.prior),
+            "and the review still records what it follows"
+        );
+        comment_with(&review, "delta-bug")?;
+        Ok(())
+    });
+}
+
 // --- Review-core helpers the driver's decisions rest on ---------------------------
 
 #[test]

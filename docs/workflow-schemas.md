@@ -1584,6 +1584,7 @@ still branches on nothing:
 | --- | --- |
 | `pathAnchors` | for each survivor, resolve a repo-relative `--path`: try the finder's own structured `finding.path` first (validated through `isRepoRelativePath`), and fall back to the pure `pathFromLocation(finding.location)` heuristic only when `finding.path` is absent or invalid — then emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. Against a change target `--quote` is emitted ONLY when a `--path` accompanies it — see the unanchorable-quote rule below. |
 | `documents` | an array of plan-repo document refs a finding's path may name (`phase/<roadmap>/<stem-or-number>`, `task/<slug>`, `plan/<slug>`, `roadmap/<slug>`). A survivor whose path names one is written as `review comment --document <entry>` instead of a source anchor — see "Findings about the item document or its plan" below. REFUSED with a throw on a non-change target, and for an entry that is not a non-empty string containing `/` or that starts with `change/`. |
+| `follows` | the id of the change review this one **follows**. The `review start` line becomes `review start --on 'change/<head>' --follows '<id>'` with **no `--base`**: the real binary refuses the pair and stamps the base from the followed review's head. `--implements` is still emitted when `opts.implements` is set; core refuses one that names a different plan than the followed review's, and inherits that plan when it is omitted. `opts.source` is then the follow-up's own range (the followed head to the new head), so the ladder's `cd` + `review source` lines stop an empty or moved delta before `review start`. REFUSED with a throw on a non-change target and for a value that is not a non-empty string. Absent, the emitted bytes are unchanged. |
 
 **Findings about the item document or its plan.** Code reviewers, mostly `ac`,
 raise findings about the phase or task document itself — a criterion's wording,
@@ -2236,6 +2237,14 @@ handling** below); a valid-but-empty payload (`{ findings: [] }`) PARTICIPATED
 and is never a failure. `acDimensionRan` is `null` in `plan` mode and whenever
 `ac` was not selected, which forces `acTableAbsent` false there.
 
+A **follow-up** round (see "Source-bound standalone code review" below) adds one
+key, `followUp: true`, and reports `selected: ['follow-up']` with
+`acTableAbsent: false`: its one reviewer is not `ac` by design, so the missing
+table is not an absent one and a healthy follow-up's summary gains no
+`NO AC TABLE` clause. The key is absent on every other round. It is what
+`reviewEvidenceComplete` reads to skip the acceptance-table conditions; the
+`reviewCoverage` projection carries it on its `last` round.
+
 It is projected exactly like `budget`, by the sibling pair in the same stamped
 block — a second accounting FIELD, not a second mechanism:
 `buildReviewCoverage(coverageRounds, planCoverage)` yields the `reviewCoverage`
@@ -2644,6 +2653,14 @@ and `coverage.ran` records what actually ran. The one refusal kept is a set that
 resolves to **zero** reviewers, which throws rather than reporting a clean review
 over an empty fleet; that is the pre-existing "refusing to report a clean review"
 invariant, and it reads only the list it was handed.
+
+**A follow-up's fleet is not caller-selected.** When `context.followUp` is set
+(code mode), `resolveReviewers` is not called and `context.reviewers` is not
+read: the reviewer set is the separate `FOLLOW_UP_REVIEWERS` catalogue, which
+holds the one `follow-up` reviewer. A caller-narrowed subset of the code
+reviewers over a small delta is the judgment call a follow-up removes.
+`DIMENSIONS.code` does not contain that reviewer, so a full review's default
+fleet is unchanged.
 
 The `context` contract carries **no** diff-shape signals, no target type, and no
 document body. It holds `target` (an identifier — an item ref, a plan slug, or
@@ -3593,6 +3610,73 @@ The returned `source` contains canonical item/repository/path/branch, full base/
 Automatic approval consumes the latest attempt's coverage, structured nonempty valid AC table, refutation overflow and grader errors. Missing selected dimensions, absent/invalid AC results, over-budget grading candidates (including concerns at small tiers), and failed grading produce `escalated` with `writesCompletion: false`; suggestions intentionally passed through remain non-gating. Existing severity thresholds, confidence floor 70 and refutation cap are unchanged. Historical incomplete attempts remain visible but a complete later attempt can approve. Legacy survivors-only calls remain reports and do not issue automatic approvals. The retiring dispatch driver's bespoke orchestration is unchanged.
 
 The workflow's source validation and a plan Store write are not a transaction across repositories. Revalidation at acquisition, persistence and status boundaries detects drift; an external concurrent git mutation between checks remains possible. No live Claude Workflow execution was performed by the Codex implementation host; real Git/CLI fixtures and injected workflow agents supply regression evidence.
+
+### Re-review after triage: `prior`, `reReview` and the follow-up mode
+
+A source-bound call may carry one more optional key, `prior: { review, verdict,
+head }`: the id of the item's latest change review, its verdict, and the head it
+reviewed. With it the engine decides which review the pinned head still needs
+and reports the decision as `reReview`. Without it nothing changes and the
+result has no `reReview` key.
+
+The decision is `reReviewDecision(prior, head)` in `lib/review.mjs`, a pure,
+total function over `prior` and the pinned head:
+
+| `prior` | `reReview` |
+|---|---|
+| `verdict` is not `approve` (`request-changes`, `comment`, missing) | `full` |
+| `approve`, and `prior.head` is the pinned head | `none` |
+| `approve`, the heads differ, `review` is a non-empty string | `follow-up` |
+| anything else (no usable `prior`, a missing id, a head that is not a full commit id) | `full` |
+
+The verdict is read first, so a `request-changes` review gets a full review even
+when HEAD has not moved (a rework fixed only in the plan repo still needs an
+approving review). "Triage made a source commit" is `head != prior.head`: any
+commit past the reviewed head is unreviewed, whoever made it. Anything the
+function cannot classify is `full`, the safe and expensive direction, so the
+engine validates nothing about `prior` before calling it.
+
+What each result does:
+
+- **`none`** dispatches no agent. The result holds the item identifiers,
+  `reReview`, `source` and a one-line `summary` naming the prior review, and
+  nothing else: no `outcome`, `status`, `findings`, persist script or gate
+  script. The engine reviewed nothing, so the standing verdict is the prior
+  review's.
+- **`full`** is the ordinary review above, `reviewers` included. The result
+  also carries `reReview: 'full'`.
+- **`follow-up`** reviews only the commits since the prior review:
+  - **Range.** The finder's source command names the pinned checkout with
+    `--base <prior.head>`, so `rdm review source` reports only
+    `prior.head..head`. `result.source` stays the item's pinned identity: its
+    `base` is still what the terminal status write binds.
+  - **Reviewer.** One dedicated `follow-up` reviewer (see "`context.reviewers`"
+    above); `reviewers` is not passed. It asks whether each comment of the
+    followed review that is `addressed` by a commit in the range was fixed the
+    way its reply says, and whether the range introduces a defect. Models,
+    efforts, `maxRefutations` and `tier` are honoured as in a full review.
+  - **The addressed comments.** The prompt names
+    `<rdmBin> review show <prior.review> --format json` and the finder runs it.
+    Identifiers cross the boundary; the comments are never transcribed into the
+    prompt.
+  - **Delta scope.** Each refuter grades `inScope` against the range instead of
+    against the plan. A finding about code the range did not touch, and not
+    about a fix an addressed comment claims, survives with `inScope: false`:
+    it is recorded, it does not gate (`hasBlocking`), and triage routes it
+    `wont-fix` as deferred work. That is what stops an out-of-delta comment
+    from causing another fix commit and another round.
+  - **Evidence.** A follow-up has no acceptance-criteria table. Its evidence is
+    complete when its reviewer ran, nothing was passed through for budget and no
+    refuter crashed (`coverage.followUp`, under "`OUTCOME` (review pipeline)").
+    `classifyOutcome` is unchanged: a surviving in-scope blocker is `rework`,
+    incomplete evidence is `escalated`, anything else is `reviewed`.
+  - **Persistence.** The persist ladder verifies the follow-up range and starts
+    the review with `--follows <prior.review>` (`opts.follows`, under
+    "Persisting a review"). The result also carries `follows: <prior.review>`.
+
+A follow-up ladder's `review start` is refused when the prior head is no longer
+an ancestor of the new head (the branch was amended or rebased). The caller
+then re-runs the engine without `prior`, which is a full review.
 
 
 ### Source-bound acceptance and implementation-plan identity

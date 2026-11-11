@@ -4846,7 +4846,12 @@ mod tests {
         // 58 -> 61: `model-presets` phase 3 added the `--models <preset>`
         // argument, which autopilot (argument list and Run modes) and do
         // each name `rdm-dispatch-phase` as the skill it is forwarded to.
-        let expected = 61;
+        // 61 -> 59: `review-submission-smoothing` phase 4 deleted
+        // `skill-dispatch-phase-cli.md`'s stale-review override waiver, which
+        // named `rdm-dispatch-phase` twice (the authorized orchestrator and
+        // the reason-string citation). The dispatch never passes the
+        // override; a follow-up review clears a stale approval instead.
+        let expected = 59;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

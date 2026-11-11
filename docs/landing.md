@@ -90,8 +90,8 @@ carry other reviewed phases' commits past the one that was named, making
 the first place. Attributing each phase's own distinct last commit also
 turns out not to be sound in general even when it can be isolated — a
 phase's approving change-review head can be wrong when the phase was
-finalized by a commit made *after* that review (e.g. under a stale-review
-`--override-gate` waiver), and a phase-start record (`started_head`) is not
+finalized by a commit made *after* that review (e.g. under an operator's
+`--override-gate`), and a phase-start record (`started_head`) is not
 reliably populated for every phase — so the landed tip, which can never cite
 a wrong, unlanded, or nonexistent commit, is used for every phase instead.
 Only a `task/<slug>` land needs none of this: a task's branch is not shared,
