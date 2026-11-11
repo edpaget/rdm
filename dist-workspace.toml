@@ -31,3 +31,8 @@ tap = "edpaget/homebrew-rdm"
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+
+# GitHub no longer provisions the `macos-14` runner dist picks by default for
+# this target ("configuration 'macos-14-arm64-us-default' is not supported").
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
