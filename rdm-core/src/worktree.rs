@@ -189,7 +189,13 @@ pub fn review_worktree_item(item: &ItemRef) -> Option<String> {
 /// The branch and empty-range checks run either way.
 ///
 /// # Errors
-/// Returns `Error::Git` for unavailable, mismatched, moved or unexpectedly empty source.
+///
+/// Returns [`crate::error::Error::Git`] for an unavailable, mismatched,
+/// moved or unexpectedly empty source. The "moved" refusal applies only
+/// when [`ReviewSourceRequest::report_moved_head`] is unset.
+///
+/// Returns [`crate::error::Error::ReviewSourceDetached`], propagated from
+/// the probe, when the registered checkout is on no branch at all.
 pub fn resolve_review_source(
     probe: &dyn WorktreeProbe,
     item: &ItemRef,
@@ -259,7 +265,14 @@ pub trait WorktreeProbe {
     /// Reads a registered source checkout and its committed range.
     ///
     /// # Errors
-    /// Returns `Error::Git` when source inspection is unavailable or fails.
+    ///
+    /// Returns [`crate::error::Error::Git`] when source inspection is
+    /// unavailable or fails.
+    ///
+    /// Returns [`crate::error::Error::ReviewSourceDetached`] when the
+    /// registered checkout is on no branch at all — an operator-visible
+    /// condition, not a query failure, which is why it is matchable apart
+    /// from [`crate::error::Error::Git`].
     fn review_source(
         &self,
         _item: &ItemRef,
