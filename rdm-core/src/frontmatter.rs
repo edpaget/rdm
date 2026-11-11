@@ -11,13 +11,15 @@
 //!
 //! * [`options`] turns off the inference and strictness the old reader did
 //!   not have;
-//! * three text-level adjustments cover what no option reaches —
-//!   [`line_separators_as_breaks`], [`strip_unterminated_block_scalar`] and
-//!   [`quote_overflowing_scalar`].
+//! * four text-level adjustments cover what no option reaches —
+//!   [`line_separators_as_breaks`], [`strip_unterminated_block_scalar`],
+//!   [`quote_strings_read_as_numbers`] and [`quote_non_finite_scalar`].
 
 use std::borrow::Cow;
+use std::fmt;
 
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Visitor};
+use serde::{Deserialize, Deserializer};
 use serde_saphyr::granit_parser::{Event, Parser, ScalarStyle};
 use serde_saphyr::{
     DuplicateKeyPolicy, Localizer, Location, MergeKeyPolicy, MessageFormatter,
@@ -35,14 +37,18 @@ use crate::error::FrontmatterError;
 /// the caller that knows the document adds it.
 pub(crate) fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, FrontmatterError> {
     let text = line_separators_as_breaks(text);
-    let mut text = match strip_unterminated_block_scalar(&text) {
+    let text = match strip_unterminated_block_scalar(&text) {
         Some(stripped) => Cow::Owned(stripped),
+        None => text,
+    };
+    let mut text = match quote_strings_read_as_numbers(&text) {
+        Some(quoted) => Cow::Owned(quoted),
         None => text,
     };
     loop {
         match serde_saphyr::from_str_with_options::<T>(&text, options()) {
             Ok(value) => return Ok(value),
-            Err(err) => match quote_overflowing_scalar(&text, &err) {
+            Err(err) => match quote_non_finite_scalar(&text, &err) {
                 Some(quoted) => text = Cow::Owned(quoted),
                 None => return Err(describe(&err)),
             },
@@ -74,7 +80,7 @@ fn options() -> Options {
         ignore_binary_tag_for_string: true,
         // One-line messages: rdm reports the position itself.
         with_snippet: false,
-        // The default, stated because `quote_overflowing_scalar` relies on
+        // The default, stated because `quote_non_finite_scalar` relies on
         // the error it produces.
         non_finite_float_policy: NonFiniteFloatPolicy::Reject,
     }
@@ -197,15 +203,132 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<String> {
     })
 }
 
-/// Quotes the bare scalar `err` rejected as a float too large to hold,
+/// Quotes each bare scalar the old reader read as a string and the reader
+/// takes for a number, returning the rewritten text, or `None` when `text`
+/// has no such scalar.
+///
+/// Where it had to guess, the old reader called a bare scalar a number only
+/// if it spelled one its own way, and the old writer quoted a string only
+/// when that reader would have misread it. The reader knows more spellings:
+/// a radix prefix in capitals (`0X1F`, `-0O17`, `+0B101`), a signed `.nan`,
+/// and a decimal float too large to hold (`1e999`, or a commit id made of
+/// digits and a single `e`). Read as a number, such a string fails to load
+/// where a string is expected and silently becomes a number where anything
+/// is.
+///
+/// The two readers are asked rather than the spellings listed:
+/// [`old_reader_read_a_number`] restates the old reader's rule, and
+/// [`GuessedString`] puts the scalar to the reader itself. Only a scalar
+/// that starts the way a number does — with a digit, a sign or a dot — is
+/// asked about; over every other bare scalar the two agree under
+/// [`options`]. Quoting a scalar the old reader read as a string never
+/// changes what it holds.
+fn quote_strings_read_as_numbers(text: &str) -> Option<String> {
+    let mut quoted = String::new();
+    let mut copied = 0;
+    for event in Parser::new_from_str(text) {
+        // A text that does not parse is the reader's to report, untouched.
+        let (event, span) = event.ok()?;
+        // A tag states the type, so nothing is guessed.
+        let Event::Scalar(value, ScalarStyle::Plain, _, None) = event else {
+            continue;
+        };
+        if !value.starts_with(|first| matches!(first, '0'..='9' | '+' | '-' | '.'))
+            || old_reader_read_a_number(&value)
+            || serde_saphyr::from_str_with_options::<GuessedString>(&value, options()).is_ok()
+        {
+            continue;
+        }
+        let (start, end) = (span.start.byte_offset()?, span.end.byte_offset()?);
+        // A scalar folded over several lines is not its own source text; its
+        // value has a space in it, which no number does.
+        if text.get(start..end) != Some(&*value) {
+            continue;
+        }
+        quoted.push_str(&text[copied..start]);
+        quoted.push('\'');
+        quoted.push_str(&value.replace('\'', "''"));
+        quoted.push('\'');
+        copied = end;
+    }
+    if copied == 0 {
+        return None;
+    }
+    quoted.push_str(&text[copied..]);
+    Some(quoted)
+}
+
+/// Whether the old reader, `serde_yaml` 0.9, read the bare scalar `scalar`
+/// as an integer or a float where it had to guess a type.
+///
+/// Its rule, restated. After at most one sign, a number is one of: `0x`,
+/// `0o` or `0b` — in lower case only — and digits of that radix that fit in
+/// 128 bits; `.inf`, or unsigned `.nan`, in one of three casings; or what
+/// Rust parses to a finite `f64`, which covers every decimal integer it
+/// took, unless it is all digits behind a redundant leading zero (`0755`).
+fn old_reader_read_a_number(scalar: &str) -> bool {
+    let (negative, unsigned) = match scalar.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, scalar.strip_prefix('+').unwrap_or(scalar)),
+    };
+    // Rust's own parsers accept a sign, which here would be a second one.
+    let signed_twice = unsigned.starts_with(['+', '-']);
+    let leading_zero = unsigned.len() > 1
+        && unsigned.starts_with('0')
+        && unsigned.bytes().all(|digit| digit.is_ascii_digit());
+
+    let prefixed = [("0x", 16), ("0o", 8), ("0b", 2)]
+        .into_iter()
+        .find_map(|(prefix, radix)| Some((unsigned.strip_prefix(prefix)?, radix)))
+        .is_some_and(|(digits, radix)| {
+            !digits.starts_with(['+', '-'])
+                && if negative {
+                    i128::from_str_radix(&format!("-{digits}"), radix).is_ok()
+                } else {
+                    u128::from_str_radix(digits, radix).is_ok()
+                }
+        });
+    let non_finite =
+        matches!(unsigned, ".inf" | ".Inf" | ".INF") || matches!(scalar, ".nan" | ".NaN" | ".NAN");
+    let decimal =
+        !signed_twice && !leading_zero && unsigned.parse::<f64>().is_ok_and(f64::is_finite);
+
+    prefixed || non_finite || decimal
+}
+
+/// Reads a bare scalar the way the reader does where it has to guess a
+/// type, and succeeds only when the guess is a string.
+struct GuessedString;
+
+impl<'de> Deserialize<'de> for GuessedString {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StringOnly;
+
+        impl Visitor<'_> for StringOnly {
+            type Value = GuessedString;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(GuessedString)
+            }
+        }
+
+        deserializer.deserialize_any(StringOnly)
+    }
+}
+
+/// Quotes the bare scalar `err` rejected as a number that is not finite,
 /// returning the patched text, or `None` when `err` is any other failure.
 ///
-/// The old writer left strings such as `1e999`, or a commit id made of
-/// digits and a single `e`, unquoted, and the old reader gave them back as
-/// strings. Where the reader has to guess a type it sees a float that
-/// overflows, and none of its policies returns the text. Quoting that one
-/// scalar and reading again does.
-fn quote_overflowing_scalar(text: &str, err: &serde_saphyr::Error) -> Option<String> {
+/// [`quote_strings_read_as_numbers`] has already quoted the strings that
+/// spell such a number. What reaches here is one the old reader took for a
+/// number too — `.inf`, `.nan` — in a place where the type is guessed, and
+/// none of the reader's policies returns the text. Quoting that one scalar
+/// and reading again does.
+fn quote_non_finite_scalar(text: &str, err: &serde_saphyr::Error) -> Option<String> {
     let serde_saphyr::Error::NonFiniteFloat { value, location } = err.without_snippet() else {
         return None;
     };
@@ -266,9 +389,15 @@ mod tests {
     use crate::model::{Anchor, Phase, PhaseStatus, ReviewTarget, Run, RunTarget, Task};
 
     /// Scalars the old writer left bare and the old reader gave back as
-    /// strings, though a YAML 1.1 reader takes them for booleans or numbers.
-    const BARE_WORDS: [&str; 13] = [
+    /// strings, though a YAML 1.1 reader takes them for booleans or numbers
+    /// and a YAML 1.2 one for numbers too: a radix prefix in capitals under
+    /// each sign, a signed `.nan` in each casing, and a float too large to
+    /// hold under each sign and exponent letter.
+    const BARE_WORDS: [&str; 38] = [
         "yes", "Yes", "no", "on", "off", "y", "n", "Y", "N", "0755", "-007", "1_000", "0xFF_FF",
+        "0X1F", "0XFF", "0Xff", "0X0", "+0X1F", "-0X1F", "0O17", "0O0", "+0O17", "-0O17", "0B101",
+        "0B0", "+0B101", "-0B101", "+.nan", "-.nan", "+.NaN", "-.NaN", "+.NAN", "-.NAN", "1e999",
+        "1E999", "+1e999", "-1e309", "1.5e999",
     ];
 
     fn task_titled(title_yaml: &str) -> String {
@@ -335,6 +464,99 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn a_bare_word_stays_a_string_in_an_unrecognised_anchor() {
+        // Nothing here expects a string, so a misread word does not fail to
+        // load: it would quietly come back as a number.
+        for word in BARE_WORDS {
+            let yaml = format!("anchor_type: heading-path\nmark: {word}\nmarks:\n- {word}\n");
+            let anchor: Anchor = from_str(&yaml).unwrap();
+            let Anchor::Unknown { raw, .. } = anchor else {
+                panic!("expected Anchor::Unknown, got {anchor:?}");
+            };
+            assert_eq!(raw.get("mark"), Some(&json!(word)));
+            assert_eq!(raw.get("marks"), Some(&json!([word])));
+        }
+    }
+
+    #[test]
+    fn a_bare_word_reads_back_as_the_writer_wrote_it() {
+        for word in BARE_WORDS {
+            let target = ReviewTarget::Phase {
+                roadmap: word.to_string(),
+                stem: word.to_string(),
+            };
+            let anchor = Anchor::TextQuote {
+                quote: word.to_string(),
+                prefix: word.to_string(),
+                suffix: word.to_string(),
+            };
+            let written = serde_yaml::to_string(&target).unwrap();
+            assert_eq!(from_str::<ReviewTarget>(&written).unwrap(), target);
+            let written = serde_yaml::to_string(&anchor).unwrap();
+            assert_eq!(from_str::<Anchor>(&written).unwrap(), anchor);
+        }
+    }
+
+    #[test]
+    fn a_bare_word_stays_a_string_wherever_it_is_written() {
+        let cases = [
+            // In a flow sequence, before a comment, as a key, behind an
+            // anchor, and after text that is not ASCII.
+            ("k: [0X1F, a, -0B1]", json!({"k": ["0X1F", "a", "-0B1"]})),
+            ("k: 0X1F  # c\nj: 0O7", json!({"k": "0X1F", "j": "0O7"})),
+            ("0X1F: v", json!({"0X1F": "v"})),
+            ("k: &a 0X1F\nj: *a", json!({"k": "0X1F", "j": "0X1F"})),
+            ("t: é中 x\nk: 0X1F", json!({"t": "é中 x", "k": "0X1F"})),
+            (
+                "k: 0X1F\r\nj: +.nan\r\n",
+                json!({"k": "0X1F", "j": "+.nan"}),
+            ),
+            // Already a string: quoted, a line of a block scalar, a line of
+            // a scalar folded over several.
+            ("k: '0X1F'\nj: \"0X1F\"", json!({"k": "0X1F", "j": "0X1F"})),
+            ("k: |\n  0X1F\n  x\n", json!({"k": "0X1F\nx\n"})),
+            ("k: one\n  0X1F\n  two", json!({"k": "one 0X1F two"})),
+            ("k: 0X1F\n  0X1F", json!({"k": "0X1F 0X1F"})),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(from_str::<Value>(text).unwrap(), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_number_the_old_reader_read_stays_a_number_where_the_type_is_guessed() {
+        let cases = [
+            ("0x1F", json!(31)),
+            ("+0x1F", json!(31)),
+            ("-0x1F", json!(-31)),
+            ("0o17", json!(15)),
+            ("0b101", json!(5)),
+            ("+12", json!(12)),
+            ("-12", json!(-12)),
+            ("-0", json!(0)),
+            ("1e3", json!(1000.0)),
+            ("1E3", json!(1000.0)),
+            ("+.5", json!(0.5)),
+            ("1.", json!(1.0)),
+            ("-1.5e-3", json!(-0.0015)),
+        ];
+        for (text, expected) in cases {
+            let anchor: Anchor =
+                from_str(&format!("anchor_type: heading-path\nn: {text}\n")).unwrap();
+            let Anchor::Unknown { raw, .. } = anchor else {
+                panic!("expected Anchor::Unknown, got {anchor:?}");
+            };
+            assert_eq!(raw.get("n"), Some(&expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_problem_after_a_bare_word_keeps_its_position() {
+        let err = from_str::<Phase>("phase: 1\ntitle: 0X1F\nstatus: nearly\n").unwrap_err();
+        assert_eq!((err.line(), err.column()), (Some(3), Some(9)));
     }
 
     #[test]
