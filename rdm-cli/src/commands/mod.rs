@@ -1495,9 +1495,9 @@ pub fn resolve_applied_commit(
             .map(|repo| repo.root().to_path_buf())
             .map_err(|e| format!("{e:#}")),
     };
-    let candidates = match target {
-        rdm_core::model::ReviewTarget::Change { .. } => [source, plan],
-        _ => [plan, source],
+    let candidates = match target.implied_commit_repo() {
+        CommitRepo::Source => [source, plan],
+        CommitRepo::Plan => [plan, source],
     };
     match rdm_git::resolve_commit_in_candidates(&candidates, sha)
         .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -1545,14 +1545,14 @@ fn applied_commit_refusal(
     );
     if primary_only {
         message.push_str(
-            " — a name such as HEAD or a branch is resolved only in the repository the review              targets; pass the commit's SHA to have the other repository checked too",
+            " — a name such as HEAD or a branch is resolved only in the repository the review targets; pass the commit's SHA to have the other repository checked too",
         );
     } else if misses
         .iter()
         .any(|(_, miss)| matches!(miss, CandidateMiss::DidNotResolve(_)))
     {
         message.push_str(
-            " — if this is an abbreviated SHA, it may be ambiguous; try a longer prefix or the              full SHA",
+            " — if this is an abbreviated SHA, it may be ambiguous; try a longer prefix or the full SHA",
         );
     }
     message

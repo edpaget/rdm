@@ -1244,6 +1244,34 @@ impl ReviewTarget {
         Ok(())
     }
 
+    /// The repository this target's kind implies a commit about it lives in:
+    /// [`CommitRepo::Source`] for a `change/` review, [`CommitRepo::Plan`]
+    /// for every other kind.
+    ///
+    /// This is the single statement of that rule. It decides which
+    /// repository an applied commit is looked for in first, and which one a
+    /// comment recorded without [`ReviewComment::applied_commit_repo`] is
+    /// read as naming.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::model::{CommitRepo, ReviewTarget};
+    ///
+    /// let task = ReviewTarget::Task { slug: "fix-login".into() };
+    /// assert_eq!(task.implied_commit_repo(), CommitRepo::Plan);
+    /// ```
+    #[must_use]
+    pub fn implied_commit_repo(&self) -> CommitRepo {
+        match self {
+            ReviewTarget::Change { .. } => CommitRepo::Source,
+            ReviewTarget::Roadmap { .. }
+            | ReviewTarget::Phase { .. }
+            | ReviewTarget::Task { .. }
+            | ReviewTarget::Plan { .. } => CommitRepo::Plan,
+        }
+    }
+
     /// Renders the target in the CLI's `<kind>/<id>` reference syntax:
     /// `roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`, `task/<slug>`,
     /// `plan/<slug>`, or `change/<head>`.
@@ -1961,15 +1989,15 @@ impl ReviewComment {
     ///
     /// A recorded [`Self::applied_commit_repo`] is returned as is. A record
     /// without one (written before the field existed) reads as the repository
-    /// the review's target kind implies: [`CommitRepo::Source`] for a
-    /// `change/` review, [`CommitRepo::Plan`] for every other kind.
+    /// the review's target kind implies
+    /// ([`ReviewTarget::implied_commit_repo`]).
     #[must_use]
     pub fn effective_applied_commit_repo(&self, target: &ReviewTarget) -> Option<CommitRepo> {
         self.applied_commit.as_ref()?;
-        Some(self.applied_commit_repo.unwrap_or(match target {
-            ReviewTarget::Change { .. } => CommitRepo::Source,
-            _ => CommitRepo::Plan,
-        }))
+        Some(
+            self.applied_commit_repo
+                .unwrap_or_else(|| target.implied_commit_repo()),
+        )
     }
 }
 

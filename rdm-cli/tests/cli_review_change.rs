@@ -3091,7 +3091,9 @@ fn change_review_applied_commit_unknown_short_sha_hints_at_ambiguity() {
         "a real git repo with no matching commit is genuinely unresolvable: {text}"
     );
     assert!(
-        text.contains("ambiguous") && text.contains("full SHA"),
+        text.contains(
+            "if this is an abbreviated SHA, it may be ambiguous; try a longer prefix or the full SHA"
+        ),
         "must hint that an abbreviated SHA may be ambiguous: {text}"
     );
 }
@@ -4844,6 +4846,13 @@ fn change_review_applied_commit_head_is_refused_when_source_is_not_a_git_checkou
     assert!(!ok, "HEAD must not fall through to the plan repo");
     assert!(stderr.contains("not a git checkout"), "{stderr}");
     assert!(names_path(&stderr, not_a_repo.path()), "{stderr}");
+    assert!(
+        stderr.contains(
+            "a name such as HEAD or a branch is resolved only in the repository the review \
+             targets; pass the commit's SHA to have the other repository checked too"
+        ),
+        "{stderr}"
+    );
     assert!(
         !names_path(&stderr, plan.path()),
         "the plan repo must not have been looked in: {stderr}"

@@ -788,3 +788,118 @@ async fn applied_commit_change_review_refuses_with_no_source_configured() {
         "must carry source_for's own detail: {detail}"
     );
 }
+
+/// Makes the plan directory a git checkout with one commit holding everything
+/// seeded so far, and returns that commit's SHA.
+#[cfg(feature = "git")]
+fn commit_plan_repo(plan: &Path) -> String {
+    git(plan, &["init", "-b", "main"]);
+    git(plan, &["add", "."]);
+    git(plan, &["commit", "-m", "seed plan data"]);
+    git_out(plan, &["rev-parse", "HEAD"])
+}
+
+/// A plan-repo SHA on a `change/` review is the non-default repository for
+/// that kind: the response must report `plan` — the value the handler
+/// resolved, not the `source` a comment without a recorded repository reads
+/// as — and carry no source link.
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn applied_commit_change_review_records_the_plan_repo_for_a_plan_sha() {
+    let (src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    set_project_source(plan.path(), Some(&src.path().to_string_lossy()));
+    let plan_sha = commit_plan_repo(plan.path());
+
+    let (addr, client) = spawn(plan.path()).await;
+    let res = client
+        .patch(format!(
+            "http://{addr}/projects/{PROJECT}/reviews/{REVIEW_ID}/comments/1"
+        ))
+        .json(&serde_json::json!({ "applied_commit": &plan_sha }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let comment = &body["comments"][0];
+    assert_eq!(comment["applied_commit"], plan_sha.as_str());
+    assert_eq!(comment["applied_commit_repo"], "plan", "{comment}");
+    assert!(comment.get("applied_commit_link").is_none(), "{comment}");
+
+    // The stored record says the same on a fresh read.
+    let read = get_review_json(addr, &client).await;
+    assert_eq!(read["comments"][0]["applied_commit_repo"], "plan");
+}
+
+/// A source SHA on a plan-document review is the non-default repository for
+/// that kind: the response must report `source` — not the `plan` a comment
+/// without a recorded repository reads as — and link the commit.
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn applied_commit_document_review_records_the_source_repo_for_a_source_sha() {
+    const DOC_REVIEW_ID: &str = "2026-09-19-0904-d0c5";
+    let (src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    set_project_source(plan.path(), Some(&src.path().to_string_lossy()));
+    {
+        let mut store = FsStore::new(plan.path());
+        rdm_core::io::write_review(
+            &mut store,
+            PROJECT,
+            DOC_REVIEW_ID,
+            &Document {
+                frontmatter: Review {
+                    id: DOC_REVIEW_ID.to_string(),
+                    author: "reviewer".to_string(),
+                    target: ReviewTarget::Task {
+                        slug: "solo".to_string(),
+                    },
+                    state: ReviewState::Submitted,
+                    verdict: Some(Verdict::RequestChanges),
+                    created: Utc::now(),
+                    submitted: Some(Utc::now()),
+                    created_commit: None,
+                    implements: None,
+                    change_branch: None,
+                    comments: vec![ReviewComment {
+                        anchor_state: None,
+                        intended_path: None,
+                        id: 1,
+                        doc: None,
+                        status: ReviewCommentStatus::Open,
+                        applied_commit: None,
+                        applied_commit_repo: None,
+                        anchor: None,
+                        body: "A finding about the task.".to_string(),
+                        reply: None,
+                    }],
+                },
+                body: "One finding.\n".to_string(),
+            },
+        )
+        .unwrap();
+        flush(&mut store);
+    }
+    commit_plan_repo(plan.path());
+
+    let (addr, client) = spawn(plan.path()).await;
+    let res = client
+        .patch(format!(
+            "http://{addr}/projects/{PROJECT}/reviews/{DOC_REVIEW_ID}/comments/1"
+        ))
+        .json(&serde_json::json!({ "applied_commit": &head }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let comment = &body["comments"][0];
+    assert_eq!(comment["applied_commit"], head.as_str());
+    assert_eq!(comment["applied_commit_repo"], "source", "{comment}");
+    assert_eq!(
+        comment["applied_commit_link"],
+        format!("rdm:src@{head}").as_str(),
+        "{comment}"
+    );
+}
