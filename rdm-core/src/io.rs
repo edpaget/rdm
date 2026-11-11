@@ -1206,4 +1206,30 @@ mod tests {
         let problem = frontmatter_error(Document::<Phase>::parse(&content).unwrap_err());
         assert_eq!(problem.line(), Some(6));
     }
+
+    #[test]
+    fn a_frontmatter_position_is_a_place_in_the_file_as_it_is_written() {
+        // The reader is handed a rewritten text in both: a raw U+2028 read
+        // as a line break, and a bare word quoted. Neither moves the place.
+        let cases = [
+            (
+                "---\nphase: 1\ntitle: 'a\u{2028}  b'\nstatus: nearly\n---\n",
+                " at line 4, column 9",
+            ),
+            (
+                "---\n{phase: 1, title: 0X1F, status: nearly}\n---\n",
+                " at line 2, column 33",
+            ),
+        ];
+        for (content, position) in cases {
+            let mut store = setup_store();
+            write_phase_file(&mut store, content);
+
+            let message = load_phase(&store, "test", "alpha", "phase-1-one")
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains("unknown variant `nearly`"), "{message}");
+            assert!(message.ends_with(position), "{message}");
+        }
+    }
 }

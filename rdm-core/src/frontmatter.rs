@@ -14,16 +14,22 @@
 //! * four text-level adjustments cover what no option reaches —
 //!   [`line_separators_as_breaks`], [`strip_unterminated_block_scalar`],
 //!   [`quote_strings_read_as_numbers`] and [`quote_non_finite_scalar`].
+//!
+//! The reader is therefore handed a text that can differ from the one in the
+//! file. Each adjustment states its changes as [`Replacement`]s and
+//! [`Rewritten`] applies them, so a problem the reader finds is reported
+//! where it is in the file rather than in the adjusted text.
 
 use std::borrow::Cow;
 use std::fmt;
+use std::ops::Range;
 
 use serde::de::{DeserializeOwned, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_saphyr::granit_parser::{Event, Parser, ScalarStyle};
 use serde_saphyr::{
     DuplicateKeyPolicy, Localizer, Location, MergeKeyPolicy, MessageFormatter,
-    NonFiniteFloatPolicy, Options, SnippetMode, UserMessageFormatter,
+    NonFiniteFloatPolicy, Options, SnippetMode, Span, UserMessageFormatter,
 };
 
 use crate::error::FrontmatterError;
@@ -33,27 +39,153 @@ use crate::error::FrontmatterError;
 /// # Errors
 ///
 /// Returns a [`FrontmatterError`] carrying the problem and the line and
-/// column it was found at, counted within `text`. It names no document;
-/// the caller that knows the document adds it.
+/// column it was found at, counted within `text` as it was given. It names
+/// no document; the caller that knows the document adds it.
 pub(crate) fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, FrontmatterError> {
-    let text = line_separators_as_breaks(text);
-    let text = match strip_unterminated_block_scalar(&text) {
-        Some(stripped) => Cow::Owned(stripped),
-        None => text,
-    };
-    let mut text = match quote_strings_read_as_numbers(&text) {
-        Some(quoted) => Cow::Owned(quoted),
-        None => text,
-    };
+    let mut text = Rewritten::new(text);
+    text.apply(line_separators_as_breaks(text.as_str()));
+    text.apply(strip_unterminated_block_scalar(text.as_str()));
+    text.apply(quote_strings_read_as_numbers(text.as_str()));
     loop {
-        match serde_saphyr::from_str_with_options::<T>(&text, options()) {
+        match serde_saphyr::from_str_with_options::<T>(text.as_str(), options()) {
             Ok(value) => return Ok(value),
-            Err(err) => match quote_non_finite_scalar(&text, &err) {
-                Some(quoted) => text = Cow::Owned(quoted),
-                None => return Err(describe(&err)),
+            Err(err) => match quote_non_finite_scalar(text.as_str(), &err) {
+                Some(quoted) => text.apply(Some(quoted)),
+                None => return Err(describe(&err, &text)),
             },
         }
     }
+}
+
+/// One change an adjustment makes to the text it is given: the bytes at
+/// `at` give way to `with`.
+struct Replacement {
+    at: Range<usize>,
+    with: String,
+}
+
+/// A [`Replacement`] once applied: `removed` bytes at `at`, an offset in
+/// the text before the change, became `inserted` bytes.
+struct Edit {
+    at: usize,
+    removed: usize,
+    inserted: usize,
+}
+
+/// The text the reader is handed, with the changes that made it out of the
+/// original, so a place in it can be traced back.
+struct Rewritten<'a> {
+    original: &'a str,
+    text: Cow<'a, str>,
+    /// The edits of each adjustment that changed something, in the order
+    /// they ran. An adjustment works on the text the one before it left, so
+    /// its offsets index that text, not the original.
+    passes: Vec<Vec<Edit>>,
+}
+
+impl<'a> Rewritten<'a> {
+    fn new(original: &'a str) -> Self {
+        Rewritten {
+            original,
+            text: Cow::Borrowed(original),
+            passes: Vec::new(),
+        }
+    }
+
+    /// The text as it stands.
+    fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Makes one adjustment's `replacements`, which are in the order they
+    /// occur in the text as it stands and do not overlap. The text is
+    /// copied once however many there are, and not at all when there are
+    /// none.
+    fn apply(&mut self, replacements: impl IntoIterator<Item = Replacement>) {
+        let mut text = String::new();
+        let mut edits = Vec::new();
+        let mut copied = 0;
+        for Replacement { at, with } in replacements {
+            text.push_str(&self.text[copied..at.start]);
+            text.push_str(&with);
+            copied = at.end;
+            edits.push(Edit {
+                at: at.start,
+                removed: at.len(),
+                inserted: with.len(),
+            });
+        }
+        if edits.is_empty() {
+            return;
+        }
+        text.push_str(&self.text[copied..]);
+        self.text = Cow::Owned(text);
+        self.passes.push(edits);
+    }
+
+    /// The byte offset in the original of `at`, a byte offset in the text
+    /// as it stands. A place inside a replacement is where the text it
+    /// replaced began.
+    fn original_offset(&self, at: usize) -> usize {
+        self.passes.iter().rev().fold(at, |at, edits| {
+            // How far the text before this pass and the text after it have
+            // each been accounted for.
+            let (mut before, mut after) = (0, 0);
+            for edit in edits {
+                let replacement = after + (edit.at - before);
+                if at < replacement {
+                    break;
+                }
+                if at < replacement + edit.inserted {
+                    return edit.at;
+                }
+                before = edit.at + edit.removed;
+                after = replacement + edit.inserted;
+            }
+            before + (at - after)
+        })
+    }
+
+    /// The 1-based line and column in the original of `location`, a place
+    /// the reader found in the text as it stands.
+    ///
+    /// A text no adjustment changed keeps the reader's own count. Otherwise
+    /// the place is traced back through the edits and counted again in the
+    /// original, the way the reader counts.
+    fn original_position(&self, location: &Location) -> (u64, u64) {
+        let span = location.span();
+        if self.passes.is_empty() || span == Span::UNKNOWN {
+            return (location.line(), location.column());
+        }
+        // The reader states every place as a count of characters, and only
+        // some as a count of bytes: a syntax error has none.
+        let at = usize::try_from(span.offset())
+            .ok()
+            .and_then(|characters| self.text.char_indices().nth(characters))
+            .map_or(self.text.len(), |(at, _)| at);
+        position_at(self.original, self.original_offset(at))
+    }
+}
+
+/// The 1-based line and column of the byte offset `at` in `text`, counted
+/// as the reader counts them: a line ends at a line feed, a carriage return
+/// or the pair of them, and every character on it is one column, whatever
+/// its width in bytes — a tab and a U+2028 included, a byte order mark that
+/// opens the line excepted.
+fn position_at(text: &str, at: usize) -> (u64, u64) {
+    let (mut line, mut column) = (1, 1);
+    let mut after_carriage_return = false;
+    for (_, ch) in text.char_indices().take_while(|&(start, _)| start < at) {
+        match ch {
+            // The second half of a CRLF, which has already ended the line.
+            '\n' if after_carriage_return => {}
+            '\n' | '\r' => (line, column) = (line + 1, 1),
+            '\u{feff}' if column == 1 => {}
+            _ => column += 1,
+        }
+        after_carriage_return = ch == '\r';
+    }
+    (line, column)
 }
 
 /// The reader options under which a file `serde_yaml` wrote, or accepted,
@@ -96,18 +228,19 @@ fn options() -> Options {
 /// the document loads with every key intact. The separator itself reads
 /// back as a line break — a newline in a block scalar, a space in a quoted
 /// one — rather than as the character that was written.
-fn line_separators_as_breaks(text: &str) -> Cow<'_, str> {
+fn line_separators_as_breaks(text: &str) -> Vec<Replacement> {
     const SEPARATORS: [char; 2] = ['\u{2028}', '\u{2029}'];
-    if text.contains(SEPARATORS) {
-        Cow::Owned(text.replace(SEPARATORS, "\n"))
-    } else {
-        Cow::Borrowed(text)
-    }
+    text.match_indices(SEPARATORS)
+        .map(|(at, separator)| Replacement {
+            at: at..at + separator.len(),
+            with: "\n".to_string(),
+        })
+        .collect()
 }
 
 /// Rewrites a block scalar that runs into the end of `text` so it ends
-/// without a line break, returning the rewritten text, or `None` when
-/// `text` has no such scalar.
+/// without a line break, returning the change to its header, or `None`
+/// when `text` has no such scalar.
 ///
 /// Frontmatter reaches the reader without the line break before the closing
 /// `---`. When the last thing in it is a block scalar (`body: |`), the old
@@ -116,7 +249,7 @@ fn line_separators_as_breaks(text: &str) -> Cow<'_, str> {
 /// body or reply of a review's last comment — so the header's chomping
 /// indicator is replaced with `-` (strip), which says what the old reader
 /// did.
-fn strip_unterminated_block_scalar(text: &str) -> Option<String> {
+fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
     // Cheap pre-filter: only a text that stops in the middle of an indented
     // line of content, and has a block-scalar indicator somewhere, can be
     // affected. A text that ends with a line break — a file with CRLF line
@@ -195,17 +328,16 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<String> {
         }
         let indentation: String = signs.chars().filter(char::is_ascii_digit).collect();
         let signs_at = from + at + 1;
-        Some(format!(
-            "{}{indentation}-{}",
-            &text[..signs_at],
-            &text[signs_at + signs.len()..]
-        ))
+        Some(Replacement {
+            at: signs_at..signs_at + signs.len(),
+            with: format!("{indentation}-"),
+        })
     })
 }
 
 /// Quotes each bare scalar the old reader read as a string and the reader
-/// takes for a number, returning the rewritten text, or `None` when `text`
-/// has no such scalar.
+/// takes for a number, returning one replacement for each, in the order
+/// they occur in `text`.
 ///
 /// Where it had to guess, the old reader called a bare scalar a number only
 /// if it spelled one its own way, and the old writer quoted a string only
@@ -223,12 +355,13 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<String> {
 /// asked about; over every other bare scalar the two agree under
 /// [`options`]. Quoting a scalar the old reader read as a string never
 /// changes what it holds.
-fn quote_strings_read_as_numbers(text: &str) -> Option<String> {
-    let mut quoted = String::new();
-    let mut copied = 0;
+fn quote_strings_read_as_numbers(text: &str) -> Vec<Replacement> {
+    let mut quoted = Vec::new();
     for event in Parser::new_from_str(text) {
         // A text that does not parse is the reader's to report, untouched.
-        let (event, span) = event.ok()?;
+        let Ok((event, span)) = event else {
+            return Vec::new();
+        };
         // A tag states the type, so nothing is guessed.
         let Event::Scalar(value, ScalarStyle::Plain, _, None) = event else {
             continue;
@@ -239,23 +372,20 @@ fn quote_strings_read_as_numbers(text: &str) -> Option<String> {
         {
             continue;
         }
-        let (start, end) = (span.start.byte_offset()?, span.end.byte_offset()?);
+        let (Some(start), Some(end)) = (span.start.byte_offset(), span.end.byte_offset()) else {
+            return Vec::new();
+        };
         // A scalar folded over several lines is not its own source text; its
         // value has a space in it, which no number does.
         if text.get(start..end) != Some(&*value) {
             continue;
         }
-        quoted.push_str(&text[copied..start]);
-        quoted.push('\'');
-        quoted.push_str(&value.replace('\'', "''"));
-        quoted.push('\'');
-        copied = end;
+        quoted.push(Replacement {
+            at: start..end,
+            with: format!("'{}'", value.replace('\'', "''")),
+        });
     }
-    if copied == 0 {
-        return None;
-    }
-    quoted.push_str(&text[copied..]);
-    Some(quoted)
+    quoted
 }
 
 /// Whether the old reader, `serde_yaml` 0.9, read the bare scalar `scalar`
@@ -321,14 +451,14 @@ impl<'de> Deserialize<'de> for GuessedString {
 }
 
 /// Quotes the bare scalar `err` rejected as a number that is not finite,
-/// returning the patched text, or `None` when `err` is any other failure.
+/// returning the replacement, or `None` when `err` is any other failure.
 ///
 /// [`quote_strings_read_as_numbers`] has already quoted the strings that
 /// spell such a number. What reaches here is one the old reader took for a
 /// number too — `.inf`, `.nan` — in a place where the type is guessed, and
 /// none of the reader's policies returns the text. Quoting that one scalar
 /// and reading again does.
-fn quote_non_finite_scalar(text: &str, err: &serde_saphyr::Error) -> Option<String> {
+fn quote_non_finite_scalar(text: &str, err: &serde_saphyr::Error) -> Option<Replacement> {
     let serde_saphyr::Error::NonFiniteFloat { value, location } = err.without_snippet() else {
         return None;
     };
@@ -337,7 +467,10 @@ fn quote_non_finite_scalar(text: &str, err: &serde_saphyr::Error) -> Option<Stri
     if text.get(start..end)? != value {
         return None;
     }
-    Some(format!("{}'{value}'{}", &text[..start], &text[end..]))
+    Some(Replacement {
+        at: start..end,
+        with: format!("'{value}'"),
+    })
 }
 
 /// Words a reader failure for someone editing a plan file: the library's
@@ -369,15 +502,16 @@ impl MessageFormatter for ProblemText {
     }
 }
 
-/// Converts the reader's error into rdm-core's own.
-fn describe(err: &serde_saphyr::Error) -> FrontmatterError {
+/// Converts the reader's error over `text` into rdm-core's own, placed in
+/// the original of `text`.
+fn describe(err: &serde_saphyr::Error, text: &Rewritten<'_>) -> FrontmatterError {
     let problem = err.render_with_options(serde_saphyr::render_options! {
         formatter: &ProblemText,
         snippets: SnippetMode::Off,
     });
     let position = err
         .location()
-        .map(|location| (location.line(), location.column()));
+        .map(|location| text.original_position(&location));
     FrontmatterError::new(problem, position)
 }
 
@@ -782,5 +916,177 @@ mod tests {
             "{err:?}"
         );
         assert_eq!((err.line(), err.column()), (Some(3), Some(9)));
+    }
+
+    // -- a problem is placed in the text as it was given --
+
+    /// The line and column of the problem reading `text` as a phase.
+    fn position(text: &str) -> (u64, u64) {
+        let err = from_str::<Phase>(text).unwrap_err();
+        (err.line().unwrap(), err.column().unwrap())
+    }
+
+    /// Asserts that the problem in `text` is reported at `expected`, and
+    /// that so is the one in `twin`: the same text, character for character,
+    /// but for holding nothing the adapter rewrites, so the position is the
+    /// reader's own.
+    fn assert_placed_like_its_twin(text: &str, twin: &str, expected: (u64, u64)) {
+        assert_eq!(position(twin), expected, "the twin {twin:?}");
+        assert_eq!(position(text), expected, "{text:?}");
+    }
+
+    #[test]
+    fn a_problem_after_a_line_separator_keeps_its_line() {
+        for separator in ['\u{2028}', '\u{2029}'] {
+            for eol in ["\n", "\r\n", "\r"] {
+                assert_placed_like_its_twin(
+                    &format!("phase: 1{eol}title: 'a{separator}  b'{eol}status: nearly{eol}"),
+                    &format!("phase: 1{eol}title: 'a   b'{eol}status: nearly{eol}"),
+                    (3, 9),
+                );
+            }
+            // Three of them, in two scalars.
+            assert_placed_like_its_twin(
+                &format!(
+                    "phase: 1\ntitle: 'a{separator}  b{separator}  c'\n\
+                     commit: \"d{separator}  e\"\nstatus: nearly\n"
+                ),
+                "phase: 1\ntitle: 'a   b   c'\ncommit: \"d   e\"\nstatus: nearly\n",
+                (4, 9),
+            );
+        }
+    }
+
+    #[test]
+    fn a_problem_on_the_line_of_a_bare_word_keeps_its_column() {
+        let cases = [
+            // After one quoted word, after two, and after two numbers that
+            // are not finite.
+            (
+                "{phase: 1, title: 0X1F, status: nearly}\n",
+                "{phase: 1, title: abcd, status: nearly}\n",
+                (1, 33),
+            ),
+            (
+                "{title: 0X1F, commit: -0B1, phase: 1, status: nearly}\n",
+                "{title: abcd, commit: abcd, phase: 1, status: nearly}\n",
+                (1, 47),
+            ),
+            (
+                "{junk: .inf, more: .NaN, phase: 1, title: T, status: nearly}\n",
+                "{junk: abcd, more: abcd, phase: 1, title: T, status: nearly}\n",
+                (1, 54),
+            ),
+            // A byte order mark that opens the line is not a column.
+            (
+                "\u{feff}{phase: 1, title: 0X1F, status: nearly}\n",
+                "\u{feff}{phase: 1, title: abcd, status: nearly}\n",
+                (1, 33),
+            ),
+        ];
+        for (text, twin, expected) in cases {
+            assert_placed_like_its_twin(text, twin, expected);
+        }
+    }
+
+    #[test]
+    fn a_problem_on_a_line_that_is_not_ascii_keeps_its_column() {
+        // A column is a character, whatever its width in bytes.
+        assert_placed_like_its_twin(
+            "{title: é中文, commit: 0X1F, phase: 1, status: nearly}\n",
+            "{title: é中文, commit: abcd, phase: 1, status: nearly}\n",
+            (1, 46),
+        );
+        // A separator, a bare word and a number that is not finite, all
+        // ahead of the problem on its line.
+        assert_placed_like_its_twin(
+            "{title: 'é\u{2028} 中', commit: 0X1F, junk: .inf, phase: 1, status: nearly}\n",
+            "{title: 'é  中', commit: abcd, junk: abcd, phase: 1, status: nearly}\n",
+            (1, 61),
+        );
+    }
+
+    #[test]
+    fn a_problem_after_every_kind_of_rewrite_keeps_its_position() {
+        // Two numbers that are not finite, a bare word, two separators and
+        // a block scalar that runs into the end of the text.
+        assert_placed_like_its_twin(
+            "junk: [.inf, .nan]\ncommit: 0X1F\ntitle: 'a\u{2028}  b\u{2029}  c'\nphase: 1\n\
+             status: |\n  nearly",
+            "junk: [abcd, abcd]\ncommit: abcd\ntitle: 'a   b   c'\nphase: 1\n\
+             status: |\n  nearly\n",
+            (6, 3),
+        );
+    }
+
+    #[test]
+    fn a_problem_in_a_block_scalar_at_the_end_of_the_text_keeps_its_position() {
+        // The header gains a character, loses none, or swaps one.
+        for header in ["|", ">", "|+", "|2", "|+2"] {
+            let text = format!("phase: 1\ntitle: T\nstatus: {header}\n  nearly");
+            assert_placed_like_its_twin(&text, &format!("{text}\n"), (4, 3));
+        }
+    }
+
+    #[test]
+    fn a_problem_at_a_rewritten_word_or_separator_is_placed_there() {
+        // The quoted word is itself the problem.
+        assert_eq!(position("phase: 1\ntitle: T\nstatus: 0X1F\n"), (3, 9));
+        assert_eq!(
+            position("{title: 0X1F, phase: 1, status: +.nan}\n"),
+            (1, 33)
+        );
+        // A separator is a character of its line, so what follows it is
+        // further along that line, not on the next one.
+        assert_eq!(
+            position("phase: 1\ntitle: T\u{2028}status: nearly\n"),
+            (2, 18)
+        );
+        assert_eq!(
+            position("phase: 1\ntitle: \"T\u{2028}status: done\n"),
+            (2, 11)
+        );
+    }
+
+    #[test]
+    fn a_syntax_error_after_a_rewrite_keeps_its_position() {
+        let cases = [
+            (
+                "title: 'a\u{2028}  b'\nphase: 1\nstatus: \"done\n",
+                "title: 'a   b'\nphase: 1\nstatus: \"done\n",
+                (4, 1),
+            ),
+            (
+                "junk: .inf\ncommit: 0X1F\nphase: 1\ntitle: T\nstatus: [done\n",
+                "junk: abcd\ncommit: abcd\nphase: 1\ntitle: T\nstatus: [done\n",
+                (5, 9),
+            ),
+            (
+                "{junk: .inf, commit: 0X1F, phase: 1, title: \"T}\n",
+                "{junk: abcd, commit: abcd, phase: 1, title: \"T}\n",
+                (1, 45),
+            ),
+        ];
+        for (text, twin, expected) in cases {
+            assert_placed_like_its_twin(text, twin, expected);
+        }
+    }
+
+    #[test]
+    fn a_place_is_traced_back_through_every_pass() {
+        let mut text = Rewritten::new("ab\u{2028}cd0X1Fef");
+        text.apply(line_separators_as_breaks(text.as_str()));
+        text.apply([Replacement {
+            at: 5..9,
+            with: "'0X1F'".to_string(),
+        }]);
+        assert_eq!(text.as_str(), "ab\ncd'0X1F'ef");
+
+        // Before a replacement, on it, inside it, and after it. The
+        // separator is three bytes of the original.
+        let traced: Vec<usize> = (0..=text.as_str().len())
+            .map(|at| text.original_offset(at))
+            .collect();
+        assert_eq!(traced, [0, 1, 2, 5, 6, 7, 7, 7, 7, 7, 7, 11, 12, 13]);
     }
 }
