@@ -22,12 +22,10 @@ allow = [
 ]
 
 [advisories]
-# TEMPORARY — each entry is removed by the `replace-unmaintained-deps` roadmap
+# TEMPORARY — the entry is removed by the `replace-unmaintained-deps` roadmap
 # (plan repo), which replaces the dependency instead of ignoring the notice.
-# All three are "unmaintained" notices with no upgrade available at the time
-# of writing; none is a vulnerability.
+# It is an "unmaintained" notice with no upgrade available at the time of
+# writing; it is not a vulnerability.
 ignore = [
-    { id = "RUSTSEC-2026-0374", reason = "basic-toml: build-time only, via askama's `config` feature; removed when rdm-server builds askama without it" },
-    { id = "RUSTSEC-2026-0441", reason = "pin-utils: transitive via hyper 1.8; removed when hyper is updated to a release that drops it" },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: via serde_yaml in rdm-core; removed when rdm-core moves to serde-saphyr" },
 ]
