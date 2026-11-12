@@ -63,6 +63,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "repository-only measurement tool writes an operator-named --out results file, never $RDM_ROOT",
     ),
     (
+        "rdm-devtools/src/measure/scbench/exec.rs",
+        "repository-only measurement tool writes the run record and generated SCBench configs under the operator-named --out, and the model file into its own --cache-dir checkout, never $RDM_ROOT",
+    ),
+    (
         "rdm-devtools/src/workflow.rs",
         "repository-only test tooling writes its own private temp directories (the workflow host glue, mutant source copies), never $RDM_ROOT",
     ),

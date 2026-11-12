@@ -1,7 +1,7 @@
 //! Repository-only measurement tools behind the `rdm-measure` binary.
 //!
-//! These replace the JavaScript instruments that measured the autonomous
-//! lane's token spend and graded refuter behaviour:
+//! Most replace the JavaScript instruments that measured the autonomous
+//! lane's token spend and graded refuter behaviour; `scbench run` is new:
 //!
 //! | Subcommand | Replaces | Module |
 //! |---|---|---|
@@ -9,6 +9,7 @@
 //! | `refuter-severity` | `scripts/measure-refuter-severity.mjs` | [`refuter_severity`] |
 //! | `mine-refuter-corpus` | `scripts/mine-refuter-corpus.mjs` | [`refuter_agreement::miner`] |
 //! | `refuter-agreement` | `scripts/run-refuter-agreement.mjs` + `scripts/lib/refuter-agreement.mjs` | [`refuter_agreement`] |
+//! | `scbench run` | — (new) | [`scbench`] |
 //!
 //! Measurement orchestration, parsing, scoring and reporting are Rust. The
 //! few canonical workflow decisions a measurement replays (ranking, gating,
@@ -29,4 +30,5 @@ pub mod lane_tokens;
 pub mod refuter_agreement;
 pub mod refuter_severity;
 pub mod review_rules;
+pub mod scbench;
 pub mod sidecar;

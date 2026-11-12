@@ -1,0 +1,25 @@
+# Claude Opus 5.5 for SlopCodeBench.
+#
+# The pinned SCBench checkout has no `opus-5.5` entry (its newest Opus is
+# configs/models/opus-5.yaml), and SCBench loads models only from its own
+# configs/models/. `rdm-measure scbench run` copies this file there; it is the
+# only addition rdm makes to the checkout. It mirrors upstream's opus-5.yaml,
+# without the mini_swe/codex/opencode and provider_slugs blocks only other
+# agents read.
+#
+# Pricing is USD per million tokens. cache_write is the 5-minute write rate
+# (1.25x input).
+internal_name: claude-opus-5-5
+provider: anthropic
+thinking_style: effort
+aliases:
+  - claude-opus-5-5
+  - opus-5.5
+pricing:
+  input: 4
+  output: 20
+  cache_read: 0.20
+  cache_write: 5.00
+agent_specific:
+  claude_code:
+    endpoint: anthropic

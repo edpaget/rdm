@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`rdm-measure scbench run` drives SlopCodeBench from a pinned manifest** (repository-only `rdm-devtools` tooling; nothing is added to the shipped `rdm` binary). `bench/scbench/manifest.toml` pins the SlopCodeBench and `scb-problems` commits, the provider (`claude_code_oauth`), the model (Claude Opus 5.5), the thinking level, the Claude Code version, a two-problem subset and upstream's control arms `just-solve` and `anti_slop`. `bench/scbench/models/opus-5.5.yaml` defines Opus 5.5 for SCBench, which has no entry for it, and the runner copies it into the pinned checkout's `configs/models/`. For each arm, in order, the runner writes the `slop-code` run and agent configs from the manifest alone, then runs one `uv run slop-code run --no-evaluate` and one `uv run slop-code eval`. It stops with a non-zero exit naming the arm when a step fails, and refuses a non-empty `--out`. The run record `<out>/rdm-scbench-run.json` holds the manifest pins, the rdm SHA, the observed `uv`, Docker and `claude` versions, the installed model file's SHA-256 and every command spawned. COST WARNING: without `--dry-run` it runs paid Claude Code agents in Docker (arms × problems × checkpoints); `--dry-run` prints the plan and spawns nothing. See `bench/scbench/README.md`.
+
 ## [0.24.1] - 2026-11-12
 
 ### Changed

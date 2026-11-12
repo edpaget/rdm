@@ -1,0 +1,35 @@
+# The pinned SlopCodeBench (SCBench) configuration `rdm-measure scbench run`
+# drives. Every value a result depends on lives here; the runner builds the
+# `slop-code` run and agent configs from it and from nothing else.
+# See README.md. COST WARNING: a run without --dry-run is a paid run.
+
+[scbench]
+repo = "https://github.com/SprocketLab/slop-code-bench"
+sha = "af5a9cbc311605b5cceb80200ca9832bdff2d7b1"
+
+[problems]
+repo = "https://github.com/gabeorlanski/scb-problems"
+sha = "9cd9ca3a51c3d3e2a99d2488a25baf73a2204451"
+# Upstream's configs/runs/lite_under20.yaml ("strict under-$20 subset"); each
+# problem has several checkpoints.
+subset = ["mvvault", "xjq"]
+
+[agent]
+provider = "claude_code_oauth"
+model = "opus-5.5"
+model_file = "models/opus-5.5.yaml"   # relative to this manifest
+thinking = "xhigh"
+claude_code_version = "2.1.322"
+pass_policy = "all-cases"
+environment = "docker-python3.12-uv"
+step_limit = 100
+cost_limit = 0
+net_cost_limit = 0
+
+[[arm]]
+name = "just-solve"
+prompt = "configs/prompts/just-solve.jinja"   # relative to the SCBench checkout
+
+[[arm]]
+name = "anti_slop"
+prompt = "configs/prompts/anti_slop.jinja"

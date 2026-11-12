@@ -25,11 +25,14 @@
 //! - `claude` — the paid-dispatch CLI (see `claude.rs`)
 //! - `codex` — the Codex CLI and app-server (see `codex.rs`)
 //! - `rdm` — rdm's skill emission (see `rdm.rs`)
+//! - `uv`, `docker` — the tools `rdm-measure scbench run` drives (see
+//!   `tool.rs`), each reading `<role>.scenario.json` beside its symlink
 
 mod claude;
 mod codex;
 mod rdm;
 mod scenario;
+mod tool;
 
 use std::io::Write;
 use std::process::{Command, ExitCode, Stdio};
@@ -81,6 +84,7 @@ fn main() -> ExitCode {
         "claude" => return claude::run(),
         "codex" => return codex::run(),
         "rdm" => return rdm::run(),
+        role @ ("uv" | "docker") => return tool::run(role),
         _ => {}
     }
     let args: Vec<String> = std::env::args().skip(1).collect();

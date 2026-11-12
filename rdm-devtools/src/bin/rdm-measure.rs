@@ -18,10 +18,16 @@
 //!                               [--shape per-finding|batched|both] [--batch-power]
 //!                               [--min-batch-group N] [--allow-underpowered]
 //!                               [--review-lib PATH] [--host-timeout-secs N]
+//! rdm-measure scbench run --out DIR [--manifest PATH] [--cache-dir DIR]
+//!                         [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
+//!                         [--dry-run]
 //! ```
 //!
 //! COST WARNING: `refuter-agreement` with `--tiers` and without `--dry-run`
 //! dispatches paid agents (items x tiers x replicates) through `claude -p`.
+//!
+//! COST WARNING: `scbench run` without `--dry-run` runs paid Claude Code
+//! agents in Docker (arms x problems x checkpoints).
 //!
 //! Run through Cargo from the checkout:
 //! `cargo run -q -p rdm-devtools --bin rdm-measure -- <subcommand> ...`.
@@ -46,12 +52,12 @@ use rdm_devtools::measure::review_rules::{
     DEFAULT_HOST_TIMEOUT, NodeReviewRules, checkout_root, default_review_lib,
 };
 use rdm_devtools::measure::sidecar::{RunFilters, default_projects_root};
-use rdm_devtools::measure::{jsdate, lane_tokens};
+use rdm_devtools::measure::{jsdate, lane_tokens, scbench};
 
 #[derive(Parser)]
 #[command(
     name = "rdm-measure",
-    about = "Token and refuter measurement tools (repository-only; not part of the rdm release)",
+    about = "Token, refuter and SCBench measurement tools (repository-only; not part of the rdm release)",
     args_override_self = true
 )]
 struct Cli {
@@ -81,6 +87,50 @@ enum Cmd {
     /// tiers and score FN/FP separately. COST WARNING: a run with --tiers and
     /// without --dry-run dispatches paid agents.
     RefuterAgreement(AgreementArgs),
+    /// Drive SlopCodeBench from the pinned manifest in bench/scbench/.
+    /// COST WARNING: `scbench run` without --dry-run runs paid Claude Code
+    /// agents in Docker (arms x problems x checkpoints).
+    Scbench(ScbenchArgs),
+}
+
+#[derive(clap::Args)]
+struct ScbenchArgs {
+    #[command(subcommand)]
+    command: ScbenchCmd,
+}
+
+#[derive(Subcommand)]
+enum ScbenchCmd {
+    /// Run every manifest arm once (one `slop-code run` and one `slop-code
+    /// eval` each). COST WARNING: without --dry-run this runs paid Claude
+    /// Code agents in Docker (arms x problems x checkpoints).
+    Run(ScbenchRunArgs),
+}
+
+#[derive(clap::Args)]
+struct ScbenchRunArgs {
+    /// The pinned manifest (default: the checkout's bench/scbench/manifest.toml).
+    #[arg(long, value_name = "PATH", value_parser = flag_value)]
+    manifest: Option<String>,
+    /// Where the pinned checkouts are kept (default: the checkout's
+    /// bench/scbench/cache).
+    #[arg(long, value_name = "DIR", value_parser = flag_value)]
+    cache_dir: Option<String>,
+    /// The run's output directory; must be missing or empty.
+    #[arg(long, value_name = "DIR", value_parser = flag_value)]
+    out: String,
+    /// The `uv` executable.
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "uv")]
+    uv_bin: String,
+    /// The `docker` executable.
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "docker")]
+    docker_bin: String,
+    /// The host `claude` executable (version probe only).
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "claude")]
+    claude_bin: String,
+    /// Print the plan as JSON; spawn nothing and create nothing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -500,6 +550,30 @@ fn agreement_cmd(a: &AgreementArgs) -> Result<ExitCode, String> {
     Ok(ExitCode::from(code))
 }
 
+fn scbench_cmd(a: &ScbenchArgs) -> Result<ExitCode, String> {
+    let ScbenchCmd::Run(r) = &a.command;
+    let bench = checkout_root().join("bench/scbench");
+    let options = scbench::RunOptions {
+        manifest: r
+            .manifest
+            .as_ref()
+            .map_or_else(|| bench.join("manifest.toml"), PathBuf::from),
+        cache_dir: r
+            .cache_dir
+            .as_ref()
+            .map_or_else(|| bench.join("cache"), PathBuf::from),
+        out: PathBuf::from(&r.out),
+        tools: scbench::plan::Tools {
+            uv: r.uv_bin.clone(),
+            docker: r.docker_bin.clone(),
+            claude: r.claude_bin.clone(),
+        },
+        dry_run: r.dry_run,
+    };
+    let code = scbench::run(&options, &mut std::io::stdout(), &mut std::io::stderr())?;
+    Ok(ExitCode::from(code))
+}
+
 fn main() -> ExitCode {
     let cli = match parse_or_exit::<Cli>() {
         Ok(cli) => cli,
@@ -510,6 +584,7 @@ fn main() -> ExitCode {
         Cmd::RefuterSeverity(a) => refuter_severity_cmd(a),
         Cmd::MineRefuterCorpus(a) => mine_cmd(a).map(|()| ExitCode::SUCCESS),
         Cmd::RefuterAgreement(a) => agreement_cmd(a),
+        Cmd::Scbench(a) => scbench_cmd(a),
     };
     match result {
         Ok(code) => code,
