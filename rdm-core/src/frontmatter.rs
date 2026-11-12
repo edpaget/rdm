@@ -247,14 +247,11 @@ fn line_separators_as_breaks(text: &str) -> Vec<Replacement> {
 /// did.
 fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
     // Cheap pre-filter: only a text that stops in the middle of an indented
-    // line of content, and has a block-scalar indicator somewhere, can be
-    // affected. A text that ends with a line break — a file with CRLF line
-    // endings still carries the `\r` — has the break and keeps it.
+    // line, and has a block-scalar indicator somewhere, can be affected. A
+    // text that ends with a line break — a file with CRLF line endings still
+    // carries the `\r` — has the break and keeps it.
     let last_line = text.rsplit(['\n', '\r']).next().unwrap_or(text);
-    if !last_line.starts_with([' ', '\t'])
-        || last_line.trim().is_empty()
-        || !text.contains(['|', '>'])
-    {
+    if !last_line.starts_with([' ', '\t']) || !text.contains(['|', '>']) {
         return None;
     }
 
@@ -291,11 +288,25 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
         return None;
     }
 
+    // The last line is content only where it reaches past the scalar's
+    // indentation, which is the column the content starts at. Spaces that
+    // stop short of it are an empty line: the break before them is in the
+    // text and stays. Past it, anything is content — a tab, further spaces,
+    // a space that is not ASCII — as YAML counts only the space as
+    // indentation.
+    let content_line = text[..content_start].rfind(['\n', '\r'])? + 1;
+    if last_line.len() <= content_start - content_line {
+        return None;
+    }
+
     // The header is the nearest non-blank line above the scalar's content.
+    // Blank is as YAML has it, spaces and tabs, with the `\r` a CRLF line
+    // ending leaves behind.
     let mut header_end = text[..content_start].rfind('\n')?;
     let header_start = loop {
         let start = text[..header_end].rfind('\n').map_or(0, |at| at + 1);
-        if start == 0 || !text[start..header_end].trim().is_empty() {
+        let line = &text[start..header_end];
+        if start == 0 || !line.trim_matches([' ', '\t', '\r']).is_empty() {
             break start;
         }
         header_end = start - 1;
@@ -866,9 +877,23 @@ mod tests {
             ("'x|y': >\n  foo", json!({"x|y": "foo"})),
             // A block scalar's own text that looks like a header.
             ("k: |\n  a: |\n    nested", json!({"k": "a: |\n  nested"})),
+            // A blank line under the header of a file with CRLF line endings.
+            ("k: |\r\n\r\n  foo", json!({"k": "\nfoo"})),
+            // A last line that looks blank and is content: a space that is
+            // not ASCII, a tab, and spaces past the indentation.
+            ("k: |\n  \u{3000}", json!({"k": "\u{3000}"})),
+            ("k: |\n  foo\n  \u{3000}", json!({"k": "foo\n\u{3000}"})),
+            ("k: |+\n  foo\n  \u{a0}", json!({"k": "foo\n\u{a0}"})),
+            ("k: >\n  foo\n  \u{a0}", json!({"k": "foo \u{a0}"})),
+            ("k: |\n  foo\n  \t", json!({"k": "foo\n\t"})),
+            ("k: |\n  foo\n   ", json!({"k": "foo\n "})),
+            ("k: |2\n    foo\n   ", json!({"k": "  foo\n "})),
+            ("k: |2\n   ", json!({"k": " "})),
         ];
         for (text, expected) in cases {
             assert_eq!(from_str::<Value>(text).unwrap(), expected, "{text:?}");
+            let old = serde_yaml::from_str::<Value>(text).unwrap();
+            assert_eq!(old, expected, "the old reader, {text:?}");
         }
     }
 
@@ -892,9 +917,17 @@ mod tests {
             ("k: |\n  x\nz: {}", json!({"k": "x\n", "z": {}})),
             // Only the last of two is unterminated.
             ("a: |\n  x\nk: |\n  y", json!({"a": "x\n", "k": "y"})),
+            // The last line is spaces within the indentation: an empty
+            // line, with the break before it in the text.
+            ("k: |\n  foo\n  ", json!({"k": "foo\n"})),
+            ("k: |\n  foo\n ", json!({"k": "foo\n"})),
+            ("k: |+\n  foo\n\n  ", json!({"k": "foo\n\n"})),
+            ("k: |2\n    foo\n  ", json!({"k": "  foo\n"})),
         ];
         for (text, expected) in cases {
             assert_eq!(from_str::<Value>(text).unwrap(), expected, "{text:?}");
+            let old = serde_yaml::from_str::<Value>(text).unwrap();
+            assert_eq!(old, expected, "the old reader, {text:?}");
         }
     }
 
