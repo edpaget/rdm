@@ -108,6 +108,7 @@ bench/scbench/
     rdm-scbench-run.json      # the run record
     <arm>/
       agent.yaml              # the generated agent config
+      docker.j2               # rdm arms only: the rendered agent template
       run.yaml                # the generated run config
       output/                 # SCBench's own run directory, layout untouched
 ```
@@ -125,6 +126,88 @@ inside SCBench's `output/` trees. It holds:
 
 It is rewritten after every command, so a failed run still records the
 command that failed.
+
+## rdm-equipped image
+
+An arm runs in the rdm-equipped agent image when it sets `image = "rdm"`:
+
+```toml
+[[arm]]
+name = "just-solve-rdm"
+prompt = "configs/prompts/just-solve.jinja"
+image = "rdm"
+```
+
+Arms without `image` run in SCBench's stock `claude_code` image. An rdm arm
+needs the manifest's `[rdm]` table, which names the plan repo's path in the
+container (`plan_root`) and its default project.
+
+Build the image and check it before the first run with an rdm arm, and again
+after every commit:
+
+```bash
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench image build
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench image check
+```
+
+Neither makes a paid call, but `build` is slow: it runs a release build of
+rdm and builds SCBench's base image. Both take `--manifest`, `--cache-dir` and
+`--docker-bin`; `build` also takes `--uv-bin`.
+
+`image build`:
+
+1. refuses a dirty checkout, because the build context is the working tree
+   and the image would otherwise claim a HEAD it was not built from
+2. provisions the pinned SCBench checkout, and refuses a `plan_root` inside
+   the environment's graded directory
+3. builds `agent/Dockerfile` with the checkout as context: a
+   `rust:1.94-bookworm` stage builds `rdm` for the Docker daemon's own
+   platform, and the result is the payload image
+   `rdm-scbench-payload:<HEAD>`, labelled `org.rdm.scbench.rdm-sha=<HEAD>`.
+   It holds `/opt/rdm/bin/rdm`, the `claude-rdm` wrapper, a copy of the
+   checkout's `plugins/rdm` and `/opt/rdm/RDM_SHA`
+4. writes the rendered `agent/docker.j2` and the rdm agent config under
+   `cache/rdm-image/<HEAD>/`
+5. runs `slop-code docker build-agent ... --force-build`, which builds exactly
+   the agent image a run uses
+
+BuildKit is required, for the cache mounts and `Dockerfile.dockerignore`. It
+is the default from Docker 23.
+
+`image check` runs three probes in the agent image. The SHA recorded in
+`/opt/rdm/RDM_SHA` must equal the checkout's HEAD. `rdm --version` must run.
+And `claude --plugin-dir /opt/rdm/plugin plugin details rdm` must list every
+skill in the checkout's `plugins/rdm/skills`. It prints each failure and exits
+1 when any probe failed.
+
+Some choices follow from how the pinned SCBench works:
+
+- **Why `--plugin-dir` instead of `claude plugin install`.** SCBench mounts a
+  fresh host directory over `~/.claude` at run time, which hides anything
+  `plugin install` put there. The image carries the checkout's `plugins/rdm`
+  byte for byte, and the rdm agent config passes
+  `--plugin-dir /opt/rdm/plugin`. That loads the same skills a marketplace
+  install provides.
+- **Why `version` carries `-rdm.<sha>`.** SCBench names its agent image
+  `slop-code:claude_code-<version>-<environment>` and reuses an image of that
+  name without rebuilding it. The rdm agent config's `version` is
+  `<claude_code_version>-rdm.<HEAD>`, so an rdm image never shares a name with
+  the stock image, and each commit gets its own. The template installs the
+  manifest's `claude_code_version` directly, so both images run the same
+  Claude Code.
+- **Where the plan repo lives.** At `plan_root` (`/rdm-plan`), created empty in
+  the image. SCBench grades only the environment's `docker.workdir`
+  (`/workspace`), so plan-repo files never count toward the metrics; the
+  runner refuses a `plan_root` inside it and records the graded directory in
+  each rdm arm's run record. The agent binary, `claude-rdm`, runs `rdm init`
+  there when no plan repo exists yet, then `claude`. Each problem runs in its
+  own container, so each problem starts with a fresh plan repo that its later
+  checkpoints reuse.
+
+`image check` passing in the hermetic tests shows only that rdm builds the
+planned commands. The first real `image build` and `image check` are what
+confirm the Dockerfile builds, the payload copies in, and `claude` lists the
+plugin inside the container.
 
 ## Cost figures under a subscription
 

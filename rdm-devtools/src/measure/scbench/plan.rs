@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::manifest::Manifest;
+use super::manifest::{Agent, ArmImage, Manifest};
+use super::rdm_image;
 
 /// The directories a plan is built against (all absolute).
 #[derive(Debug, Clone)]
@@ -109,6 +110,8 @@ pub struct ModelCopy {
 pub struct ArmPlan {
     /// The arm name.
     pub name: String,
+    /// The agent image the arm runs in.
+    pub image: ArmImage,
     /// `<out>/<arm>/agent.yaml`.
     pub agent_config_path: PathBuf,
     /// The agent config written there.
@@ -117,6 +120,10 @@ pub struct ArmPlan {
     pub run_config_path: PathBuf,
     /// The run config written there.
     pub run_config: Value,
+    /// `<out>/<arm>/docker.j2`, for an rdm arm.
+    pub docker_template_path: Option<PathBuf>,
+    /// The rendered agent template written there, for an rdm arm.
+    pub docker_template: Option<String>,
     /// SCBench's own output directory for the arm (`<out>/<arm>/output`).
     pub run_dir: PathBuf,
     /// `uv run slop-code run ...`.
@@ -151,6 +158,40 @@ fn s(p: &Path) -> String {
     p.display().to_string()
 }
 
+/// `git -C <manifest dir> rev-parse HEAD`: the rdm SHA under test.
+pub fn rdm_sha_command(paths: &Paths) -> CommandSpec {
+    CommandSpec::new("git", &["-C", &s(&paths.manifest_dir), "rev-parse", "HEAD"])
+}
+
+/// The SCBench checkout's directory under `cache_dir`.
+pub fn scbench_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("slop-code-bench")
+}
+
+/// How the SCBench checkout is provisioned under `cache_dir`.
+pub fn scbench_checkout(manifest: &Manifest, cache_dir: &Path) -> Checkout {
+    checkout(
+        &manifest.scbench.repo,
+        &manifest.scbench.sha,
+        scbench_dir(cache_dir),
+    )
+}
+
+/// The agent config a stock arm runs with.
+pub fn stock_agent_config(a: &Agent) -> Value {
+    json!({
+        "type": "claude_code",
+        "binary": "claude",
+        "permission_mode": "bypassPermissions",
+        "version": a.claude_code_version,
+        "cost_limits": {
+            "cost_limit": a.cost_limit,
+            "step_limit": a.step_limit,
+            "net_cost_limit": a.net_cost_limit,
+        },
+    })
+}
+
 fn checkout(repo: &str, sha: &str, dir: PathBuf) -> Checkout {
     let d = s(&dir);
     Checkout {
@@ -164,8 +205,19 @@ fn checkout(repo: &str, sha: &str, dir: PathBuf) -> Checkout {
 }
 
 /// Builds the plan for `manifest` against `paths`, invoking `tools`.
-pub fn build_plan(manifest: &Manifest, paths: &Paths, tools: &Tools) -> RunPlan {
-    let scbench_dir = paths.cache_dir.join("slop-code-bench");
+///
+/// `rdm_sha` is the rdm checkout's HEAD (`None` before it is resolved, as in
+/// `--dry-run`, where rdm arms show [`rdm_image::SHA_PLACEHOLDER`]).
+/// `template` is the unrendered [`rdm_image::TEMPLATE`]; the caller reads it
+/// when an arm selects the rdm image.
+pub fn build_plan(
+    manifest: &Manifest,
+    paths: &Paths,
+    tools: &Tools,
+    rdm_sha: Option<&str>,
+    template: Option<&str>,
+) -> RunPlan {
+    let scbench_dir = scbench_dir(&paths.cache_dir);
     let problems_dir = paths.cache_dir.join("scb-problems");
     let source = manifest.model_file_source();
     let file_name = source
@@ -188,17 +240,25 @@ pub fn build_plan(manifest: &Manifest, paths: &Paths, tools: &Tools) -> RunPlan 
             let agent_config_path = dir.join("agent.yaml");
             let run_config_path = dir.join("run.yaml");
             let run_dir = dir.join("output");
-            let agent_config = json!({
-                "type": "claude_code",
-                "binary": "claude",
-                "permission_mode": "bypassPermissions",
-                "version": a.claude_code_version,
-                "cost_limits": {
-                    "cost_limit": a.cost_limit,
-                    "step_limit": a.step_limit,
-                    "net_cost_limit": a.net_cost_limit,
-                },
-            });
+            let (agent_config, docker_template_path, docker_template) =
+                match (arm.image, &manifest.rdm) {
+                    (ArmImage::Rdm, Some(rdm)) => {
+                        let sha = rdm_sha.unwrap_or(rdm_image::SHA_PLACEHOLDER);
+                        let path = dir.join("docker.j2");
+                        let rendered = rdm_image::render_template(
+                            template.unwrap_or_default(),
+                            &a.claude_code_version,
+                            sha,
+                            &rdm.plan_root,
+                        );
+                        (
+                            rdm_image::agent_config(manifest, rdm, sha, &path),
+                            Some(path),
+                            Some(rendered),
+                        )
+                    }
+                    _ => (stock_agent_config(a), None, None),
+                };
             let run_config = json!({
                 "agent": s(&agent_config_path),
                 "environment": a.environment,
@@ -217,6 +277,9 @@ pub fn build_plan(manifest: &Manifest, paths: &Paths, tools: &Tools) -> RunPlan 
             };
             ArmPlan {
                 name: arm.name.clone(),
+                image: arm.image,
+                docker_template_path,
+                docker_template,
                 run: uv(&[
                     "run",
                     "slop-code",
@@ -244,7 +307,7 @@ pub fn build_plan(manifest: &Manifest, paths: &Paths, tools: &Tools) -> RunPlan 
         })
         .collect();
     RunPlan {
-        rdm_sha: CommandSpec::new("git", &["-C", &s(&paths.manifest_dir), "rev-parse", "HEAD"]),
+        rdm_sha: rdm_sha_command(paths),
         probes: Probes {
             uv: CommandSpec::new(&tools.uv, &["--version"]),
             docker: CommandSpec::new(
@@ -253,7 +316,7 @@ pub fn build_plan(manifest: &Manifest, paths: &Paths, tools: &Tools) -> RunPlan 
             ),
             claude: CommandSpec::new(&tools.claude, &["--version"]),
         },
-        scbench: checkout(&manifest.scbench.repo, &manifest.scbench.sha, scbench_dir),
+        scbench: scbench_checkout(manifest, &paths.cache_dir),
         problems: checkout(
             &manifest.problems.repo,
             &manifest.problems.sha,
@@ -312,6 +375,8 @@ prompt = "configs/prompts/a2.jinja"
                 docker: "DOCKER".into(),
                 claude: "CLAUDE".into(),
             },
+            None,
+            None,
         )
     }
 

@@ -19,6 +19,10 @@ pub struct Manifest {
     /// The arms, run in this order.
     #[serde(rename = "arm", default)]
     pub arms: Vec<Arm>,
+    /// The rdm-equipped image's plan repo settings; required when an arm
+    /// selects `image = "rdm"` and by `scbench image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdm: Option<Rdm>,
     /// The directory holding the manifest (relative paths resolve against it).
     #[serde(skip)]
     pub dir: PathBuf,
@@ -73,7 +77,7 @@ pub struct Agent {
     pub net_cost_limit: f64,
 }
 
-/// One arm: a named prompt.
+/// One arm: a named prompt, run in the stock or the rdm-equipped image.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Arm {
@@ -81,6 +85,32 @@ pub struct Arm {
     pub name: String,
     /// The prompt template, relative to the SCBench checkout.
     pub prompt: String,
+    /// The agent image the arm runs in (default [`ArmImage::Stock`]).
+    #[serde(default)]
+    pub image: ArmImage,
+}
+
+/// Which agent image an arm runs in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArmImage {
+    /// SCBench's stock `claude_code` image.
+    #[default]
+    Stock,
+    /// The rdm-equipped image (see [`super::rdm_image`]): the rdm binary and
+    /// `plugins/rdm` from the checkout under test, and a plan repo.
+    Rdm,
+}
+
+/// The `[rdm]` table: where the rdm-equipped image keeps its plan repo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rdm {
+    /// The plan repo's absolute path inside the agent container; it must lie
+    /// outside SCBench's graded directory.
+    pub plan_root: String,
+    /// The plan repo's default project (`[a-z0-9-]+`).
+    pub project: String,
 }
 
 impl Manifest {
@@ -112,6 +142,17 @@ impl Manifest {
         manifest.dir = dir.to_path_buf();
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    /// The `[rdm]` table, which `scbench image` requires.
+    ///
+    /// # Errors
+    ///
+    /// When the manifest has no `[rdm]` table.
+    pub fn rdm_table(&self) -> Result<&Rdm, String> {
+        self.rdm
+            .as_ref()
+            .ok_or_else(|| "rdm: scbench image needs an [rdm] table".to_owned())
     }
 
     /// The model file's absolute source path.
@@ -183,6 +224,31 @@ impl Manifest {
             }
             if !seen.insert(arm.name.as_str()) {
                 return Err(format!("arm.name \"{}\" is duplicated", arm.name));
+            }
+            if arm.image == ArmImage::Rdm && self.rdm.is_none() {
+                return Err(format!(
+                    "rdm: arm \"{}\" selects image \"rdm\" but the manifest has no [rdm] table",
+                    arm.name
+                ));
+            }
+        }
+        if let Some(rdm) = &self.rdm {
+            if !Path::new(&rdm.plan_root).is_absolute() {
+                return Err(format!(
+                    "rdm.plan_root must be an absolute path, got \"{}\"",
+                    rdm.plan_root
+                ));
+            }
+            if rdm.project.is_empty()
+                || !rdm
+                    .project
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                return Err(format!(
+                    "rdm.project must match [a-z0-9-]+, got \"{}\"",
+                    rdm.project
+                ));
             }
         }
         Ok(())
@@ -310,6 +376,62 @@ prompt = "configs/prompts/anti_slop.jinja"
         fails_naming(
             &text().replace("thinking = \"xhigh\"", "thinking = \"xhigh\"\nseed = 1"),
             "seed",
+        );
+    }
+
+    const RDM: &str = "\n[rdm]\nplan_root = \"/rdm-plan\"\nproject = \"bench\"\n";
+
+    fn with_rdm_arm(t: &str) -> String {
+        format!("{t}\n[[arm]]\nname = \"r\"\nprompt = \"p.jinja\"\nimage = \"rdm\"\n")
+    }
+
+    #[test]
+    fn arm_without_image_is_stock() {
+        let m = parse(&text()).expect("valid");
+        assert!(m.arms.iter().all(|a| a.image == ArmImage::Stock));
+        assert_eq!(m.rdm, None);
+    }
+
+    #[test]
+    fn rdm_arm_with_rdm_table_parses() {
+        let m = parse(&with_rdm_arm(&format!("{RDM}{}", text()))).expect("valid");
+        assert_eq!(m.arms[2].image, ArmImage::Rdm);
+        let rdm = m.rdm_table().expect("rdm table");
+        assert_eq!(rdm.plan_root, "/rdm-plan");
+        assert_eq!(rdm.project, "bench");
+    }
+
+    #[test]
+    fn unknown_image_fails() {
+        fails_naming(
+            &text().replace(
+                "name = \"anti_slop\"",
+                "name = \"anti_slop\"\nimage = \"bogus\"",
+            ),
+            "image",
+        );
+    }
+
+    #[test]
+    fn rdm_arm_without_rdm_table_fails() {
+        fails_naming(&with_rdm_arm(&text()), "rdm");
+        let m = parse(&text()).expect("valid");
+        assert!(m.rdm_table().expect_err("no table").contains("[rdm]"));
+    }
+
+    #[test]
+    fn relative_plan_root_fails() {
+        fails_naming(
+            &format!("{}{}", RDM.replace("/rdm-plan", "rdm-plan"), text()),
+            "rdm.plan_root",
+        );
+    }
+
+    #[test]
+    fn empty_rdm_project_fails() {
+        fails_naming(
+            &format!("{}{}", RDM.replace("\"bench\"", "\"\""), text()),
+            "rdm.project",
         );
     }
 

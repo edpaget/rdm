@@ -1,0 +1,39 @@
+{#- rdm's SlopCodeBench agent template for arms with image = "rdm".
+    Mirrors src/slop_code/agent_runner/agents/claude_code/docker.j2 at
+    SlopCodeBench af5a9cbc311605b5cceb80200ca9832bdff2d7b1 line for line, and
+    adds the rdm payload and the plan root. `rdm-measure scbench` replaces the
+    @...@ placeholders before SlopCodeBench renders {{ base_image }}; the
+    Claude Code version is written in here because this template's `version`
+    names the image (<claude_code_version>-rdm.<sha>), not an npm version. -#}
+FROM {{ base_image }}
+
+# --- Switch to non-root -----------------------------------------------------
+USER agent
+WORKDIR /workspace
+
+# Configure npm globals under user home
+ENV NPM_CONFIG_PREFIX="$HOME/.npm-global"
+ENV PATH="$HOME/.npm-global/bin:$PATH"
+ENV XDG_CONFIG_HOME="$HOME/.config"
+ENV XDG_DATA_HOME="$HOME/.local/share"
+
+# --- Install Claude Code dependencies --------------------------------------
+RUN npm install -g @anthropic-ai/claude-code@@CLAUDE_CODE_VERSION@ @musistudio/claude-code-router && \
+    mkdir -p "$HOME/.claude/projects"
+
+# --- rdm: the binary, plugins/rdm and the wrapper from the checkout under test
+COPY --from=@RDM_PAYLOAD_IMAGE@ /opt/rdm /opt/rdm
+ENV PATH="/opt/rdm/bin:$PATH"
+
+# --- rdm: the plan root, outside the graded workspace, writable by any uid --
+USER root
+RUN mkdir -p @RDM_PLAN_ROOT@ && chmod 1777 @RDM_PLAN_ROOT@
+USER agent
+
+# --- Make the agent home usable by any runtime uid ---------------------------
+# Containers run as the host user's uid:gid, not as `agent`, so relax modes
+# on everything installed above.
+RUN chmod -R a+rwX "$HOME"
+
+# --- Default shell ----------------------------------------------------------
+CMD ["claude"]

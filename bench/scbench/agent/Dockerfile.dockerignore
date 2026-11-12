@@ -1,0 +1,5 @@
+# Build context exclusions for Dockerfile (BuildKit reads <Dockerfile>.dockerignore).
+.git
+**/target
+bench/scbench/cache
+bench/scbench/runs

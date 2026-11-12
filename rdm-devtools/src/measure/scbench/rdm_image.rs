@@ -1,0 +1,121 @@
+//! The rdm-equipped agent image: its names, the rendered SCBench agent
+//! template and the agent config an rdm arm runs with. Pure; no I/O.
+//!
+//! The image is two layers. The payload image (`bench/scbench/agent/Dockerfile`,
+//! context = the rdm checkout under test) holds `/opt/rdm`: the Linux `rdm`
+//! binary, `plugins/rdm`, the [`WRAPPER`] and the [`SHA_FILE`]. SCBench's
+//! agent image is then built from `bench/scbench/agent/docker.j2`, which
+//! copies `/opt/rdm` out of the payload with `COPY --from`. Everything here is
+//! a `ClaudeCodeConfig` field (`docker_template`, `version`, `binary`,
+//! `extra_args`, `env`), so SCBench runs it unmodified.
+
+use std::path::Path;
+
+use serde_json::{Value, json};
+
+use super::manifest::{Manifest, Rdm};
+use super::plan::stock_agent_config;
+
+/// The payload image's repository; its tag is the rdm SHA.
+pub const PAYLOAD_REPO: &str = "rdm-scbench-payload";
+/// The label the payload image records the rdm SHA under.
+pub const SHA_LABEL: &str = "org.rdm.scbench.rdm-sha";
+/// The file in the agent image holding the rdm SHA (labels do not survive
+/// `COPY --from`).
+pub const SHA_FILE: &str = "/opt/rdm/RDM_SHA";
+/// The `rdm` binary in the agent image.
+pub const RDM_BIN: &str = "/opt/rdm/bin/rdm";
+/// The checkout's `plugins/rdm`, as installed in the agent image and loaded
+/// with `--plugin-dir` (an install under `~/.claude` is hidden at run time).
+pub const PLUGIN_DIR: &str = "/opt/rdm/plugin";
+/// The agent binary: initializes the plan repo, then runs `claude`.
+pub const WRAPPER: &str = "/opt/rdm/bin/claude-rdm";
+/// The payload Dockerfile, relative to the manifest's directory.
+pub const DOCKERFILE: &str = "agent/Dockerfile";
+/// The unrendered agent template, relative to the manifest's directory.
+pub const TEMPLATE: &str = "agent/docker.j2";
+/// Stands in for the rdm SHA where it is not yet resolved (`--dry-run`).
+pub const SHA_PLACEHOLDER: &str = "<rdm-sha>";
+
+/// SCBench's image-name prefix (`docker_runtime.IMAGE_NAME_PREFIX`).
+const IMAGE_NAME_PREFIX: &str = "slop-code";
+
+/// The rdm agent config's `version`: `<claude_code_version>-rdm.<sha>`. It
+/// names SCBench's image, so a stock arm and each rdm commit get their own.
+pub fn agent_version(claude_code_version: &str, sha: &str) -> String {
+    format!("{claude_code_version}-rdm.{sha}")
+}
+
+/// The payload image's tag, `rdm-scbench-payload:<sha>`.
+pub fn payload_tag(sha: &str) -> String {
+    format!("{PAYLOAD_REPO}:{sha}")
+}
+
+/// The agent image SCBench builds and runs for an rdm arm, mirroring
+/// `AgentConfigBase.get_image`: `slop-code:claude_code-<version>-<env name>`.
+pub fn agent_image_name(claude_code_version: &str, sha: &str, env_name: &str) -> String {
+    format!(
+        "{IMAGE_NAME_PREFIX}:claude_code-{}-{env_name}",
+        agent_version(claude_code_version, sha)
+    )
+}
+
+/// Fills `docker.j2`'s `@CLAUDE_CODE_VERSION@`, `@RDM_PAYLOAD_IMAGE@` and
+/// `@RDM_PLAN_ROOT@`, leaving `{{ base_image }}` for SCBench's Jinja.
+pub fn render_template(
+    template: &str,
+    claude_code_version: &str,
+    sha: &str,
+    plan_root: &str,
+) -> String {
+    template
+        .replace("@CLAUDE_CODE_VERSION@", claude_code_version)
+        .replace("@RDM_PAYLOAD_IMAGE@", &payload_tag(sha))
+        .replace("@RDM_PLAN_ROOT@", plan_root)
+}
+
+/// The agent config for an rdm arm: the stock config with the wrapper as
+/// `binary`, the per-SHA `version`, the rendered template at
+/// `template_path`, `--plugin-dir` and the plan repo's environment.
+pub fn agent_config(manifest: &Manifest, rdm: &Rdm, sha: &str, template_path: &Path) -> Value {
+    let mut config = stock_agent_config(&manifest.agent);
+    config["binary"] = json!(WRAPPER);
+    config["version"] = json!(agent_version(&manifest.agent.claude_code_version, sha));
+    config["docker_template"] = json!(template_path.display().to_string());
+    config["extra_args"] = json!(["--plugin-dir", PLUGIN_DIR]);
+    config["env"] = json!({
+        "RDM_ROOT": rdm.plan_root,
+        "RDM_PROJECT": rdm.project,
+        "GIT_AUTHOR_NAME": "rdm-scbench",
+        "GIT_AUTHOR_EMAIL": "rdm-scbench@localhost",
+        "GIT_COMMITTER_NAME": "rdm-scbench",
+        "GIT_COMMITTER_EMAIL": "rdm-scbench@localhost",
+    });
+    config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_image_name_carries_version_sha_and_env() {
+        assert_eq!(
+            agent_image_name("2.1.322", "S", "python3.12"),
+            "slop-code:claude_code-2.1.322-rdm.S-python3.12"
+        );
+    }
+
+    #[test]
+    fn render_template_fills_placeholders_and_keeps_base_image() {
+        let t = "FROM {{ base_image }}\nRUN npm i x@@CLAUDE_CODE_VERSION@\n\
+                 COPY --from=@RDM_PAYLOAD_IMAGE@ /opt/rdm /opt/rdm\n\
+                 RUN mkdir -p @RDM_PLAN_ROOT@ && chmod 1777 @RDM_PLAN_ROOT@\n";
+        assert_eq!(
+            render_template(t, "2.1.322", "S", "/rdm-plan"),
+            "FROM {{ base_image }}\nRUN npm i x@2.1.322\n\
+             COPY --from=rdm-scbench-payload:S /opt/rdm /opt/rdm\n\
+             RUN mkdir -p /rdm-plan && chmod 1777 /rdm-plan\n"
+        );
+    }
+}

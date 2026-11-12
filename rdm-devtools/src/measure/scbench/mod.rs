@@ -1,5 +1,7 @@
 //! `rdm-measure scbench run`: drives SlopCodeBench (SCBench) reproducibly
-//! from the pinned manifest in `bench/scbench/manifest.toml`.
+//! from the pinned manifest in `bench/scbench/manifest.toml`; and
+//! `rdm-measure scbench image build|check`: builds and smoke-checks the
+//! rdm-equipped agent image an `image = "rdm"` arm runs in ([`image`]).
 //!
 //! COST WARNING: `scbench run` without `--dry-run` runs paid Claude Code
 //! agents in Docker (arms x problems x checkpoints). `--dry-run` prints the
@@ -15,23 +17,34 @@
 //! 6. provisions the SCBench and problem checkouts at their pins under
 //!    `--cache-dir` and copies the manifest's model file into
 //!    `<scbench>/configs/models/` (rdm's only addition to the checkout);
-//! 7. for each arm, writes its agent and run configs, then runs
+//! 7. for rdm arms, reads the SCBench environment's graded directory
+//!    ([`environment`]) and refuses a `[rdm] plan_root` inside it;
+//! 8. for each arm, writes its agent and run configs (and, for an rdm arm,
+//!    its rendered agent template, [`rdm_image`]), then runs
 //!    `uv run slop-code run --no-evaluate` and `uv run slop-code eval`.
 //!
 //! The run record `<out>/rdm-scbench-run.json` ([`exec::RunRecord`]) is
 //! rewritten after every command, so a failed run still records the command
 //! that failed.
+//!
+//! `scbench image build` (slow: a release build of rdm plus SCBench's base
+//! image) builds the payload image from the rdm checkout under test, then has
+//! SCBench build the agent image; `scbench image check` runs the smoke check
+//! in it. Neither runs an agent or makes a paid call.
 
+pub mod environment;
 pub mod exec;
+pub mod image;
 pub mod manifest;
 pub mod plan;
+pub mod rdm_image;
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use serde_json::json;
 
-use manifest::Manifest;
+use manifest::{ArmImage, Manifest};
 use plan::{Paths, Tools, build_plan};
 
 /// Options for [`run`].
@@ -76,8 +89,17 @@ pub fn run(
         cache_dir: std::path::absolute(&opts.cache_dir).unwrap_or(opts.cache_dir.clone()),
         out_dir: out,
     };
-    let plan = build_plan(&manifest, &paths, &opts.tools);
+    let template = if manifest.arms.iter().any(|a| a.image == ArmImage::Rdm) {
+        let path = manifest.dir.join(rdm_image::TEMPLATE);
+        Some(
+            std::fs::read_to_string(&path)
+                .map_err(|e| format!("cannot read agent template {}: {e}", path.display()))?,
+        )
+    } else {
+        None
+    };
     if opts.dry_run {
+        let plan = build_plan(&manifest, &paths, &opts.tools, None, template.as_deref());
         let body = serde_json::to_string_pretty(&json!({
             "manifest": manifest,
             "manifest_path": manifest_path,
@@ -88,7 +110,13 @@ pub fn run(
         let _ = writeln!(stdout, "{body}");
         return Ok(0);
     }
-    exec::execute(&manifest, &manifest_path, &plan)?;
+    let plan = exec::execute(
+        &manifest,
+        &manifest_path,
+        &paths,
+        &opts.tools,
+        template.as_deref(),
+    )?;
     let _ = writeln!(
         stderr,
         "scbench run: {} arm(s) finished; run record {}",

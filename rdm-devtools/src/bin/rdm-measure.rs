@@ -21,6 +21,10 @@
 //! rdm-measure scbench run --out DIR [--manifest PATH] [--cache-dir DIR]
 //!                         [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
 //!                         [--dry-run]
+//! rdm-measure scbench image build [--manifest PATH] [--cache-dir DIR]
+//!                                 [--docker-bin PATH] [--uv-bin PATH]
+//! rdm-measure scbench image check [--manifest PATH] [--cache-dir DIR]
+//!                                 [--docker-bin PATH]
 //! ```
 //!
 //! COST WARNING: `refuter-agreement` with `--tiers` and without `--dry-run`
@@ -28,6 +32,9 @@
 //!
 //! COST WARNING: `scbench run` without `--dry-run` runs paid Claude Code
 //! agents in Docker (arms x problems x checkpoints).
+//!
+//! `scbench image build` makes no paid call but is slow: it runs a release
+//! build of rdm and builds SCBench's base and agent images.
 //!
 //! Run through Cargo from the checkout:
 //! `cargo run -q -p rdm-devtools --bin rdm-measure -- <subcommand> ...`.
@@ -105,6 +112,49 @@ enum ScbenchCmd {
     /// eval` each). COST WARNING: without --dry-run this runs paid Claude
     /// Code agents in Docker (arms x problems x checkpoints).
     Run(ScbenchRunArgs),
+    /// Build or smoke-check the rdm-equipped agent image that arms with
+    /// `image = "rdm"` run in. No paid call.
+    Image(ScbenchImageArgs),
+}
+
+#[derive(clap::Args)]
+struct ScbenchImageArgs {
+    #[command(subcommand)]
+    command: ScbenchImageCmd,
+}
+
+#[derive(Subcommand)]
+enum ScbenchImageCmd {
+    /// Build the payload image from the checkout under test (refused when it
+    /// is dirty), then SCBench's agent image from it. Slow: a release build of
+    /// rdm plus SCBench's base image.
+    Build(ScbenchImageBuildArgs),
+    /// Check the agent image: its recorded rdm SHA is the checkout's HEAD,
+    /// `rdm --version` runs, and Claude Code lists the rdm plugin's skills.
+    Check(ScbenchImageCommonArgs),
+}
+
+#[derive(clap::Args)]
+struct ScbenchImageCommonArgs {
+    /// The pinned manifest (default: the checkout's bench/scbench/manifest.toml).
+    #[arg(long, value_name = "PATH", value_parser = flag_value)]
+    manifest: Option<String>,
+    /// Where the pinned SCBench checkout and generated image files are kept
+    /// (default: the checkout's bench/scbench/cache).
+    #[arg(long, value_name = "DIR", value_parser = flag_value)]
+    cache_dir: Option<String>,
+    /// The `docker` executable.
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "docker")]
+    docker_bin: String,
+}
+
+#[derive(clap::Args)]
+struct ScbenchImageBuildArgs {
+    #[command(flatten)]
+    common: ScbenchImageCommonArgs,
+    /// The `uv` executable.
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "uv")]
+    uv_bin: String,
 }
 
 #[derive(clap::Args)]
@@ -550,8 +600,36 @@ fn agreement_cmd(a: &AgreementArgs) -> Result<ExitCode, String> {
     Ok(ExitCode::from(code))
 }
 
+fn scbench_image_cmd(a: &ScbenchImageArgs) -> Result<ExitCode, String> {
+    let bench = checkout_root().join("bench/scbench");
+    let (common, uv) = match &a.command {
+        ScbenchImageCmd::Build(b) => (&b.common, b.uv_bin.clone()),
+        ScbenchImageCmd::Check(c) => (c, "uv".to_owned()),
+    };
+    let options = scbench::image::ImageOptions {
+        manifest: common
+            .manifest
+            .as_ref()
+            .map_or_else(|| bench.join("manifest.toml"), PathBuf::from),
+        cache_dir: common
+            .cache_dir
+            .as_ref()
+            .map_or_else(|| bench.join("cache"), PathBuf::from),
+        docker: common.docker_bin.clone(),
+        uv,
+    };
+    let code = match &a.command {
+        ScbenchImageCmd::Build(_) => scbench::image::build(&options, &mut std::io::stderr())?,
+        ScbenchImageCmd::Check(_) => scbench::image::check(&options, &mut std::io::stderr())?,
+    };
+    Ok(ExitCode::from(code))
+}
+
 fn scbench_cmd(a: &ScbenchArgs) -> Result<ExitCode, String> {
-    let ScbenchCmd::Run(r) = &a.command;
+    let r = match &a.command {
+        ScbenchCmd::Run(r) => r,
+        ScbenchCmd::Image(i) => return scbench_image_cmd(i),
+    };
     let bench = checkout_root().join("bench/scbench");
     let options = scbench::RunOptions {
         manifest: r

@@ -9,8 +9,9 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::manifest::Manifest;
-use super::plan::{CommandSpec, RunPlan};
+use super::environment;
+use super::manifest::{ArmImage, Manifest};
+use super::plan::{self, CommandSpec, Paths, RunPlan, Tools};
 
 /// The run record written to `<out>/rdm-scbench-run.json`.
 #[derive(Debug, Serialize)]
@@ -65,6 +66,11 @@ pub struct ModelFileRecord {
 pub struct ArmRecord {
     /// The arm name.
     pub name: String,
+    /// The agent image the arm runs in.
+    pub image: ArmImage,
+    /// SCBench's graded directory (the environment's `docker.workdir`), read
+    /// for an rdm arm; `null` for a stock arm.
+    pub graded_dir: Option<String>,
     /// The agent config written for the arm.
     pub agent_config: Value,
     /// The run config written for the arm.
@@ -90,8 +96,9 @@ pub struct CommandRecord {
     pub finished: String,
 }
 
+/// How a spawned command's stdio is wired.
 #[derive(Clone, Copy)]
-enum Io {
+pub(super) enum Io {
     /// Null stdin, captured stdout, inherited stderr.
     Capture,
     /// Null stdin, inherited stdout/stderr.
@@ -110,18 +117,22 @@ struct Executor {
 }
 
 /// The outcome of one spawn.
-struct Ran {
-    exit: Option<i32>,
-    stdout: String,
+pub(super) struct Ran {
+    /// The exit code (`None` when it failed to spawn or died by signal).
+    pub(super) exit: Option<i32>,
+    /// Captured stdout (empty unless [`Io::Capture`]).
+    pub(super) stdout: String,
     spawn_error: Option<String>,
 }
 
 impl Ran {
-    fn ok(&self) -> bool {
+    /// Whether it exited 0.
+    pub(super) fn ok(&self) -> bool {
         self.exit == Some(0)
     }
 
-    fn describe(&self) -> String {
+    /// `exited <n>`, `was killed by a signal` or `failed to spawn: <e>`.
+    pub(super) fn describe(&self) -> String {
         match (&self.spawn_error, self.exit) {
             (Some(e), _) => format!("failed to spawn: {e}"),
             (None, Some(code)) => format!("exited {code}"),
@@ -141,50 +152,8 @@ impl Executor {
     }
 
     fn spawn(&mut self, spec: &CommandSpec, io: Io) -> Result<Ran, String> {
-        let mut cmd = Command::new(&spec.program);
-        cmd.args(&spec.args).envs(&spec.env);
-        if let Some(cwd) = &spec.cwd {
-            cmd.current_dir(cwd);
-        }
-        match io {
-            Io::Capture => {
-                cmd.stdin(Stdio::null()).stdout(Stdio::piped());
-            }
-            Io::Quiet => {
-                cmd.stdin(Stdio::null());
-            }
-            Io::Inherit => {}
-        }
-        let started = now();
-        let result = match io {
-            Io::Capture => cmd.output().map(|o| {
-                (
-                    o.status.code(),
-                    String::from_utf8_lossy(&o.stdout).into_owned(),
-                )
-            }),
-            Io::Quiet | Io::Inherit => cmd.status().map(|s| (s.code(), String::new())),
-        };
-        let ran = match result {
-            Ok((exit, stdout)) => Ran {
-                exit,
-                stdout,
-                spawn_error: None,
-            },
-            Err(e) => Ran {
-                exit: None,
-                stdout: String::new(),
-                spawn_error: Some(e.to_string()),
-            },
-        };
-        self.record.commands.push(CommandRecord {
-            argv: spec.argv(),
-            cwd: spec.cwd.clone(),
-            env: spec.env.clone(),
-            exit: ran.exit,
-            started,
-            finished: now(),
-        });
+        let (ran, record) = spawn_command(spec, io);
+        self.record.commands.push(record);
         self.save()?;
         Ok(ran)
     }
@@ -200,45 +169,129 @@ impl Executor {
         }
         Ok(ran.stdout.trim().to_owned())
     }
+}
 
-    fn provision(&mut self, name: &str, c: &super::plan::Checkout) -> Result<(), String> {
-        let steps: Vec<&CommandSpec> = if c.dir.exists() {
-            vec![&c.set_url, &c.fetch, &c.checkout]
-        } else {
-            vec![&c.clone, &c.fetch, &c.checkout]
-        };
-        for spec in steps {
-            let ran = self.spawn(spec, Io::Quiet)?;
-            if !ran.ok() {
-                return Err(format!(
-                    "provisioning {name} (`{}`) {}",
-                    spec.argv().join(" "),
-                    ran.describe()
-                ));
-            }
-        }
-        Ok(())
+/// Spawns `spec` with `io` and waits for it, returning the outcome and its
+/// record.
+pub(super) fn spawn_command(spec: &CommandSpec, io: Io) -> (Ran, CommandRecord) {
+    let mut cmd = Command::new(&spec.program);
+    cmd.args(&spec.args).envs(&spec.env);
+    if let Some(cwd) = &spec.cwd {
+        cmd.current_dir(cwd);
     }
+    match io {
+        Io::Capture => {
+            cmd.stdin(Stdio::null()).stdout(Stdio::piped());
+        }
+        Io::Quiet => {
+            cmd.stdin(Stdio::null());
+        }
+        Io::Inherit => {}
+    }
+    let started = now();
+    let result = match io {
+        Io::Capture => cmd.output().map(|o| {
+            (
+                o.status.code(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+            )
+        }),
+        Io::Quiet | Io::Inherit => cmd.status().map(|s| (s.code(), String::new())),
+    };
+    let ran = match result {
+        Ok((exit, stdout)) => Ran {
+            exit,
+            stdout,
+            spawn_error: None,
+        },
+        Err(e) => Ran {
+            exit: None,
+            stdout: String::new(),
+            spawn_error: Some(e.to_string()),
+        },
+    };
+    let record = CommandRecord {
+        argv: spec.argv(),
+        cwd: spec.cwd.clone(),
+        env: spec.env.clone(),
+        exit: ran.exit,
+        started,
+        finished: now(),
+    };
+    (ran, record)
 }
 
-fn write_json(path: &Path, value: &Value) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(path, format!("{body}\n"))
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))
-}
-
-/// Runs `plan` for `manifest` (loaded from `manifest_path`) to completion,
-/// stopping at the first failing step.
+/// Provisions checkout `c` (named `name` in errors) at its pin: clone or
+/// re-point, fetch, then detach at the SHA. `spawn` runs each step.
 ///
 /// # Errors
 ///
-/// When a probe, provisioning step or arm command fails, or a file cannot be
-/// written. An arm failure reads `arm <name>: <run|eval> exited <code>`.
-pub fn execute(manifest: &Manifest, manifest_path: &Path, plan: &RunPlan) -> Result<(), String> {
-    let out_dir = plan
-        .record_path
-        .parent()
-        .ok_or("the run record has no parent directory")?;
+/// When a step fails, naming it; or whatever `spawn` returns.
+pub(super) fn provision(
+    name: &str,
+    c: &plan::Checkout,
+    spawn: &mut dyn FnMut(&CommandSpec) -> Result<Ran, String>,
+) -> Result<(), String> {
+    let steps: Vec<&CommandSpec> = if c.dir.exists() {
+        vec![&c.set_url, &c.fetch, &c.checkout]
+    } else {
+        vec![&c.clone, &c.fetch, &c.checkout]
+    };
+    for spec in steps {
+        let ran = spawn(spec)?;
+        if !ran.ok() {
+            return Err(format!(
+                "provisioning {name} (`{}`) {}",
+                spec.argv().join(" "),
+                ran.describe()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Creates `path`'s parent directory, then writes `bytes` to `path`.
+///
+/// # Errors
+///
+/// When either fails, naming the path.
+pub(super) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// Writes `value` to `path` as pretty JSON (which YAML readers accept).
+///
+/// # Errors
+///
+/// When the file cannot be written, naming it.
+pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
+    let body = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    write_file(path, format!("{body}\n").as_bytes())
+}
+
+/// Runs `manifest` (loaded from `manifest_path`) against `paths` to
+/// completion, stopping at the first failing step, and returns the plan it
+/// ran. The plan is built once the rdm SHA is resolved, so rdm arms carry it;
+/// `template` is the unrendered [`super::rdm_image::TEMPLATE`] (see
+/// [`plan::build_plan`]).
+///
+/// # Errors
+///
+/// When a probe, provisioning step or arm command fails, an rdm arm's plan
+/// root lies in SCBench's graded directory, or a file cannot be written. An
+/// arm failure reads `arm <name>: <run|eval> exited <code>`.
+pub fn execute(
+    manifest: &Manifest,
+    manifest_path: &Path,
+    paths: &Paths,
+    tools: &Tools,
+    template: Option<&str>,
+) -> Result<RunPlan, String> {
+    let out_dir = &paths.out_dir;
     std::fs::create_dir_all(out_dir)
         .map_err(|e| format!("cannot create --out {}: {e}", out_dir.display()))?;
     let mut ex = Executor {
@@ -248,31 +301,38 @@ pub fn execute(manifest: &Manifest, manifest_path: &Path, plan: &RunPlan) -> Res
             rdm: RdmInfo::default(),
             observed: Observed::default(),
             model_file: None,
-            arms: plan
-                .arms
-                .iter()
-                .map(|a| ArmRecord {
-                    name: a.name.clone(),
-                    agent_config: a.agent_config.clone(),
-                    run_config: a.run_config.clone(),
-                    run_dir: a.run_dir.clone(),
-                })
-                .collect(),
+            arms: Vec::new(),
             commands: Vec::new(),
         },
-        path: plan.record_path.clone(),
+        path: out_dir.join(plan::RECORD_FILE),
     };
     ex.save()?;
 
-    let ran = ex.spawn(&plan.rdm_sha, Io::Capture)?;
+    let rdm_sha = plan::rdm_sha_command(paths);
+    let ran = ex.spawn(&rdm_sha, Io::Capture)?;
     if !ran.ok() {
         return Err(format!(
             "cannot resolve the rdm SHA (`{}`) {}",
-            plan.rdm_sha.argv().join(" "),
+            rdm_sha.argv().join(" "),
             ran.describe()
         ));
     }
-    ex.record.rdm.sha = Some(ran.stdout.trim().to_owned());
+    let sha = ran.stdout.trim().to_owned();
+    let plan = plan::build_plan(manifest, paths, tools, Some(&sha), template);
+    ex.record.rdm.sha = Some(sha);
+    ex.record.arms = plan
+        .arms
+        .iter()
+        .map(|a| ArmRecord {
+            name: a.name.clone(),
+            image: a.image,
+            graded_dir: None,
+            agent_config: a.agent_config.clone(),
+            run_config: a.run_config.clone(),
+            run_dir: a.run_dir.clone(),
+        })
+        .collect();
+    ex.save()?;
 
     ex.record.observed.uv = Some(ex.probe("uv", &plan.probes.uv)?);
     ex.save()?;
@@ -285,18 +345,17 @@ pub fn execute(manifest: &Manifest, manifest_path: &Path, plan: &RunPlan) -> Res
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create --cache-dir {}: {e}", parent.display()))?;
     }
-    ex.provision("slop-code-bench", &plan.scbench)?;
-    ex.provision("scb-problems", &plan.problems)?;
+    provision("slop-code-bench", &plan.scbench, &mut |spec| {
+        ex.spawn(spec, Io::Quiet)
+    })?;
+    provision("scb-problems", &plan.problems, &mut |spec| {
+        ex.spawn(spec, Io::Quiet)
+    })?;
 
     let m = &plan.model_file;
     let bytes = std::fs::read(&m.source)
         .map_err(|e| format!("cannot read model file {}: {e}", m.source.display()))?;
-    if let Some(parent) = m.installed.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(&m.installed, &bytes)
-        .map_err(|e| format!("cannot install model file {}: {e}", m.installed.display()))?;
+    write_file(&m.installed, &bytes).map_err(|e| format!("cannot install model file: {e}"))?;
     ex.record.model_file = Some(ModelFileRecord {
         source: m.source.clone(),
         installed: m.installed.clone(),
@@ -307,13 +366,34 @@ pub fn execute(manifest: &Manifest, manifest_path: &Path, plan: &RunPlan) -> Res
     });
     ex.save()?;
 
-    for arm in &plan.arms {
-        if let Some(dir) = arm.agent_config_path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    if let Some(rdm) = &manifest.rdm
+        && plan.arms.iter().any(|a| a.image == ArmImage::Rdm)
+    {
+        let env = environment::load(&environment::path(
+            &plan.scbench.dir,
+            &manifest.agent.environment,
+        ))?;
+        for arm in &mut ex.record.arms {
+            if arm.image == ArmImage::Rdm {
+                arm.graded_dir = Some(env.docker.workdir.clone());
+            }
         }
+        ex.save()?;
+        for arm in plan.arms.iter().filter(|a| a.image == ArmImage::Rdm) {
+            environment::refuse_graded_plan_root(
+                &format!("arm {}", arm.name),
+                &rdm.plan_root,
+                &env.docker.workdir,
+            )?;
+        }
+    }
+
+    for arm in &plan.arms {
         write_json(&arm.agent_config_path, &arm.agent_config)?;
         write_json(&arm.run_config_path, &arm.run_config)?;
+        if let (Some(path), Some(text)) = (&arm.docker_template_path, &arm.docker_template) {
+            write_file(path, text.as_bytes())?;
+        }
         for (step, spec) in [("run", &arm.run), ("eval", &arm.eval)] {
             let ran = ex.spawn(spec, Io::Inherit)?;
             if !ran.ok() {
@@ -321,5 +401,5 @@ pub fn execute(manifest: &Manifest, manifest_path: &Path, plan: &RunPlan) -> Res
             }
         }
     }
-    Ok(())
+    Ok(plan)
 }

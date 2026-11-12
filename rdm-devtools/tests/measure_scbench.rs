@@ -1,4 +1,5 @@
-//! `rdm-measure scbench run` against fake `uv`/`docker`/`claude` executables
+//! `rdm-measure scbench run` and `scbench image build|check` against fake
+//! `uv`/`docker`/`claude` executables
 //! (the `rdm-devtools-fixture` binary symlinked under each name) and local
 //! stand-in git repositories. Nothing here runs SCBench, Docker or a paid
 //! agent, and nothing touches the network: every remote is a local path.
@@ -29,6 +30,10 @@ struct Spec {
     /// `None` writes a stand-in model file into the rdm repo and points the
     /// manifest at it relatively.
     model_file: Option<PathBuf>,
+    /// Adds a third arm, `just-solve-rdm`, with `image = "rdm"`.
+    rdm_arm: bool,
+    /// The `[rdm] plan_root` every stand-in manifest carries.
+    plan_root: &'static str,
 }
 
 impl Default for Spec {
@@ -41,6 +46,8 @@ impl Default for Spec {
             step_limit: 100,
             pass_policy: "all-cases",
             model_file: None,
+            rdm_arm: false,
+            plan_root: "/rdm-plan",
         }
     }
 }
@@ -140,6 +147,10 @@ impl Bench {
                 ),
                 ("configs/prompts/just-solve.jinja", "just solve\n"),
                 ("configs/prompts/anti_slop.jinja", "anti slop\n"),
+                (
+                    "configs/environments/docker-python3.12-uv.yaml",
+                    "type: docker\nname: python3.12\ndocker:\n  workdir: /workspace\n",
+                ),
             ],
         );
         let problems_sha = repo(
@@ -183,6 +194,10 @@ prompt = "configs/prompts/just-solve.jinja"
 [[arm]]
 name = "anti_slop"
 prompt = "configs/prompts/anti_slop.jinja"
+{rdm_arm}
+[rdm]
+plan_root = "{plan_root}"
+project = "bench"
 "#,
             scbench_repo = root.join("src/slop-code-bench").display(),
             problems_repo = root.join("src/scb-problems").display(),
@@ -192,7 +207,15 @@ prompt = "configs/prompts/anti_slop.jinja"
             version = spec.claude_code_version,
             pass_policy = spec.pass_policy,
             step_limit = spec.step_limit,
+            rdm_arm = if spec.rdm_arm {
+                "\n[[arm]]\nname = \"just-solve-rdm\"\nprompt = \"configs/prompts/just-solve.jinja\"\nimage = \"rdm\"\n"
+            } else {
+                ""
+            },
+            plan_root = spec.plan_root,
         );
+        let template = std::fs::read_to_string(repo_root().join("bench/scbench/agent/docker.j2"))
+            .expect("committed agent template");
         let rdm = root.join("rdm");
         let rdm_sha = repo(
             &home,
@@ -203,6 +226,10 @@ prompt = "configs/prompts/anti_slop.jinja"
                     "bench/scbench/models/opus-5.5.yaml",
                     "internal_name: stand-in\n",
                 ),
+                ("bench/scbench/agent/Dockerfile", "FROM scratch\n"),
+                ("bench/scbench/agent/docker.j2", &template),
+                ("plugins/rdm/skills/do/SKILL.md", "# do\n"),
+                ("plugins/rdm/skills/land/SKILL.md", "# land\n"),
             ],
         );
         let bin = root.join("bin");
@@ -313,6 +340,27 @@ prompt = "configs/prompts/anti_slop.jinja"
             .current_dir(&self.root);
         hermetic(&mut cmd, &self.home());
         cmd.output().expect("rdm-measure runs")
+    }
+
+    /// Runs `scbench image <sub>` with the fakes.
+    fn image(&self, sub: &str, extra: &[&str]) -> Output {
+        let mut cmd = Command::new(measure_bin());
+        cmd.args(["scbench", "image", sub, "--manifest"])
+            .arg(&self.manifest)
+            .arg("--cache-dir")
+            .arg(&self.cache)
+            .arg("--docker-bin")
+            .arg(self.bin("docker"));
+        if sub == "build" {
+            cmd.arg("--uv-bin").arg(self.bin("uv"));
+        }
+        cmd.args(extra).current_dir(&self.root);
+        hermetic(&mut cmd, &self.home());
+        cmd.output().expect("rdm-measure runs")
+    }
+
+    fn rdm_dir(&self) -> PathBuf {
+        self.root.join("rdm")
     }
 
     fn record(&self) -> Value {
@@ -528,6 +576,7 @@ fn invocation_built_from_manifest() {
         step_limit: 7,
         pass_policy: "core-cases",
         model_file: None,
+        ..Spec::default()
     });
     ok(&b.run(&[]));
     let record = b.record();
@@ -720,4 +769,251 @@ fn cached_checkout_follows_a_changed_repo() {
         b.record_at(&second)["manifest"]["scbench"]["repo"],
         p(&fork)
     );
+}
+
+fn read_json(path: &Path) -> Value {
+    json(&std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+}
+
+#[test]
+fn rdm_arm_invocation_uses_rdm_agent_config() {
+    let b = Bench::new(&Spec {
+        rdm_arm: true,
+        ..Spec::default()
+    });
+    ok(&b.run(&[]));
+    let arm_dir = b.out.join("just-solve-rdm");
+    let run_yaml = arm_dir.join("run.yaml");
+    let want: Vec<String> = [
+        "run",
+        "slop-code",
+        "run",
+        "--config",
+        &p(&run_yaml),
+        "--no-evaluate",
+        "--no-live-progress",
+    ]
+    .map(str::to_owned)
+    .into();
+    assert!(b.argvs("uv").contains(&want), "{:?}", b.argvs("uv"));
+
+    let run_config = read_json(&run_yaml);
+    assert_eq!(run_config["agent"], p(&arm_dir.join("agent.yaml")));
+    let agent = read_json(&arm_dir.join("agent.yaml"));
+    assert_eq!(agent["binary"], "/opt/rdm/bin/claude-rdm");
+    assert_eq!(agent["version"], format!("2.1.322-rdm.{}", b.rdm_sha));
+    assert_eq!(agent["docker_template"], p(&arm_dir.join("docker.j2")));
+    assert!(arm_dir.join("docker.j2").is_file());
+    assert_eq!(
+        agent["extra_args"],
+        json!(["--plugin-dir", "/opt/rdm/plugin"])
+    );
+
+    let stock = read_json(&b.out.join("just-solve/agent.yaml"));
+    for key in ["docker_template", "extra_args", "env"] {
+        assert!(stock.get(key).is_none(), "stock agent config has {key}");
+    }
+    assert_eq!(stock["version"], "2.1.322");
+}
+
+#[test]
+fn rdm_arm_plan_repo_is_outside_graded_dir() {
+    let b = Bench::new(&Spec {
+        rdm_arm: true,
+        ..Spec::default()
+    });
+    ok(&b.run(&[]));
+    let arm_dir = b.out.join("just-solve-rdm");
+    let agent = read_json(&arm_dir.join("agent.yaml"));
+    let plan_root = agent["env"]["RDM_ROOT"].as_str().expect("RDM_ROOT");
+    let record = b.record();
+    let arm = record["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .find(|a| a["name"] == "just-solve-rdm")
+        .expect("rdm arm record");
+    let graded = arm["graded_dir"].as_str().expect("graded_dir");
+    assert_eq!(graded, "/workspace");
+    assert_eq!(plan_root, "/rdm-plan");
+    assert!(!Path::new(plan_root).starts_with(graded));
+    let template = std::fs::read_to_string(arm_dir.join("docker.j2")).expect("docker.j2");
+    assert!(template.contains("mkdir -p /rdm-plan"), "{template}");
+}
+
+#[test]
+fn plan_root_inside_graded_dir_is_refused() {
+    let b = Bench::new(&Spec {
+        rdm_arm: true,
+        plan_root: "/workspace/.rdm",
+        ..Spec::default()
+    });
+    let err = fails(&b.run(&[]));
+    assert!(
+        err.contains("plan_root") && err.contains("/workspace"),
+        "stderr: {err}"
+    );
+    assert_eq!(b.argvs("uv"), vec![vec!["--version".to_owned()]]);
+}
+
+#[test]
+fn image_build_uses_checkout_context_and_labels_head() {
+    let b = Bench::new(&Spec::default());
+    ok(&b.image("build", &[]));
+    let head = git(&b.home(), &b.rdm_dir(), &["rev-parse", "HEAD"]);
+    let docker = b.argvs("docker");
+    assert_eq!(docker.len(), 1, "{docker:?}");
+    let build = &docker[0];
+    assert_eq!(build[0], "build");
+    let has = |pair: [&str; 2]| build.windows(2).any(|w| w == pair);
+    let dockerfile = p(&b.rdm_dir().join("bench/scbench/agent/Dockerfile"));
+    assert!(has(["-f", &dockerfile]), "{build:?}");
+    assert!(
+        has(["--build-arg", &format!("RDM_SHA={head}")]),
+        "{build:?}"
+    );
+    assert!(
+        has(["--label", &format!("org.rdm.scbench.rdm-sha={head}")]),
+        "{build:?}"
+    );
+    assert!(
+        has(["-t", &format!("rdm-scbench-payload:{head}")]),
+        "{build:?}"
+    );
+    assert_eq!(build.last(), Some(&p(&b.rdm_dir())));
+
+    let image_dir = b.cache.join("rdm-image").join(&head);
+    let agent_yaml = image_dir.join("agent.yaml");
+    let env_yaml = b
+        .scbench_dir()
+        .join("configs/environments/docker-python3.12-uv.yaml");
+    let uv = b.calls("uv").expect("uv called");
+    assert_eq!(uv.len(), 1, "{uv:?}");
+    assert_eq!(
+        strs(&uv[0]["argv"]),
+        [
+            "run",
+            "slop-code",
+            "docker",
+            "build-agent",
+            &p(&agent_yaml),
+            &p(&env_yaml),
+            "--force-build"
+        ]
+    );
+    assert_eq!(uv[0]["cwd"], p(&b.scbench_dir()));
+    let agent = read_json(&agent_yaml);
+    let template_path = agent["docker_template"].as_str().expect("docker_template");
+    let template = std::fs::read_to_string(template_path).expect("rendered template");
+    assert!(
+        template.contains(&format!("COPY --from=rdm-scbench-payload:{head}")),
+        "{template}"
+    );
+}
+
+#[test]
+fn image_build_refuses_dirty_checkout() {
+    let b = Bench::new(&Spec::default());
+    write(&b.rdm_dir().join("stray.txt"), "untracked\n");
+    let err = fails(&b.image("build", &[]));
+    assert!(err.contains(&p(&b.rdm_dir())), "stderr: {err}");
+    assert!(b.calls("docker").is_none(), "docker was spawned");
+}
+
+#[test]
+fn image_build_stops_when_docker_build_fails() {
+    let b = Bench::new(&Spec::default());
+    b.scenario("docker", &json!({ "default": { "exit": 1 } }), &[]);
+    let err = fails(&b.image("build", &[]));
+    assert!(err.contains("docker build"), "stderr: {err}");
+    let uv = b.argvs("uv");
+    assert!(
+        !uv.iter().any(|a| a.iter().any(|x| x == "build-agent")),
+        "{uv:?}"
+    );
+}
+
+const LISTING_OK: &str = "rdm@inline\n  Source: rdm@inline\n  Skills (2)  do, land\n";
+
+/// A built bench whose fake `docker` answers the three check probes.
+fn checked(sha: Option<&str>, rdm: Value, listing: Value) -> (Bench, Output) {
+    let b = Bench::new(&Spec::default());
+    ok(&b.image("build", &[]));
+    let sha = sha.map_or_else(|| b.rdm_sha.clone(), str::to_owned);
+    b.scenario(
+        "docker",
+        &json!({ "default": { "exit": 0 } }),
+        &[
+            (
+                &["/opt/rdm/RDM_SHA"],
+                json!({ "stdout": format!("{sha}\n") }),
+            ),
+            (&["/opt/rdm/bin/rdm"], rdm),
+            (&["plugin details"], listing),
+        ],
+    );
+    std::fs::remove_file(b.record_path("docker")).expect("reset docker record");
+    let o = b.image("check", &[]);
+    (b, o)
+}
+
+fn rdm_ok() -> Value {
+    json!({ "stdout": "rdm 0.24.1\n" })
+}
+
+#[test]
+fn image_check_passes_on_matching_image() {
+    let (b, o) = checked(None, rdm_ok(), json!({ "stdout": LISTING_OK }));
+    ok(&o);
+    let image = format!("slop-code:claude_code-2.1.322-rdm.{}-python3.12", b.rdm_sha);
+    let docker = b.argvs("docker");
+    assert_eq!(docker.len(), 3, "{docker:?}");
+    for argv in &docker {
+        assert_eq!(&argv[..2], ["run", "--rm"]);
+        assert!(argv.contains(&image), "{argv:?}");
+    }
+}
+
+#[test]
+fn image_check_names_sha_mismatch() {
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    let (b, o) = checked(Some(other), rdm_ok(), json!({ "stdout": LISTING_OK }));
+    let err = fails(&o);
+    assert!(err.contains(other) && err.contains(&b.rdm_sha), "{err}");
+}
+
+#[test]
+fn image_check_names_failing_rdm_version() {
+    let (_b, o) = checked(
+        None,
+        json!({ "exit": 127 }),
+        json!({ "stdout": LISTING_OK }),
+    );
+    let err = fails(&o);
+    assert!(err.contains("rdm --version"), "{err}");
+}
+
+#[test]
+fn image_check_names_missing_rdm_skills() {
+    let (_b, o) = checked(
+        None,
+        rdm_ok(),
+        json!({ "stdout": "rdm@inline\n  Skills (1)  do\n" }),
+    );
+    let err = fails(&o);
+    assert!(err.contains("land"), "{err}");
+
+    let (_b, o) = checked(None, rdm_ok(), json!({ "stdout": "rdm@inline\n" }));
+    let err = fails(&o);
+    assert!(err.contains("shows no rdm skills"), "{err}");
+}
+
+#[test]
+fn image_check_reports_every_failure() {
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    let (_b, o) = checked(Some(other), json!({ "exit": 1 }), json!({ "exit": 1 }));
+    let err = fails(&o);
+    for want in [other, "rdm --version", "shows no rdm skills"] {
+        assert!(err.contains(want), "missing {want:?} in {err}");
+    }
 }

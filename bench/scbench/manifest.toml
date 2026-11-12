@@ -33,3 +33,12 @@ prompt = "configs/prompts/just-solve.jinja"   # relative to the SCBench checkout
 [[arm]]
 name = "anti_slop"
 prompt = "configs/prompts/anti_slop.jinja"
+
+# The rdm-equipped agent image (README.md § "rdm-equipped image"). An arm runs
+# in it with `image = "rdm"`; `scbench image build|check` read this table.
+# plan_root is the plan repo inside the agent container: it must lie outside
+# the environment's graded directory (docker.workdir, /workspace), so plan-repo
+# files never count toward the metrics.
+[rdm]
+plan_root = "/rdm-plan"
+project = "bench"
