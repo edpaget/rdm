@@ -10,19 +10,21 @@
 //! The preflight runs cheapest first and stops at the first failure, before
 //! any `slop-code` command and before `--out` is created:
 //!
-//! 1. the provider's credential variable is set ([`credential_variable`];
+//! 1. with `--baseline`, the baseline loads from the manifest's baselines
+//!    directory ([`baseline::load`]), as the report step will load it;
+//! 2. the provider's credential variable is set ([`credential_variable`];
 //!    only whether it is set is read, never its value);
-//! 2. `uv --version` exits 0;
-//! 3. `docker version --format {{.Server.Version}}` exits 0 (the daemon is
+//! 3. `uv --version` exits 0;
+//! 4. `docker version --format {{.Server.Version}}` exits 0 (the daemon is
 //!    reachable);
-//! 4. when an arm runs in the rdm image, `scbench image check` passes
+//! 5. when an arm runs in the rdm image, `scbench image check` passes
 //!    ([`image::check`]).
 //!
 //! The run then probes `uv`, Docker and `claude` again itself, as every
 //! `scbench run` does, so its record carries the observed versions.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -82,11 +84,15 @@ fn probe(spec: &CommandSpec, missing: &str, failing: &str) -> Result<(), String>
 
 fn preflight(
     manifest: &Manifest,
+    manifest_path: &Path,
     opts: &LadderOptions,
     probes: &Probes,
     image_check: bool,
     stderr: &mut dyn Write,
 ) -> Result<(), String> {
+    if let Some(name) = &opts.baseline {
+        baseline::load(&baseline::dir(Some(manifest_path))?, name)?;
+    }
     let provider = &manifest.agent.provider;
     let Some(variable) = credential_variable(provider) else {
         return Err(format!(
@@ -128,9 +134,9 @@ fn preflight(
 /// # Errors
 ///
 /// When the manifest cannot be loaded, `--out` is used, the `--baseline`
-/// name is invalid, a preflight check fails (`ladder preflight: ...`), the
-/// run fails (with a hint that its finished units are reportable), or the
-/// report fails.
+/// name is invalid, a preflight check fails (`ladder preflight: ...`), or
+/// the run or the report fails (either with a hint that the run's finished
+/// units are reportable with `scbench report --run`).
 pub fn run(
     opts: &LadderOptions,
     stdout: &mut dyn Write,
@@ -189,8 +195,15 @@ pub fn run(
         return Ok(0);
     }
 
-    preflight(&manifest, opts, &probes, image_check, stderr)
-        .map_err(|e| format!("ladder preflight: {e}"))?;
+    preflight(
+        &manifest,
+        &manifest_path,
+        opts,
+        &probes,
+        image_check,
+        stderr,
+    )
+    .map_err(|e| format!("ladder preflight: {e}"))?;
     super::run(&run_options(false), stdout, stderr).map_err(|e| {
         format!(
             "{e}; the finished arm runs are on disk; rdm-measure scbench report --run {} reports them",
@@ -199,7 +212,7 @@ pub fn run(
     })?;
     report::run(
         &ReportOptions {
-            run: out,
+            run: out.clone(),
             baseline: opts.baseline.clone(),
             save_baseline: None,
             format: Format::Markdown,
@@ -207,6 +220,12 @@ pub fn run(
         stdout,
         stderr,
     )
+    .map_err(|e| {
+        format!(
+            "{e}; the run finished and is on disk; rdm-measure scbench report --run {} reports it",
+            out.display()
+        )
+    })
 }
 
 #[cfg(test)]

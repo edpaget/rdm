@@ -2241,6 +2241,18 @@ fn rdm_arm_collects_plan_repos_per_seed() {
 /// tree per problem in that unit's `output/`, for every arm and seed under
 /// each of `outs`.
 fn ladder_outputs(b: &Bench, outs: &[&Path], arms: &[&str], seeds: u64) {
+    ladder_outputs_with(b, outs, arms, seeds, &|_, response| response);
+}
+
+/// [`ladder_outputs`], with each unit's run response passed through
+/// `tweak(unit_dir, response)` first.
+fn ladder_outputs_with(
+    b: &Bench,
+    outs: &[&Path],
+    arms: &[&str],
+    seeds: u64,
+    tweak: &dyn Fn(&Path, Value) -> Value,
+) {
     let staged = b.root.join("staged-scbench");
     let mut responses: Vec<(String, Value)> = Vec::new();
     let mut n = 0;
@@ -2259,7 +2271,8 @@ fn ladder_outputs(b: &Bench, outs: &[&Path], arms: &[&str], seeds: u64) {
                         place.push(json!({ "from": from, "to": run_dir.join(rel) }));
                     }
                 }
-                responses.push((p(&unit.join("run.yaml")), json!({ "place": place })));
+                let response = tweak(&unit, json!({ "place": place }));
+                responses.push((p(&unit.join("run.yaml")), response));
             }
         }
     }
@@ -2528,4 +2541,97 @@ fn ladder_passes_the_baseline_through() {
     let report = read_json(&out2.join("rdm-scbench-report.json"));
     assert_eq!(report["baseline"]["name"], "first");
     assert_eq!(report["baseline"]["comparable"], true);
+}
+
+#[test]
+fn ladder_preflight_loads_the_baseline_before_any_spawn() {
+    let b = Bench::new(&Spec::default());
+    ladder_outputs(&b, &[&b.out], &["just-solve", "anti_slop"], 2);
+    let err = fails(&b.ladder(&b.out, &["--seeds", "2", "--baseline", "missing"], &[]));
+    let path = b.rdm_dir().join("bench/scbench/baselines/missing.json");
+    assert!(
+        err.contains("error: ladder preflight: --baseline: cannot read ")
+            && err.contains(&p(&path)),
+        "stderr: {err}"
+    );
+    for role in ["uv", "docker", "claude"] {
+        assert!(b.calls(role).is_none(), "{role} was invoked");
+    }
+    assert!(!b.out.exists(), "--out was created");
+}
+
+#[test]
+fn ladder_run_failure_hints_at_report_and_skips_the_report() {
+    let b = Bench::new(&Spec::default());
+    let arms = ["just-solve", "anti_slop"];
+    let failing = b.out.join("anti_slop/seed-2");
+    ladder_outputs_with(&b, &[&b.out], &arms, 2, &|unit, response| {
+        if unit == failing {
+            json!({ "exit": 3, "stderr": "agent crashed\n" })
+        } else {
+            response
+        }
+    });
+    let o = b.ladder(&b.out, &["--seeds", "2"], &[]);
+    let err = fails(&o);
+    assert!(
+        err.contains("arm anti_slop seed 2: run exited 3")
+            && err.contains(&format!(
+                "rdm-measure scbench report --run {} reports them",
+                p(&b.out)
+            )),
+        "stderr: {err}"
+    );
+    assert!(!b.out.join("rdm-scbench-report.json").exists());
+    assert!(!b.out.join("rdm-scbench-report.md").exists());
+
+    // The hinted command reports the finished units and skips the failed one.
+    let r = json(&ok(&b.report(&b.out, &["--format", "json"])));
+    let seeds: Vec<(Value, Value)> = r["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .map(|a| (a["name"].clone(), a["seeds"].clone()))
+        .collect();
+    assert_eq!(
+        seeds,
+        [
+            (json!("just-solve"), json!([1, 2])),
+            (json!("anti_slop"), json!([1])),
+        ]
+    );
+    assert_eq!(
+        r["skipped_runs"],
+        json!([{ "arm": "anti_slop", "seed": 2, "reason": "not finished" }])
+    );
+}
+
+#[test]
+fn ladder_report_failure_hints_that_the_run_finished() {
+    let b = Bench::new(&Spec::default());
+    let arms = ["just-solve", "anti_slop"];
+    let corrupt = b.out.join("just-solve/seed-1");
+    let bad = corrupt.join("output/mvvault/checkpoint_1/evaluation.json");
+    let garbage = b.root.join("staged-garbage");
+    write(&garbage, "{not json");
+    ladder_outputs_with(&b, &[&b.out], &arms, 1, &|unit, mut response| {
+        if unit == corrupt {
+            response["place"]
+                .as_array_mut()
+                .expect("place")
+                .push(json!({ "from": garbage, "to": bad }));
+        }
+        response
+    });
+    let err = fails(&b.ladder(&b.out, &["--seeds", "1"], &[]));
+    assert!(
+        err.contains(&p(&bad))
+            && err.contains(&format!(
+                "the run finished and is on disk; rdm-measure scbench report --run {} reports it",
+                p(&b.out)
+            )),
+        "stderr: {err}"
+    );
+    assert!(b.out.join("rdm-scbench-run.json").is_file());
+    assert!(!b.out.join("rdm-scbench-report.json").exists());
 }

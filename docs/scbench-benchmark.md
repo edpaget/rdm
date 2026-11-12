@@ -116,6 +116,7 @@ over the given seeds, then the report.
 
    | Message | Fix |
    |---|---|
+   | `--baseline: cannot read .../baselines/<name>.json` | Check the name, or save it first with `scbench report --save-baseline` |
    | `CLAUDE_CODE_OAUTH_TOKEN is not set; provider claude_code_oauth needs it` | Run `claude setup-token` and export the token |
    | `ANTHROPIC_API_KEY is not set; provider anthropic needs it` | Export the API key |
    | `provider <p> has no known credential variable` | Set the manifest's `provider` to `claude_code_oauth` or `anthropic` |
@@ -133,7 +134,8 @@ over the given seeds, then the report.
    `scbench report --run bench/scbench/runs/<name>` reports them. Units
    whose eval never finished are listed as skipped, not counted as failures.
    Because runs go seed-major (every arm for seed 1, then seed 2), the
-   finished seeds cover every arm.
+   finished seeds cover every arm. If the run finishes but the report step fails, the
+   error says so and ends with the same `scbench report --run` hint.
 6. **Re-run into a fresh `--out`.** The report reads one run directory, so a
    re-run is never merged with an earlier one.
 
