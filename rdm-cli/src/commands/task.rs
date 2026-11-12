@@ -181,6 +181,10 @@ pub fn run(
             )
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .value;
+            // That resolution is this function's only reader of the global
+            // config, so a build without git has no use for it.
+            #[cfg(not(feature = "git"))]
+            let _ = global_config;
             #[cfg(feature = "git")]
             let source_binding = if explicit_source {
                 Some(commands::resolve_source_args(
