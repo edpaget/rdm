@@ -8,6 +8,11 @@ control prompts: `just-solve`, `anti_slop`, `plan_first` and `plan-and-test`.
 The `tracked` and `planned` arms add rdm tracking, then rdm's planning lane.
 The `full-lane` arm (see "Full-lane arm") runs the full rdm lane.
 
+**Benchmark guide.** [`docs/scbench-benchmark.md`](../../docs/scbench-benchmark.md)
+is the operator's guide: prerequisites, how cost scales, triggering
+`scbench ladder` on the roadmap branch, reading the report and recording a
+baseline. This README is the reference for the runner itself.
+
 > **COST WARNING.** `scbench run` without `--dry-run` runs paid Claude Code
 > agents in Docker. Each arm runs every problem in the subset, and every
 > checkpoint of each problem, once per seed. Cost scales with
@@ -51,7 +56,26 @@ SCBench checkout.
 
 ## Running
 
-From the rdm checkout:
+The one trigger is `scbench ladder`: a preflight that fails before any
+spend (the credential variable, `uv`, the Docker daemon and, when an arm
+runs in the rdm image, `scbench image check`), then `scbench run` over every
+manifest arm with the given seeds, then `scbench report`:
+
+```bash
+# The projected run count, the preflight it would run, and the plan.
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench ladder \
+  --seeds 3 --out bench/scbench/runs/<name> --dry-run
+
+# The paid run.
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench ladder \
+  --seeds 3 --out bench/scbench/runs/<name> [--baseline <name>]
+```
+
+`--seeds` is required. A preflight failure prints
+`error: ladder preflight: ...` before any `slop-code` command and before
+`--out` is created. The guide lists each failure and its fix.
+
+`scbench run` runs selected arms directly. From the rdm checkout:
 
 ```bash
 # Print the plan: provisioning, probes, model copy, and each arm's configs

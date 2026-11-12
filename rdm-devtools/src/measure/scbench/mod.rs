@@ -36,6 +36,12 @@
 //! rewritten after every command, so a failed run still records the command
 //! that failed.
 //!
+//! `scbench ladder` ([`ladder`]) is the operator's one trigger: a preflight
+//! that fails before any spend (credential, `uv`, the Docker daemon and, for
+//! rdm arms, `scbench image check`), then `scbench run` over every manifest
+//! arm with the given seeds, then `scbench report`. The operator's guide is
+//! `docs/scbench-benchmark.md`.
+//!
 //! `scbench report` ([`report`]) aggregates a run's SCBench outputs
 //! ([`outputs`]) per arm with seed-bootstrap confidence intervals
 //! ([`stats`]), sets every rdm arm against every control arm, and saves or
@@ -50,6 +56,7 @@ pub mod baseline;
 pub mod environment;
 pub mod exec;
 pub mod image;
+pub mod ladder;
 pub mod lane;
 pub mod manifest;
 pub mod outputs;

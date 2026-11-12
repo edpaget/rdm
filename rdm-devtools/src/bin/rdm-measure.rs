@@ -22,6 +22,9 @@
 //!                         [--arms NAME,...] [--seeds N]
 //!                         [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
 //!                         [--dry-run]
+//! rdm-measure scbench ladder --out DIR --seeds N [--manifest PATH] [--cache-dir DIR]
+//!                            [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
+//!                            [--baseline NAME] [--dry-run]
 //! rdm-measure scbench report --run DIR [--baseline NAME] [--save-baseline NAME]
 //!                            [--format markdown|json]
 //! rdm-measure scbench image build [--manifest PATH] [--cache-dir DIR]
@@ -34,7 +37,9 @@
 //! dispatches paid agents (items x tiers x replicates) through `claude -p`.
 //!
 //! COST WARNING: `scbench run` without `--dry-run` runs paid Claude Code
-//! agents in Docker (arms x seeds x problems x checkpoints).
+//! agents in Docker (arms x seeds x problems x checkpoints). So does
+//! `scbench ladder` without `--dry-run`, over every manifest arm; its
+//! `--dry-run` prints the projected run count. See docs/scbench-benchmark.md.
 //!
 //! `scbench image build` makes no paid call but is slow: it runs a release
 //! build of rdm and builds SCBench's base and agent images.
@@ -116,6 +121,13 @@ enum ScbenchCmd {
     /// --dry-run this runs paid Claude Code agents in Docker (arms x seeds x
     /// problems x checkpoints).
     Run(ScbenchRunArgs),
+    /// The one trigger: a preflight (credential, uv, the Docker daemon, the
+    /// rdm image check) that fails before any spend, then `run` over every
+    /// manifest arm with --seeds, then `report`. COST WARNING: without
+    /// --dry-run this runs paid Claude Code agents in Docker (arms x seeds x
+    /// problems x checkpoints); --dry-run prints the projection and spawns
+    /// nothing.
+    Ladder(ScbenchLadderArgs),
     /// Report a run per arm (pass rate, erosion, cost, tokens, wall-clock,
     /// lane failures) with seed-bootstrap confidence intervals and every rdm
     /// arm against every control arm; save or compare a baseline. Writes
@@ -124,6 +136,40 @@ enum ScbenchCmd {
     /// Build or smoke-check the rdm-equipped agent image that arms with
     /// `image = "rdm"` run in. No paid call.
     Image(ScbenchImageArgs),
+}
+
+#[derive(clap::Args)]
+struct ScbenchLadderArgs {
+    /// The pinned manifest (default: the checkout's bench/scbench/manifest.toml).
+    #[arg(long, value_name = "PATH", value_parser = flag_value)]
+    manifest: Option<String>,
+    /// Where the pinned checkouts are kept (default: the checkout's
+    /// bench/scbench/cache).
+    #[arg(long, value_name = "DIR", value_parser = flag_value)]
+    cache_dir: Option<String>,
+    /// The run's output directory; must be missing or empty.
+    #[arg(long, value_name = "DIR", value_parser = flag_value)]
+    out: String,
+    /// How many seeds every arm runs with (seeds 1..=N). Required: it is the
+    /// run's cost choice.
+    #[arg(long, value_name = "N", value_parser = positive_int)]
+    seeds: u64,
+    /// The `uv` executable.
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "uv")]
+    uv_bin: String,
+    /// The `docker` executable.
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "docker")]
+    docker_bin: String,
+    /// The host `claude` executable (version probe only).
+    #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "claude")]
+    claude_bin: String,
+    /// Render the report beside this saved baseline.
+    #[arg(long, value_name = "NAME", value_parser = flag_value)]
+    baseline: Option<String>,
+    /// Print the projection, the preflight and the plan as JSON; spawn
+    /// nothing and create nothing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -665,6 +711,31 @@ fn scbench_image_cmd(a: &ScbenchImageArgs) -> Result<ExitCode, String> {
     Ok(ExitCode::from(code))
 }
 
+fn scbench_ladder_cmd(a: &ScbenchLadderArgs) -> Result<ExitCode, String> {
+    let bench = checkout_root().join("bench/scbench");
+    let options = scbench::ladder::LadderOptions {
+        manifest: a
+            .manifest
+            .as_ref()
+            .map_or_else(|| bench.join("manifest.toml"), PathBuf::from),
+        cache_dir: a
+            .cache_dir
+            .as_ref()
+            .map_or_else(|| bench.join("cache"), PathBuf::from),
+        out: PathBuf::from(&a.out),
+        tools: scbench::plan::Tools {
+            uv: a.uv_bin.clone(),
+            docker: a.docker_bin.clone(),
+            claude: a.claude_bin.clone(),
+        },
+        seeds: a.seeds,
+        baseline: a.baseline.clone(),
+        dry_run: a.dry_run,
+    };
+    let code = scbench::ladder::run(&options, &mut std::io::stdout(), &mut std::io::stderr())?;
+    Ok(ExitCode::from(code))
+}
+
 fn scbench_report_cmd(a: &ScbenchReportArgs) -> Result<ExitCode, String> {
     let options = scbench::report::ReportOptions {
         run: PathBuf::from(&a.run),
@@ -683,6 +754,7 @@ fn scbench_cmd(a: &ScbenchArgs) -> Result<ExitCode, String> {
     let r = match &a.command {
         ScbenchCmd::Run(r) => r,
         ScbenchCmd::Report(r) => return scbench_report_cmd(r),
+        ScbenchCmd::Ladder(l) => return scbench_ladder_cmd(l),
         ScbenchCmd::Image(i) => return scbench_image_cmd(i),
     };
     let bench = checkout_root().join("bench/scbench");

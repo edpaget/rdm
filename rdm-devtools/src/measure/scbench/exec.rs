@@ -155,6 +155,11 @@ impl Ran {
         self.exit == Some(0)
     }
 
+    /// Whether the program could not be started at all.
+    pub(super) fn spawn_failed(&self) -> bool {
+        self.spawn_error.is_some()
+    }
+
     /// `exited <n>`, `was killed by a signal` or `failed to spawn: <e>`.
     pub(super) fn describe(&self) -> String {
         match (&self.spawn_error, self.exit) {

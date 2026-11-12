@@ -1,4 +1,5 @@
-//! `rdm-measure scbench run` and `scbench image build|check` against fake
+//! `rdm-measure scbench run`, `scbench ladder` and `scbench image build|check`
+//! against fake
 //! `uv`/`docker`/`claude` executables
 //! (the `rdm-devtools-fixture` binary symlinked under each name) and local
 //! stand-in git repositories. Nothing here runs SCBench, Docker or a paid
@@ -11,6 +12,7 @@
 
 mod common;
 mod measure_support;
+mod scbench_support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -364,6 +366,49 @@ project = "bench"
             .arg(self.bin("docker"))
             .arg("--claude-bin")
             .arg(self.bin("claude"))
+            .args(extra)
+            .current_dir(&self.root);
+        hermetic(&mut cmd, &self.home());
+        cmd.output().expect("rdm-measure runs")
+    }
+
+    /// Runs `scbench ladder` into `out` with the fakes. The credential
+    /// environment is always explicit: `CLAUDE_CODE_OAUTH_TOKEN` is a fake
+    /// token and `ANTHROPIC_API_KEY` is removed, then `env` applies
+    /// (`None` removes a variable).
+    fn ladder(&self, out: &Path, extra: &[&str], env: &[(&str, Option<&str>)]) -> Output {
+        let mut cmd = Command::new(measure_bin());
+        cmd.args(["scbench", "ladder", "--manifest"])
+            .arg(&self.manifest)
+            .arg("--cache-dir")
+            .arg(&self.cache)
+            .arg("--out")
+            .arg(out)
+            .arg("--uv-bin")
+            .arg(self.bin("uv"))
+            .arg("--docker-bin")
+            .arg(self.bin("docker"))
+            .arg("--claude-bin")
+            .arg(self.bin("claude"))
+            .args(extra)
+            .current_dir(&self.root);
+        hermetic(&mut cmd, &self.home());
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", "fake-token")
+            .env_remove("ANTHROPIC_API_KEY");
+        for (k, v) in env {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            };
+        }
+        cmd.output().expect("rdm-measure runs")
+    }
+
+    /// Runs `scbench report --run <run>` with `extra`.
+    fn report(&self, run: &Path, extra: &[&str]) -> Output {
+        let mut cmd = Command::new(measure_bin());
+        cmd.args(["scbench", "report", "--run"])
+            .arg(run)
             .args(extra)
             .current_dir(&self.root);
         hermetic(&mut cmd, &self.home());
@@ -2187,4 +2232,300 @@ fn rdm_arm_collects_plan_repos_per_seed() {
         p(&b.out
             .join("full-lane/seed-2/plan-repos/mvvault/checkpoint_1"))
     );
+}
+
+// --- The ladder ------------------------------------------------------------
+
+/// Has the fake `uv` answer `--version` and, on each unit's run (matched by
+/// its own `<out>/<arm>/seed-<n>/run.yaml`), leave a one-checkpoint SCBench
+/// tree per problem in that unit's `output/`, for every arm and seed under
+/// each of `outs`.
+fn ladder_outputs(b: &Bench, outs: &[&Path], arms: &[&str], seeds: u64) {
+    let staged = b.root.join("staged-scbench");
+    let mut responses: Vec<(String, Value)> = Vec::new();
+    let mut n = 0;
+    for out in outs {
+        for arm in arms {
+            for seed in 1..=seeds {
+                let unit = out.join(arm).join(format!("seed-{seed}"));
+                let run_dir = unit.join("output");
+                let mut place = Vec::new();
+                for problem in ["mvvault", "xjq"] {
+                    let cp = scbench_support::simple(problem, "checkpoint_1", 1);
+                    for (rel, text) in scbench_support::files(&run_dir, &cp) {
+                        n += 1;
+                        let from = staged.join(format!("{n}"));
+                        write(&from, &text);
+                        place.push(json!({ "from": from, "to": run_dir.join(rel) }));
+                    }
+                }
+                responses.push((p(&unit.join("run.yaml")), json!({ "place": place })));
+            }
+        }
+    }
+    let version = ["--version"];
+    let needles: Vec<[&str; 1]> = responses.iter().map(|(n, _)| [n.as_str()]).collect();
+    let mut all: Vec<(&[&str], Value)> = vec![(&version, json!({ "stdout": "uv 0.0.0-fake\n" }))];
+    all.extend(
+        needles
+            .iter()
+            .zip(&responses)
+            .map(|(n, (_, r))| (&n[..], r.clone())),
+    );
+    b.scenario("uv", &json!({ "default": { "exit": 0 } }), &all);
+}
+
+fn docker_version() -> Vec<String> {
+    ["version", "--format", "{{.Server.Version}}"]
+        .map(str::to_owned)
+        .into()
+}
+
+/// A bench with an rdm arm whose `image build` ran, and whose fake `docker`
+/// answers the three image-check probes with `sha` (default: HEAD) and the
+/// version probe; the build's uv and docker records are reset.
+fn built_rdm_bench(sha: Option<&str>) -> Bench {
+    let b = Bench::new(&Spec {
+        rdm_arm: true,
+        ..Spec::default()
+    });
+    ok(&b.image("build", &[]));
+    let sha = sha.map_or_else(|| b.rdm_sha.clone(), str::to_owned);
+    b.scenario(
+        "docker",
+        &json!({ "default": { "stdout": "99.0.0-fake\n" } }),
+        &[
+            (
+                &["/opt/rdm/RDM_SHA"],
+                json!({ "stdout": format!("{sha}\n") }),
+            ),
+            (&["/opt/rdm/bin/rdm"], rdm_ok()),
+            (&["plugin details"], json!({ "stdout": LISTING_OK })),
+        ],
+    );
+    for role in ["uv", "docker"] {
+        std::fs::remove_file(b.record_path(role)).expect("reset record");
+    }
+    b
+}
+
+fn spawned_slop_code(b: &Bench) -> bool {
+    b.argvs("uv")
+        .iter()
+        .any(|a| a.iter().any(|x| x == "slop-code"))
+}
+
+#[test]
+fn ladder_runs_preflight_every_arm_then_the_report() {
+    let b = Bench::new(&Spec::default());
+    let arms = ["just-solve", "anti_slop"];
+    ladder_outputs(&b, &[&b.out], &arms, 3);
+    let o = b.ladder(&b.out, &["--seeds", "3"], &[]);
+    let stdout = ok(&o);
+
+    // The preflight's `uv --version`, then the run's own version probe (a
+    // run always records the versions it observed), then every arm x seed,
+    // seed-major.
+    let mut expected = vec![vec!["--version".to_owned()], vec!["--version".to_owned()]];
+    for seed in 1..=3 {
+        for arm in arms {
+            expected.extend(unit_argvs(&b.out, arm, seed, "all-cases"));
+        }
+    }
+    assert_eq!(b.argvs("uv"), expected);
+    assert_eq!(b.argvs("docker"), [docker_version(), docker_version()]);
+
+    let report = read_json(&b.out.join("rdm-scbench-report.json"));
+    let got: Vec<(Value, Value)> = report["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .map(|a| (a["name"].clone(), a["seeds"].clone()))
+        .collect();
+    assert_eq!(got, arms.map(|a| (json!(a), json!([1, 2, 3]))).to_vec());
+    assert_eq!(
+        report["arms"][0]["summary"]["pass_rate"]["n"], 3,
+        "{}",
+        report["arms"][0]
+    );
+    let md = std::fs::read_to_string(b.out.join("rdm-scbench-report.md")).expect("md report");
+    assert_eq!(stdout, md);
+}
+
+#[test]
+fn ladder_with_an_rdm_arm_runs_the_image_check_first() {
+    let b = built_rdm_bench(None);
+    ok(&b.ladder(&b.out, &["--seeds", "1"], &[]));
+    let docker = b.argvs("docker");
+    assert_eq!(docker.len(), 5, "{docker:?}");
+    assert_eq!(docker[0], docker_version());
+    for argv in &docker[1..4] {
+        assert_eq!(&argv[..2], ["run", "--rm"], "{docker:?}");
+    }
+    assert_eq!(docker[4], docker_version());
+    let mut expected = vec![vec!["--version".to_owned()], vec!["--version".to_owned()]];
+    for arm in ["just-solve", "anti_slop", "just-solve-rdm"] {
+        expected.extend(unit_argvs(&b.out, arm, 1, "all-cases"));
+    }
+    assert_eq!(b.argvs("uv"), expected);
+    assert!(b.out.join("rdm-scbench-report.json").is_file());
+}
+
+#[test]
+fn ladder_preflight_failures_spawn_no_slop_code() {
+    struct Case {
+        name: &'static str,
+        bench: Bench,
+        extra: Vec<String>,
+        env: Vec<(&'static str, Option<&'static str>)>,
+        names: &'static str,
+        check: fn(&Bench),
+    }
+    let no_uv = Bench::new(&Spec::default());
+    let missing_uv = p(&no_uv.root.join("bin/no-such-uv"));
+    let daemon_down = Bench::new(&Spec::default());
+    daemon_down.scenario(
+        "docker",
+        &json!({ "default": { "exit": 1, "stderr": "Cannot connect to the Docker daemon\n" } }),
+        &[],
+    );
+    let cases = vec![
+        Case {
+            name: "(a) unset OAuth token",
+            bench: Bench::new(&Spec::default()),
+            extra: Vec::new(),
+            env: vec![("CLAUDE_CODE_OAUTH_TOKEN", None)],
+            names: "CLAUDE_CODE_OAUTH_TOKEN",
+            check: |b| {
+                for role in ["uv", "docker", "claude"] {
+                    assert!(b.calls(role).is_none(), "{role} was invoked");
+                }
+            },
+        },
+        Case {
+            name: "(a') unset API key",
+            bench: Bench::new(&Spec {
+                provider: "anthropic",
+                ..Spec::default()
+            }),
+            extra: Vec::new(),
+            env: vec![("ANTHROPIC_API_KEY", None)],
+            names: "ANTHROPIC_API_KEY",
+            check: |b| assert!(b.calls("uv").is_none()),
+        },
+        Case {
+            name: "(b) no uv",
+            bench: no_uv,
+            extra: vec!["--uv-bin".to_owned(), missing_uv],
+            env: Vec::new(),
+            names: "uv not found",
+            check: |b| assert!(b.calls("docker").is_none(), "docker was invoked"),
+        },
+        Case {
+            name: "(c) Docker daemon down",
+            bench: daemon_down,
+            extra: Vec::new(),
+            env: Vec::new(),
+            names: "Docker daemon is not reachable",
+            check: |b| assert_eq!(b.argvs("uv"), [vec!["--version".to_owned()]]),
+        },
+        Case {
+            name: "(d) image check fails",
+            bench: built_rdm_bench(Some("0123456789abcdef0123456789abcdef01234567")),
+            extra: Vec::new(),
+            env: Vec::new(),
+            names: "rdm image check failed",
+            check: |b| assert_eq!(b.argvs("uv"), [vec!["--version".to_owned()]]),
+        },
+    ];
+    for c in cases {
+        let extra: Vec<&str> = std::iter::once("--seeds")
+            .chain(std::iter::once("2"))
+            .chain(c.extra.iter().map(String::as_str))
+            .collect();
+        let err = fails(&c.bench.ladder(&c.bench.out, &extra, &c.env));
+        assert!(
+            err.contains("error: ladder preflight: ") && err.contains(c.names),
+            "{}: stderr: {err}",
+            c.name
+        );
+        assert!(!err.contains("fake-token"), "{}: {err}", c.name);
+        assert!(
+            !spawned_slop_code(&c.bench),
+            "{}: {:?}",
+            c.name,
+            c.bench.argvs("uv")
+        );
+        assert!(!c.bench.out.exists(), "{}: --out was created", c.name);
+        (c.check)(&c.bench);
+    }
+}
+
+#[test]
+fn ladder_dry_run_prints_the_projection_and_spawns_nothing() {
+    let b = Bench::new(&Spec::default());
+    let o = b.ladder(&b.out, &["--seeds", "3", "--dry-run"], &[]);
+    let body = json(&ok(&o));
+    assert_eq!(
+        body["projection"],
+        json!({
+            "arms": 2,
+            "seeds": 3,
+            "problems": { "mvvault": 3, "xjq": 2 },
+            "checkpoints": 5,
+            "sessions": 12,
+            "checkpoint_runs": 30,
+        })
+    );
+    assert_eq!(
+        body["preflight"]["credential"],
+        json!({ "variable": "CLAUDE_CODE_OAUTH_TOKEN", "set": true })
+    );
+    assert_eq!(body["preflight"]["image_check"], false);
+    assert_eq!(
+        strs(&body["preflight"]["docker"]),
+        [vec![p(&b.bin("docker"))], docker_version()].concat()
+    );
+    assert_eq!(body["plan"]["seeds"], json!([1, 2, 3]));
+    assert_eq!(
+        body["plan"]["plan"]["arms"].as_array().map(Vec::len),
+        Some(6)
+    );
+    assert!(
+        stderr(&o).contains(
+            "scbench ladder: projected 30 checkpoint runs (2 arms × 3 seeds × 5 checkpoints over 2 problems), 12 problem sessions"
+        ),
+        "{}",
+        stderr(&o)
+    );
+    for role in ["uv", "docker", "claude"] {
+        assert!(b.calls(role).is_none(), "{role} was spawned");
+    }
+    assert!(!b.out.exists() && !b.cache.exists());
+
+    let unset = b.ladder(
+        &b.out,
+        &["--seeds", "3", "--dry-run"],
+        &[("CLAUDE_CODE_OAUTH_TOKEN", None)],
+    );
+    assert_eq!(json(&ok(&unset))["preflight"]["credential"]["set"], false);
+}
+
+#[test]
+fn ladder_passes_the_baseline_through() {
+    let b = Bench::new(&Spec::default());
+    let (out1, out2) = (b.root.join("out1"), b.root.join("out2"));
+    let arms = ["just-solve", "anti_slop"];
+    ladder_outputs(&b, &[&out1, &out2], &arms, 2);
+    ok(&b.ladder(&out1, &["--seeds", "2"], &[]));
+    ok(&b.report(&out1, &["--save-baseline", "first"]));
+    assert!(
+        b.rdm_dir()
+            .join("bench/scbench/baselines/first.json")
+            .is_file()
+    );
+    ok(&b.ladder(&out2, &["--seeds", "2", "--baseline", "first"], &[]));
+    let report = read_json(&out2.join("rdm-scbench-report.json"));
+    assert_eq!(report["baseline"]["name"], "first");
+    assert_eq!(report["baseline"]["comparable"], true);
 }

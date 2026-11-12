@@ -2,7 +2,7 @@
 //!
 //! Most replace the JavaScript instruments that measured the autonomous
 //! lane's token spend and graded refuter behaviour; `scbench run`,
-//! `scbench report` and `scbench image` are new:
+//! `scbench report`, `scbench ladder` and `scbench image` are new:
 //!
 //! | Subcommand | Replaces | Module |
 //! |---|---|---|
@@ -12,6 +12,7 @@
 //! | `refuter-agreement` | `scripts/run-refuter-agreement.mjs` + `scripts/lib/refuter-agreement.mjs` | [`refuter_agreement`] |
 //! | `scbench run` | — (new) | [`scbench`] |
 //! | `scbench report` | — (new) | [`scbench::report`] |
+//! | `scbench ladder` | — (new) | [`scbench::ladder`] |
 //! | `scbench image build` / `check` | — (new) | [`scbench::image`] |
 //!
 //! Measurement orchestration, parsing, scoring and reporting are Rust. The
