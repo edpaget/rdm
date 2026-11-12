@@ -541,6 +541,40 @@ fn dry_run_spawns_nothing() {
 }
 
 #[test]
+fn dry_run_rdm_arm_shows_sha_placeholder() {
+    let b = Bench::new(&Spec {
+        rdm_arm: true,
+        ..Spec::default()
+    });
+    let plan = json(&ok(&b.run(&["--dry-run"])));
+    assert_eq!(plan["rdm"]["sha"], Value::Null);
+    let arms = plan["plan"]["arms"].as_array().expect("arms");
+    let arm = |name: &str| {
+        arms.iter()
+            .find(|a| a["name"] == name)
+            .unwrap_or_else(|| panic!("no arm {name}: {arms:?}"))
+    };
+    let rdm = arm("just-solve-rdm");
+    assert_eq!(rdm["agent_config"]["version"], "2.1.322-rdm.<rdm-sha>");
+    let template = rdm["docker_template"].as_str().expect("docker_template");
+    assert!(
+        template.contains("COPY --from=rdm-scbench-payload:<rdm-sha>"),
+        "{template}"
+    );
+    let stock = arm("just-solve");
+    assert_eq!(stock["agent_config"]["version"], "2.1.322");
+    assert_eq!(stock["docker_template"], Value::Null);
+    // `git` is the real binary, not a recording fake: no `git` record and an
+    // untouched cache (no clone) plus a null `rdm.sha` (no rev-parse) show it
+    // was not spawned.
+    for role in ["uv", "docker", "claude", "git"] {
+        assert!(!b.record_path(role).exists(), "{role} was spawned");
+    }
+    assert!(!b.cache.exists(), "--cache-dir was created");
+    assert!(!b.out.exists(), "--out was created");
+}
+
+#[test]
 fn probe_failure_stops_before_any_arm() {
     let b = Bench::new(&Spec::default());
     b.scenario(

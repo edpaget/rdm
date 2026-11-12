@@ -130,9 +130,10 @@ fn image_dir(t: &Target) -> PathBuf {
 ///
 /// # Errors
 ///
-/// When the manifest has no `[rdm]` table, the checkout is dirty, the plan
-/// root lies in the graded directory, or a step fails (named in the message);
-/// later steps are not spawned.
+/// When the manifest cannot be loaded or has no `[rdm]` table, the checkout
+/// cannot be resolved or is dirty, the SCBench environment config cannot be
+/// read or parsed, the plan root lies in the graded directory, or a step fails
+/// (named in the message); later steps are not spawned.
 pub fn build(opts: &ImageOptions, stderr: &mut dyn Write) -> Result<u8, String> {
     let t = load(opts)?;
     let top = t.toplevel.display().to_string();
@@ -268,8 +269,11 @@ fn expected_skills(toplevel: &Path) -> Result<BTreeSet<String>, String> {
 ///
 /// # Errors
 ///
-/// When the manifest has no `[rdm]` table, the checkout cannot be resolved,
-/// or `scbench image build` has not provisioned the SCBench checkout yet.
+/// When the manifest cannot be loaded or has no `[rdm]` table, the checkout
+/// cannot be resolved, `scbench image build` has not provisioned the SCBench
+/// checkout yet, the SCBench environment config cannot be read or parsed, or
+/// the checkout's `plugins/rdm/skills` directory cannot be read. A failed
+/// probe is not an error: it is printed and yields exit code 1.
 pub fn check(opts: &ImageOptions, stderr: &mut dyn Write) -> Result<u8, String> {
     let t = load(opts)?;
     let env_path = environment_path(&t);
