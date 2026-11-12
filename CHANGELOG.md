@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-12
+
 ### Added
 
 - **`review list` can keep only reviews with open comments.** `rdm review list --open-comments` (and `open_comments=true` on rdm-server's `GET /projects/:project/reviews`) keeps the reviews holding at least one open comment: one that is neither `addressed` nor `wont-fix`. A review whose comments are all resolved, or that has none, is left out. It combines with `--on`, `--state`, `--verdict`, `--author` and `--mine`, so `rdm review list --on plan/<slug> --open-comments --format json` is one read of what is still unresolved on a plan's reviews. It does not look at the review's state; add `--state submitted` to leave out drafts and dismissed reviews. The output shape is unchanged. rdm-core API: `ReviewFilter::open_comments` and `Review::open_comment_count`, which the filter, the `--state addressed` close check and the open-review counts now share. Breaking (rdm-core API): the new field breaks exhaustive `ReviewFilter` literals.
