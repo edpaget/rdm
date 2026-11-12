@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use super::manifest::{Manifest, Rdm};
+use super::manifest::{Limits, Manifest, Rdm};
 use super::plan::stock_agent_config;
 
 /// The payload image's repository; its tag is the rdm SHA.
@@ -34,6 +34,12 @@ pub const WRAPPER: &str = "/opt/rdm/bin/claude-rdm";
 pub const DOCKERFILE: &str = "agent/Dockerfile";
 /// The unrendered agent template, relative to the manifest's directory.
 pub const TEMPLATE: &str = "agent/docker.j2";
+/// Where the wrapper exports the plan repo, relative to the container's
+/// `$HOME/.claude`. It lies under SCBench's `_WORKSPACE_PROJECT`
+/// (`projects/-workspace`), whose new files `traces.copy_new_trace_files`
+/// copies into each checkpoint's `agent/workspace/` after the checkpoint; the
+/// runner reads the exports back from there (`lane::collect`).
+pub const PLAN_EXPORT_SUBDIR: &str = "projects/-workspace/rdm-plan";
 /// Stands in for the rdm SHA where it is not yet resolved (`--dry-run`).
 pub const SHA_PLACEHOLDER: &str = "<rdm-sha>";
 
@@ -74,11 +80,18 @@ pub fn render_template(
         .replace("@RDM_PLAN_ROOT@", plan_root)
 }
 
-/// The agent config for an rdm arm: the stock config with the wrapper as
-/// `binary`, the per-SHA `version`, the rendered template at
-/// `template_path`, `--plugin-dir` and the plan repo's environment.
-pub fn agent_config(manifest: &Manifest, rdm: &Rdm, sha: &str, template_path: &Path) -> Value {
-    let mut config = stock_agent_config(&manifest.agent);
+/// The agent config for an rdm arm: the stock config (with `limits`) with
+/// the wrapper as `binary`, the per-SHA `version`, the rendered template at
+/// `template_path`, `--plugin-dir` and the plan repo's environment, including
+/// the [`PLAN_EXPORT_SUBDIR`] the wrapper exports the plan repo to.
+pub fn agent_config(
+    manifest: &Manifest,
+    rdm: &Rdm,
+    sha: &str,
+    template_path: &Path,
+    limits: &Limits,
+) -> Value {
+    let mut config = stock_agent_config(&manifest.agent, limits);
     config["binary"] = json!(WRAPPER);
     config["version"] = json!(agent_version(&manifest.agent.claude_code_version, sha));
     config["docker_template"] = json!(template_path.display().to_string());
@@ -86,6 +99,7 @@ pub fn agent_config(manifest: &Manifest, rdm: &Rdm, sha: &str, template_path: &P
     config["env"] = json!({
         "RDM_ROOT": rdm.plan_root,
         "RDM_PROJECT": rdm.project,
+        "RDM_PLAN_EXPORT_SUBDIR": PLAN_EXPORT_SUBDIR,
         "GIT_AUTHOR_NAME": "rdm-scbench",
         "GIT_AUTHOR_EMAIL": "rdm-scbench@localhost",
         "GIT_COMMITTER_NAME": "rdm-scbench",

@@ -19,9 +19,12 @@
 //!    `<scbench>/configs/models/` (rdm's only addition to the checkout);
 //! 7. for rdm arms, reads the SCBench environment's graded directory
 //!    ([`environment`]) and refuses a `[rdm] plan_root` inside it;
-//! 8. for each arm, writes its agent and run configs (and, for an rdm arm,
-//!    its rendered agent template, [`rdm_image`]), then runs
-//!    `uv run slop-code run --no-evaluate` and `uv run slop-code eval`.
+//! 8. for each arm, writes its agent and run configs (for an rdm arm, its
+//!    rendered agent template, [`rdm_image`]; for a `prompt_from =
+//!    "manifest"` arm, its rendered `prompt.jinja`, [`lane::render_prompt`]),
+//!    then runs `uv run slop-code run --no-evaluate`; for an rdm arm, copies
+//!    each checkpoint's plan repo to `<out>/<arm>/plan-repos/` and classifies
+//!    the checkpoint ([`lane`]); then runs `uv run slop-code eval`.
 //!
 //! The run record `<out>/rdm-scbench-run.json` ([`exec::RunRecord`]) is
 //! rewritten after every command, so a failed run still records the command
@@ -35,10 +38,12 @@
 pub mod environment;
 pub mod exec;
 pub mod image;
+pub mod lane;
 pub mod manifest;
 pub mod plan;
 pub mod rdm_image;
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -98,8 +103,28 @@ pub fn run(
     } else {
         None
     };
+    let mut prompts = BTreeMap::new();
+    for arm in &manifest.arms {
+        if let Some(path) = manifest.manifest_prompt_source(arm) {
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                format!(
+                    "arm {}: cannot read prompt {}: {e}",
+                    arm.name,
+                    path.display()
+                )
+            })?;
+            prompts.insert(arm.name.clone(), text);
+        }
+    }
     if opts.dry_run {
-        let plan = build_plan(&manifest, &paths, &opts.tools, None, template.as_deref());
+        let plan = build_plan(
+            &manifest,
+            &paths,
+            &opts.tools,
+            None,
+            template.as_deref(),
+            &prompts,
+        );
         let body = serde_json::to_string_pretty(&json!({
             "manifest": manifest,
             "manifest_path": manifest_path,
@@ -116,6 +141,8 @@ pub fn run(
         &paths,
         &opts.tools,
         template.as_deref(),
+        &prompts,
+        stderr,
     )?;
     let _ = writeln!(
         stderr,

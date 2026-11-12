@@ -201,7 +201,13 @@ pub fn build(opts: &ImageOptions, stderr: &mut dyn Write) -> Result<u8, String> 
     )?;
     write_json(
         &agent_path,
-        &rdm_image::agent_config(&t.manifest, &t.rdm, &t.sha, &template_path),
+        &rdm_image::agent_config(
+            &t.manifest,
+            &t.rdm,
+            &t.sha,
+            &template_path,
+            &t.manifest.agent.limits(),
+        ),
     )?;
 
     let mut build_agent = spec(

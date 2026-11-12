@@ -27,6 +27,7 @@ path = "src/bin/rdm-devtools-fixture/main.rs"
 chrono = { workspace = true }
 clap = { workspace = true }
 rdm-core = { path = "../rdm-core" }
+rdm-store-fs = { path = "../rdm-store-fs" }
 rustix = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }
@@ -35,3 +36,6 @@ sha2 = { workspace = true }
 signal-hook = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+minijinja = { workspace = true }

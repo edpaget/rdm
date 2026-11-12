@@ -2,6 +2,7 @@
 //! record current after every one.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -10,6 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::environment;
+use super::lane::{self, LaneRecord};
 use super::manifest::{ArmImage, Manifest};
 use super::plan::{self, CommandSpec, Paths, RunPlan, Tools};
 
@@ -77,6 +79,10 @@ pub struct ArmRecord {
     pub run_config: Value,
     /// SCBench's output directory for the arm.
     pub run_dir: PathBuf,
+    /// For an rdm arm, once its run finished: each checkpoint's copied plan
+    /// repo and lane classification (`lane::collect`); `null` for a stock
+    /// arm.
+    pub lane: Option<LaneRecord>,
 }
 
 /// One spawned command.
@@ -276,20 +282,25 @@ pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 /// Runs `manifest` (loaded from `manifest_path`) against `paths` to
 /// completion, stopping at the first failing step, and returns the plan it
 /// ran. The plan is built once the rdm SHA is resolved, so rdm arms carry it;
-/// `template` is the unrendered [`super::rdm_image::TEMPLATE`] (see
-/// [`plan::build_plan`]).
+/// `template` is the unrendered [`super::rdm_image::TEMPLATE`] and `prompts`
+/// the unrendered manifest prompts (see [`plan::build_plan`]). Between an rdm
+/// arm's run and its eval, its plan repos are copied out and classified
+/// (`lane::collect`) and a `<landed>/<total>` line goes to `stderr`.
 ///
 /// # Errors
 ///
-/// When a probe, provisioning step or arm command fails, an rdm arm's plan
-/// root lies in SCBench's graded directory, or a file cannot be written. An
-/// arm failure reads `arm <name>: <run|eval> exited <code>`.
+/// When a probe, provisioning step, arm command or plan-repo extraction
+/// fails, an rdm arm's plan root lies in SCBench's graded directory, or a
+/// file cannot be written. An arm failure reads
+/// `arm <name>: <run|eval> exited <code>`.
 pub fn execute(
     manifest: &Manifest,
     manifest_path: &Path,
     paths: &Paths,
     tools: &Tools,
     template: Option<&str>,
+    prompts: &BTreeMap<String, String>,
+    stderr: &mut dyn Write,
 ) -> Result<RunPlan, String> {
     let out_dir = &paths.out_dir;
     std::fs::create_dir_all(out_dir)
@@ -318,7 +329,7 @@ pub fn execute(
         ));
     }
     let sha = ran.stdout.trim().to_owned();
-    let plan = plan::build_plan(manifest, paths, tools, Some(&sha), template);
+    let plan = plan::build_plan(manifest, paths, tools, Some(&sha), template, prompts);
     ex.record.rdm.sha = Some(sha);
     ex.record.arms = plan
         .arms
@@ -330,6 +341,7 @@ pub fn execute(
             agent_config: a.agent_config.clone(),
             run_config: a.run_config.clone(),
             run_dir: a.run_dir.clone(),
+            lane: None,
         })
         .collect();
     ex.save()?;
@@ -388,17 +400,40 @@ pub fn execute(
         }
     }
 
-    for arm in &plan.arms {
+    for (i, arm) in plan.arms.iter().enumerate() {
         write_json(&arm.agent_config_path, &arm.agent_config)?;
         write_json(&arm.run_config_path, &arm.run_config)?;
         if let (Some(path), Some(text)) = (&arm.docker_template_path, &arm.docker_template) {
             write_file(path, text.as_bytes())?;
         }
-        for (step, spec) in [("run", &arm.run), ("eval", &arm.eval)] {
-            let ran = ex.spawn(spec, Io::Inherit)?;
-            if !ran.ok() {
-                return Err(format!("arm {}: {step} {}", arm.name, ran.describe()));
-            }
+        if let (Some(path), Some(text)) = (&arm.prompt_path, &arm.prompt) {
+            write_file(path, text.as_bytes())?;
+        }
+        let ran = ex.spawn(&arm.run, Io::Inherit)?;
+        if !ran.ok() {
+            return Err(format!("arm {}: run {}", arm.name, ran.describe()));
+        }
+        if let (Some(dir), Some(rdm)) = (&arm.plan_repos_dir, &manifest.rdm) {
+            let record = lane::collect(
+                &arm.name,
+                &manifest.problems.subset,
+                &arm.run_dir,
+                dir,
+                &rdm.project,
+                &mut |spec| ex.spawn(spec, Io::Quiet),
+            )?;
+            let (landed, total) = record.landed();
+            ex.record.arms[i].lane = Some(record);
+            ex.save()?;
+            let _ = writeln!(
+                stderr,
+                "scbench run: {}: {landed}/{total} checkpoints landed",
+                arm.name
+            );
+        }
+        let ran = ex.spawn(&arm.eval, Io::Inherit)?;
+        if !ran.ok() {
+            return Err(format!("arm {}: eval {}", arm.name, ran.describe()));
         }
     }
     Ok(plan)

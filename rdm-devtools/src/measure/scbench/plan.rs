@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::manifest::{Agent, ArmImage, Manifest};
+use super::lane;
+use super::manifest::{Agent, ArmImage, Limits, Manifest};
 use super::rdm_image;
 
 /// The directories a plan is built against (all absolute).
@@ -124,6 +125,15 @@ pub struct ArmPlan {
     pub docker_template_path: Option<PathBuf>,
     /// The rendered agent template written there, for an rdm arm.
     pub docker_template: Option<String>,
+    /// `<out>/<arm>/prompt.jinja`, for an arm whose prompt is rdm's own
+    /// (`prompt_from = "manifest"`); the run config's `prompt`.
+    pub prompt_path: Option<PathBuf>,
+    /// The prompt written there, its `@RDM_...@` placeholders filled
+    /// ([`lane::render_prompt`]); SCBench's Jinja renders the rest.
+    pub prompt: Option<String>,
+    /// `<out>/<arm>/plan-repos`, for an rdm arm: where the runner copies each
+    /// checkpoint's plan repo (`lane::collect`).
+    pub plan_repos_dir: Option<PathBuf>,
     /// SCBench's own output directory for the arm (`<out>/<arm>/output`).
     pub run_dir: PathBuf,
     /// `uv run slop-code run ...`.
@@ -177,17 +187,17 @@ pub fn scbench_checkout(manifest: &Manifest, cache_dir: &Path) -> Checkout {
     )
 }
 
-/// The agent config a stock arm runs with.
-pub fn stock_agent_config(a: &Agent) -> Value {
+/// The agent config a stock arm runs with, under `limits`.
+pub fn stock_agent_config(a: &Agent, limits: &Limits) -> Value {
     json!({
         "type": "claude_code",
         "binary": "claude",
         "permission_mode": "bypassPermissions",
         "version": a.claude_code_version,
         "cost_limits": {
-            "cost_limit": a.cost_limit,
-            "step_limit": a.step_limit,
-            "net_cost_limit": a.net_cost_limit,
+            "cost_limit": limits.cost_limit,
+            "step_limit": limits.step_limit,
+            "net_cost_limit": limits.net_cost_limit,
         },
     })
 }
@@ -209,13 +219,16 @@ fn checkout(repo: &str, sha: &str, dir: PathBuf) -> Checkout {
 /// `rdm_sha` is the rdm checkout's HEAD (`None` before it is resolved, as in
 /// `--dry-run`, where rdm arms show [`rdm_image::SHA_PLACEHOLDER`]).
 /// `template` is the unrendered [`rdm_image::TEMPLATE`]; the caller reads it
-/// when an arm selects the rdm image.
+/// when an arm selects the rdm image. `prompts` maps each
+/// `prompt_from = "manifest"` arm's name to its unrendered template, which
+/// the caller reads.
 pub fn build_plan(
     manifest: &Manifest,
     paths: &Paths,
     tools: &Tools,
     rdm_sha: Option<&str>,
     template: Option<&str>,
+    prompts: &BTreeMap<String, String>,
 ) -> RunPlan {
     let scbench_dir = scbench_dir(&paths.cache_dir);
     let problems_dir = paths.cache_dir.join("scb-problems");
@@ -240,6 +253,14 @@ pub fn build_plan(
             let agent_config_path = dir.join("agent.yaml");
             let run_config_path = dir.join("run.yaml");
             let run_dir = dir.join("output");
+            let limits = arm.limits(a);
+            let (prompt_path, prompt) = match (prompts.get(&arm.name), &manifest.rdm) {
+                (Some(raw), Some(rdm)) if manifest.manifest_prompt_source(arm).is_some() => (
+                    Some(dir.join("prompt.jinja")),
+                    Some(lane::render_prompt(raw, &rdm.project)),
+                ),
+                _ => (None, None),
+            };
             let (agent_config, docker_template_path, docker_template) =
                 match (arm.image, &manifest.rdm) {
                     (ArmImage::Rdm, Some(rdm)) => {
@@ -252,17 +273,20 @@ pub fn build_plan(
                             &rdm.plan_root,
                         );
                         (
-                            rdm_image::agent_config(manifest, rdm, sha, &path),
+                            rdm_image::agent_config(manifest, rdm, sha, &path, &limits),
                             Some(path),
                             Some(rendered),
                         )
                     }
-                    _ => (stock_agent_config(a), None, None),
+                    _ => (stock_agent_config(a, &limits), None, None),
                 };
+            let prompt_config = prompt_path
+                .as_deref()
+                .map_or_else(|| s(&scbench_dir.join(&arm.prompt)), s);
             let run_config = json!({
                 "agent": s(&agent_config_path),
                 "environment": a.environment,
-                "prompt": s(&scbench_dir.join(&arm.prompt)),
+                "prompt": prompt_config,
                 "model": { "provider": a.provider, "name": a.model },
                 "thinking": a.thinking,
                 "pass_policy": a.pass_policy,
@@ -280,6 +304,9 @@ pub fn build_plan(
                 image: arm.image,
                 docker_template_path,
                 docker_template,
+                prompt_path,
+                prompt,
+                plan_repos_dir: (arm.image == ArmImage::Rdm).then(|| dir.join("plan-repos")),
                 run: uv(&[
                     "run",
                     "slop-code",
@@ -377,6 +404,7 @@ prompt = "configs/prompts/a2.jinja"
             },
             None,
             None,
+            &BTreeMap::new(),
         )
     }
 

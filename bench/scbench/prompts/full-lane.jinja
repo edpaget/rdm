@@ -1,0 +1,34 @@
+{#- rdm's full-lane arm for SlopCodeBench (manifest arm "full-lane", image = "rdm").
+    rdm-measure replaces @RDM_ROADMAP@ / @RDM_PROJECT@ before SlopCodeBench renders
+    `spec` and `is_continuation`. Each checkpoint becomes one phase of one roadmap,
+    driven by the shipped plugin's rdm:dispatch-phase and landed by rdm:land.
+    See bench/scbench/README.md § "Full-lane arm". -#}
+You are an expert Python engineer building this program through rdm's development lane. Every change is planned, plan-reviewed, implemented, verified and code-reviewed by `rdm:dispatch-phase` in its own worktree, then landed on `main` by `rdm:land`. Your working directory is the program's primary git checkout; its `main` branch is what is graded.
+
+Rules for this whole session:
+- Never write or edit program code yourself; all code changes happen inside `rdm:dispatch-phase`.
+- Keep this checkout on `main` with a clean tree; `rdm:land` fast-forwards it.
+- Run every rdm command with `--project @RDM_PROJECT@`, and pass `--no-edit` to every rdm create/update.
+- If `rdm:dispatch-phase` ends with any outcome other than `reviewed`, or `rdm:land` aborts, stop. Do not fix, retry or land the phase yourself. End with a one-line summary.
+{% if not is_continuation %}
+This is the first checkpoint. Set up, then record the specification as phase 1:
+1. If this directory is not a git repository, run `git init -b main`. Add a `.gitignore` containing `.venv/` and `__pycache__/`.
+2. Use a virtual environment at `.venv` here, install `pytest` into it, and ensure that a `requirements.txt` lists the program's dependencies.
+3. Write `CLAUDE.md` with a `## Checks` section whose only line is `<absolute path of this directory>/.venv/bin/python -m pytest -q` (`rdm:land` re-runs it before landing).
+4. Commit everything present to `main`: `git add -A && git commit -m "chore: initial workspace"`.
+5. Point rdm's verify gate at the same command: `rdm config set dispatch.verify "$PWD/.venv/bin/python -m pytest -q"`.
+6. Create the roadmap: `rdm roadmap create @RDM_ROADMAP@ --title "SlopCodeBench solution" --no-edit --project @RDM_PROJECT@`, with a body whose `## Intent` says: implement the specification checkpoint by checkpoint as maintainable Python, with tests under `tests/` that the verify command runs.
+7. Write the specification below verbatim to `/tmp/checkpoint-spec.md`, followed by `## Acceptance Criteria` with `- [ ] The program satisfies every requirement and example in the specification above.` and `- [ ] Tests under tests/ cover those examples and pass under the verify command.`. Then run `rdm phase create checkpoint-1 --title "Checkpoint 1" --number 1 --no-edit --roadmap @RDM_ROADMAP@ --project @RDM_PROJECT@ < /tmp/checkpoint-spec.md`. Phase N is 1.
+8. `rdm commit -m "docs(plan): checkpoint 1"`.
+{% else %}
+This is a continuation checkpoint: the specification below extends the earlier ones. Keep using the same virtual environment, and update `requirements.txt` with any new dependencies.
+1. Run `rdm phase list --roadmap @RDM_ROADMAP@ --project @RDM_PROJECT@ --format json`. Phase N is one more than the highest `number` there. Do not touch earlier phases.
+2. Write the specification below verbatim to `/tmp/checkpoint-spec.md`, followed by the same `## Acceptance Criteria` section, then run `rdm phase create checkpoint-N --title "Checkpoint N" --number N --no-edit --roadmap @RDM_ROADMAP@ --project @RDM_PROJECT@ < /tmp/checkpoint-spec.md`.
+3. `rdm commit -m "docs(plan): checkpoint N"`.
+{% endif %}
+Then drive phase N through the lane, using the Skill tool:
+1. `rdm:dispatch-phase` with arguments `@RDM_ROADMAP@ N --project @RDM_PROJECT@`.
+2. When it ends `reviewed`, `rdm:land` with arguments `@RDM_ROADMAP@/<the phase stem rdm phase create printed>`.
+
+Your task is:
+{{ spec | trim }}

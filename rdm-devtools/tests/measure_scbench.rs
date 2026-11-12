@@ -19,6 +19,9 @@ use measure_support::{fails, json, measure_bin, ok, repo_root, stderr};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+/// The `full-lane` stand-in arm's limits, distinct from every `[agent]` value.
+const FULL_LANE_LIMITS: &str = "step_limit = 4321\ncost_limit = 12.5\nnet_cost_limit = 25\n";
+
 /// Values a stand-in manifest is written with.
 struct Spec {
     provider: &'static str,
@@ -32,6 +35,9 @@ struct Spec {
     model_file: Option<PathBuf>,
     /// Adds a third arm, `just-solve-rdm`, with `image = "rdm"`.
     rdm_arm: bool,
+    /// Adds a `full-lane` arm (the committed template, `prompt_from =
+    /// "manifest"`, `image = "rdm"`) with limits [`FULL_LANE_LIMITS`].
+    full_lane: bool,
     /// The `[rdm] plan_root` every stand-in manifest carries.
     plan_root: &'static str,
 }
@@ -47,6 +53,7 @@ impl Default for Spec {
             pass_policy: "all-cases",
             model_file: None,
             rdm_arm: false,
+            full_lane: false,
             plan_root: "/rdm-plan",
         }
     }
@@ -194,7 +201,7 @@ prompt = "configs/prompts/just-solve.jinja"
 [[arm]]
 name = "anti_slop"
 prompt = "configs/prompts/anti_slop.jinja"
-{rdm_arm}
+{rdm_arm}{full_lane}
 [rdm]
 plan_root = "{plan_root}"
 project = "bench"
@@ -212,10 +219,21 @@ project = "bench"
             } else {
                 ""
             },
+            full_lane = if spec.full_lane {
+                format!(
+                    "\n[[arm]]\nname = \"full-lane\"\nprompt = \"prompts/full-lane.jinja\"\n\
+                     prompt_from = \"manifest\"\nimage = \"rdm\"\n{FULL_LANE_LIMITS}"
+                )
+            } else {
+                String::new()
+            },
             plan_root = spec.plan_root,
         );
         let template = std::fs::read_to_string(repo_root().join("bench/scbench/agent/docker.j2"))
             .expect("committed agent template");
+        let full_lane =
+            std::fs::read_to_string(repo_root().join("bench/scbench/prompts/full-lane.jinja"))
+                .expect("committed full-lane template");
         let rdm = root.join("rdm");
         let rdm_sha = repo(
             &home,
@@ -228,6 +246,7 @@ project = "bench"
                 ),
                 ("bench/scbench/agent/Dockerfile", "FROM scratch\n"),
                 ("bench/scbench/agent/docker.j2", &template),
+                ("bench/scbench/prompts/full-lane.jinja", &full_lane),
                 ("plugins/rdm/skills/do/SKILL.md", "# do\n"),
                 ("plugins/rdm/skills/land/SKILL.md", "# land\n"),
             ],
@@ -393,7 +412,7 @@ fn p(path: &Path) -> String {
 }
 
 #[test]
-fn committed_manifest_plans_both_control_arms() {
+fn committed_manifest_plans_every_arm() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cache = tmp.path().join("cache");
     let out = tmp.path().join("out");
@@ -413,7 +432,7 @@ fn committed_manifest_plans_both_control_arms() {
         .iter()
         .map(|a| a["name"].as_str().expect("name").to_owned())
         .collect();
-    assert_eq!(names, ["just-solve", "anti_slop"]);
+    assert_eq!(names, ["just-solve", "anti_slop", "full-lane"]);
     assert!(!cache.exists() && !out.exists());
 }
 
@@ -1050,4 +1069,547 @@ fn image_check_reports_every_failure() {
     for want in [other, "rdm --version", "shows no rdm skills"] {
         assert!(err.contains(want), "missing {want:?} in {err}");
     }
+}
+
+// --- The full rdm lane arm -------------------------------------------------
+
+/// The full-lane arm of a dry-run plan of the committed manifest.
+fn committed_full_lane_prompt() -> String {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let o = measure_support::run(&[
+        "scbench",
+        "run",
+        "--dry-run",
+        "--cache-dir",
+        &p(&tmp.path().join("cache")),
+        "--out",
+        &p(&tmp.path().join("out")),
+    ]);
+    let plan = json(&ok(&o));
+    let arm = plan["plan"]["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .find(|a| a["name"] == "full-lane")
+        .cloned()
+        .expect("a full-lane arm");
+    assert_eq!(arm["image"], "rdm");
+    arm["prompt"].as_str().expect("rendered prompt").to_owned()
+}
+
+/// Renders `template` as SCBench's `render_prompt` does, with Jinja.
+fn jinja(template: &str, is_continuation: bool) -> String {
+    let mut env = minijinja::Environment::new();
+    env.add_template("prompt", template)
+        .expect("template parses");
+    env.get_template("prompt")
+        .expect("template")
+        .render(minijinja::context! {
+            spec => "SPEC-SENTINEL\n",
+            is_continuation => is_continuation,
+            agent_type => "claude_code",
+            agent_version => "2.1.322",
+            model_name => "opus-5.5",
+        })
+        .expect("template renders")
+}
+
+#[test]
+fn full_lane_prompt_renders_first_checkpoint_and_continuation() {
+    let template = committed_full_lane_prompt();
+    let first = jinja(&template, false);
+    let cont = jinja(&template, true);
+    let has = |text: &str, want: &str| assert!(text.contains(want), "missing {want:?} in:\n{text}");
+    let lacks = |text: &str, not: &str| assert!(!text.contains(not), "has {not:?} in:\n{text}");
+
+    for want in [
+        "git init -b main",
+        "rdm config set dispatch.verify",
+        "rdm roadmap create solution",
+        "rdm phase create checkpoint-1 ",
+        "--number 1 ",
+    ] {
+        has(&first, want);
+    }
+    lacks(&first, "rdm phase list");
+
+    has(
+        &cont,
+        "rdm phase list --roadmap solution --project bench --format json",
+    );
+    has(&cont, "rdm phase create checkpoint-N ");
+    lacks(&cont, "rdm roadmap create");
+    lacks(&cont, "git init");
+
+    for text in [&first, &cont] {
+        has(
+            text,
+            "`rdm:dispatch-phase` with arguments `solution N --project bench`",
+        );
+        has(text, "`rdm:land` with arguments `solution/");
+        has(text, "SPEC-SENTINEL");
+        lacks(text, "@RDM_");
+    }
+}
+
+#[test]
+fn full_lane_invocation_uses_rdm_image_template_and_arm_limits() {
+    let b = Bench::new(&Spec {
+        step_limit: 7,
+        full_lane: true,
+        ..Spec::default()
+    });
+    ok(&b.run(&[]));
+    let arm_dir = b.out.join("full-lane");
+    let run_yaml = arm_dir.join("run.yaml");
+    let want: Vec<String> = [
+        "run",
+        "slop-code",
+        "run",
+        "--config",
+        &p(&run_yaml),
+        "--no-evaluate",
+        "--no-live-progress",
+    ]
+    .map(str::to_owned)
+    .into();
+    assert!(b.argvs("uv").contains(&want), "{:?}", b.argvs("uv"));
+
+    let run_config = read_json(&run_yaml);
+    let prompt = arm_dir.join("prompt.jinja");
+    assert_eq!(run_config["prompt"], p(&prompt));
+    let text = std::fs::read_to_string(&prompt).expect("prompt.jinja");
+    assert!(!text.contains("@RDM_"), "{text}");
+    assert!(text.contains("{{ spec | trim }}"), "{text}");
+
+    assert_eq!(run_config["agent"], p(&arm_dir.join("agent.yaml")));
+    let agent = read_json(&arm_dir.join("agent.yaml"));
+    assert_eq!(agent["binary"], "/opt/rdm/bin/claude-rdm");
+    assert_eq!(agent["version"], format!("2.1.322-rdm.{}", b.rdm_sha));
+    assert_eq!(agent["docker_template"], p(&arm_dir.join("docker.j2")));
+    assert_eq!(
+        agent["extra_args"],
+        json!(["--plugin-dir", "/opt/rdm/plugin"])
+    );
+    assert!(
+        agent["env"]["RDM_PLAN_EXPORT_SUBDIR"].is_string(),
+        "{agent}"
+    );
+    assert_eq!(
+        agent["cost_limits"],
+        json!({ "step_limit": 4321, "cost_limit": 12.5, "net_cost_limit": 25.0 })
+    );
+
+    let stock = read_json(&b.out.join("just-solve/agent.yaml"));
+    assert_eq!(stock["cost_limits"]["step_limit"], 7);
+    let stock_run = read_json(&b.out.join("just-solve/run.yaml"));
+    assert_eq!(
+        stock_run["prompt"],
+        p(&b.scbench_dir().join("configs/prompts/just-solve.jinja"))
+    );
+}
+
+/// One evolving fixture plan repo, written by rdm-core itself and committed
+/// to git, snapshotted into tars as the agent wrapper does.
+struct PlanRepo {
+    home: PathBuf,
+    dir: PathBuf,
+    store: rdm_store_fs::FsStore,
+}
+
+impl PlanRepo {
+    fn new(home: &Path, dir: &Path) -> Self {
+        use rdm_core::store::Store;
+        std::fs::create_dir_all(dir).expect("mkdir plan repo");
+        git(home, dir, &["init", "-q", "-b", "main"]);
+        let mut store = rdm_store_fs::FsStore::new(dir);
+        rdm_core::ops::init::init(&mut store).expect("init");
+        rdm_core::ops::project::create_project(&mut store, "bench", "bench").expect("project");
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "bench",
+                slug: "solution",
+                title: "SlopCodeBench solution",
+                ..Default::default()
+            },
+        )
+        .expect("roadmap");
+        store.commit().expect("flush");
+        git(home, dir, &["add", "-A"]);
+        git(home, dir, &["commit", "-q", "-m", "init"]);
+        Self {
+            home: home.to_path_buf(),
+            dir: dir.to_path_buf(),
+            store,
+        }
+    }
+
+    /// Creates phase `n` (`phase-<n>-checkpoint-<n>`) at `status`.
+    fn add(&mut self, n: u32, status: rdm_core::model::PhaseStatus, reason: Option<&str>) {
+        let (slug, title) = (format!("checkpoint-{n}"), format!("Checkpoint {n}"));
+        rdm_core::ops::phase::create_phase(
+            &mut self.store,
+            rdm_core::ops::phase::CreatePhase {
+                project: "bench",
+                roadmap: "solution",
+                slug: &slug,
+                title: &title,
+                number: Some(n),
+                ..Default::default()
+            },
+        )
+        .expect("phase");
+        self.set(n, status, reason);
+    }
+
+    /// Moves phase `n` to `status`, recording `reason` when given.
+    fn set(&mut self, n: u32, status: rdm_core::model::PhaseStatus, reason: Option<&str>) {
+        use rdm_core::ops::update::{BodyUpdate, ReasonUpdate, TagsUpdate, TitleUpdate};
+        use rdm_core::store::Store;
+        let stem = format!("phase-{n}-checkpoint-{n}");
+        rdm_core::ops::phase::update_phase(
+            &mut self.store,
+            "bench",
+            "solution",
+            &stem,
+            Some(status),
+            TagsUpdate::Keep,
+            BodyUpdate::Keep,
+            None,
+            None,
+            None,
+            None,
+            TitleUpdate::Keep,
+        )
+        .expect("update phase");
+        if let Some(reason) = reason {
+            rdm_core::ops::phase::set_phase_blocked_reason(
+                &mut self.store,
+                "bench",
+                "solution",
+                &stem,
+                ReasonUpdate::Set(reason.to_owned()),
+            )
+            .expect("blocked reason");
+        }
+        self.store.commit().expect("flush");
+    }
+
+    /// Commits the plan repo and archives it (with `.git` and a `marker`
+    /// file) to `tar`, as the wrapper's `tar -C "$RDM_ROOT" -cf <tar> .`.
+    fn snapshot(&self, tar: &Path, marker: &str) -> PathBuf {
+        git(&self.home, &self.dir, &["add", "-A"]);
+        git(
+            &self.home,
+            &self.dir,
+            &["commit", "-q", "--allow-empty", "-m", "snapshot"],
+        );
+        let marker_path = self.dir.join(marker);
+        write(&marker_path, "marker\n");
+        std::fs::create_dir_all(tar.parent().expect("tar parent")).expect("mkdir tars");
+        let o = Command::new("tar")
+            .arg("-C")
+            .arg(&self.dir)
+            .arg("-cf")
+            .arg(tar)
+            .arg(".")
+            .output()
+            .expect("tar runs");
+        assert!(
+            o.status.success(),
+            "tar: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        std::fs::remove_file(&marker_path).expect("remove marker");
+        tar.to_path_buf()
+    }
+}
+
+/// One checkpoint SCBench writes: its `order` and the export tars the
+/// wrapper wrote during it (file name, source tar).
+struct Checkpoint {
+    problem: &'static str,
+    name: &'static str,
+    order: u32,
+    tars: Vec<(&'static str, PathBuf)>,
+}
+
+/// A full-lane bench whose fake `uv` run of the full-lane arm leaves
+/// `checkpoints` in SCBench's output layout, written out literally:
+/// `<out>/full-lane/output/<problem>/<checkpoint>/checkpoint.yaml` and
+/// `.../agent/workspace/projects/-workspace/rdm-plan/<n>.tar`.
+fn full_lane_bench(b: &Bench, checkpoints: &[Checkpoint]) {
+    let staged = b.root.join("staged");
+    let output = b.out.join("full-lane/output");
+    let mut place = Vec::new();
+    for c in checkpoints {
+        let yaml = staged.join(format!("{}-{}.yaml", c.problem, c.name));
+        write(
+            &yaml,
+            &format!(
+                "name: {}\norder: {}\nstate: Core Tests\nspecification: spec.md\n",
+                c.name, c.order
+            ),
+        );
+        let dir = output.join(c.problem).join(c.name);
+        place.push(json!({ "from": yaml, "to": dir.join("checkpoint.yaml") }));
+        for (file, tar) in &c.tars {
+            let to = dir
+                .join("agent/workspace/projects/-workspace/rdm-plan")
+                .join(file);
+            place.push(json!({ "from": tar, "to": to }));
+        }
+    }
+    b.scenario(
+        "uv",
+        &json!({ "default": { "exit": 0 } }),
+        &[
+            (&["--version"], json!({ "stdout": "uv 0.0.0-fake\n" })),
+            (&["full-lane/run.yaml"], json!({ "place": place })),
+        ],
+    );
+}
+
+fn full_lane_spec() -> Spec {
+    Spec {
+        full_lane: true,
+        ..Spec::default()
+    }
+}
+
+/// The run of `full_lane_run_copies_plan_repos_next_to_output`'s fixture.
+fn copy_out_run() -> Bench {
+    use rdm_core::model::PhaseStatus::{Done, InProgress};
+    let b = Bench::new(&full_lane_spec());
+    let home = b.home();
+    let tars = b.root.join("tars");
+    let mut mv = PlanRepo::new(&home, &b.root.join("fixture/mvvault"));
+    mv.add(1, Done, None);
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "MARKER-000001");
+    mv.add(2, InProgress, None);
+    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "MARKER-000002");
+    mv.set(2, Done, None);
+    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "MARKER-000003");
+    let mut xjq = PlanRepo::new(&home, &b.root.join("fixture/xjq"));
+    xjq.add(1, Done, None);
+    let x1 = xjq.snapshot(&tars.join("x-1.tar"), "MARKER-XJQ-1");
+    full_lane_bench(
+        &b,
+        &[
+            Checkpoint {
+                problem: "mvvault",
+                name: "checkpoint_1",
+                order: 1,
+                tars: vec![("000001.tar", mv1)],
+            },
+            Checkpoint {
+                problem: "mvvault",
+                name: "checkpoint_2",
+                order: 2,
+                tars: vec![("000002.tar", mv2), ("000003.tar", mv3)],
+            },
+            Checkpoint {
+                problem: "xjq",
+                name: "checkpoint_1",
+                order: 1,
+                tars: vec![("000001.tar", x1)],
+            },
+        ],
+    );
+    ok(&b.run(&[]));
+    b
+}
+
+fn arm_record(record: &Value, name: &str) -> Value {
+    record["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .find(|a| a["name"] == name)
+        .cloned()
+        .unwrap_or_else(|| panic!("no arm {name}"))
+}
+
+fn has_path_named(dir: &Path, name: &str) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            let path = e.path();
+            e.file_name() == name || (path.is_dir() && has_path_named(&path, name))
+        })
+}
+
+#[test]
+fn full_lane_run_copies_plan_repos_next_to_output() {
+    let b = copy_out_run();
+    let repos = b.out.join("full-lane/plan-repos");
+    let cp2 = repos.join("mvvault/checkpoint_2");
+    assert!(cp2.join("MARKER-000003").is_file());
+    assert!(!cp2.join("MARKER-000002").exists());
+    assert!(cp2.join(".git").is_dir());
+    assert!(repos.join("mvvault/checkpoint_1/MARKER-000001").is_file());
+    assert!(repos.join("xjq/checkpoint_1/MARKER-XJQ-1").is_file());
+    assert!(!has_path_named(
+        &b.out.join("full-lane/output"),
+        "plan-repos"
+    ));
+
+    let record = b.record();
+    let lane = &arm_record(&record, "full-lane")["lane"];
+    let plan_repos: Vec<_> = lane["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .map(|p| (p["problem"].clone(), p["plan_repo"].clone()))
+        .collect();
+    assert_eq!(
+        plan_repos,
+        [
+            (json!("mvvault"), json!(p(&cp2))),
+            (json!("xjq"), json!(p(&repos.join("xjq/checkpoint_1")))),
+        ]
+    );
+
+    let argvs: Vec<Vec<String>> = record["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .map(|c| strs(&c["argv"]))
+        .collect();
+    let at = |pred: &dyn Fn(&[String]) -> bool| {
+        argvs.iter().position(|a| pred(a)).expect("command present")
+    };
+    let run = at(&|a| a.iter().any(|x| x.ends_with("full-lane/run.yaml")));
+    let eval = at(&|a| a.iter().any(|x| x.ends_with("full-lane/output")));
+    let tars: Vec<usize> = argvs
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a[0] == "tar" && a[1] == "-xf")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(tars.len(), 3, "{argvs:?}");
+    assert!(tars.iter().all(|&i| run < i && i < eval), "{argvs:?}");
+    let output = b.out.join("full-lane/output");
+    let export = "agent/workspace/projects/-workspace/rdm-plan";
+    assert_eq!(
+        argvs[tars[1]],
+        [
+            "tar".to_owned(),
+            "-xf".to_owned(),
+            p(&output
+                .join("mvvault/checkpoint_2")
+                .join(export)
+                .join("000003.tar")),
+            "-C".to_owned(),
+            p(&cp2),
+        ]
+    );
+}
+
+#[test]
+fn stock_arm_has_no_lane_record() {
+    let b = copy_out_run();
+    let record = b.record();
+    assert_eq!(arm_record(&record, "just-solve")["lane"], Value::Null);
+    assert!(!b.out.join("just-solve/plan-repos").exists());
+}
+
+#[test]
+fn full_lane_classifies_each_checkpoint() {
+    use rdm_core::model::PhaseStatus::{Blocked, Done, InProgress, Reviewed};
+    let b = Bench::new(&full_lane_spec());
+    let home = b.home();
+    let tars = b.root.join("tars");
+    let mut mv = PlanRepo::new(&home, &b.root.join("fixture/mvvault"));
+    mv.add(1, Done, None);
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1");
+    mv.add(2, Blocked, Some("[code] rework budget exhausted"));
+    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "M2");
+    mv.add(3, Reviewed, None);
+    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "M3");
+    let mv4 = mv.snapshot(&tars.join("mv-4.tar"), "M4");
+    let mut xjq = PlanRepo::new(&home, &b.root.join("fixture/xjq"));
+    xjq.add(1, InProgress, None);
+    let x2 = xjq.snapshot(&tars.join("x-2.tar"), "X2");
+    let cp = |problem, name, order, tars| Checkpoint {
+        problem,
+        name,
+        order,
+        tars,
+    };
+    full_lane_bench(
+        &b,
+        &[
+            cp("mvvault", "checkpoint_1", 1, vec![("000001.tar", mv1)]),
+            cp("mvvault", "checkpoint_2", 2, vec![("000002.tar", mv2)]),
+            cp("mvvault", "checkpoint_3", 3, vec![("000003.tar", mv3)]),
+            cp("mvvault", "checkpoint_4", 4, vec![("000004.tar", mv4)]),
+            cp("xjq", "checkpoint_1", 1, vec![]),
+            cp("xjq", "checkpoint_2", 2, vec![("000001.tar", x2)]),
+        ],
+    );
+    let o = b.run(&[]);
+    ok(&o);
+    assert!(
+        stderr(&o).contains("scbench run: full-lane: 1/6 checkpoints landed"),
+        "{}",
+        stderr(&o)
+    );
+
+    let repos = b.out.join("full-lane/plan-repos");
+    let at = |problem: &str, name: &str| json!(p(&repos.join(problem).join(name)));
+    let row = |problem: &str,
+               name: &str,
+               order: u32,
+               repo: bool,
+               phase: Value,
+               status: Value,
+               outcome: &str,
+               reason: Value,
+               detail: Value| {
+        json!({
+            "checkpoint": name,
+            "order": order,
+            "plan_repo": if repo { at(problem, name) } else { Value::Null },
+            "phase": phase,
+            "status": status,
+            "outcome": outcome,
+            "reason": reason,
+            "detail": detail,
+        })
+    };
+    let n = Value::Null;
+    let expected = json!({ "problems": [
+        {
+            "problem": "mvvault",
+            "plan_repo": at("mvvault", "checkpoint_4"),
+            "checkpoints": [
+                row("mvvault", "checkpoint_1", 1, true, json!("phase-1-checkpoint-1"),
+                    json!("done"), "landed", n.clone(), n.clone()),
+                row("mvvault", "checkpoint_2", 2, true, json!("phase-2-checkpoint-2"),
+                    json!("blocked"), "lane-failure", json!("parked"),
+                    json!("[code] rework budget exhausted")),
+                row("mvvault", "checkpoint_3", 3, true, json!("phase-3-checkpoint-3"),
+                    json!("reviewed"), "lane-failure", json!("escalated"),
+                    json!("reviewed but not landed: rdm:land escalated or did not run")),
+                row("mvvault", "checkpoint_4", 4, true, n.clone(), n.clone(),
+                    "lane-failure", json!("phase-missing"), n.clone()),
+            ],
+        },
+        {
+            "problem": "xjq",
+            "plan_repo": at("xjq", "checkpoint_2"),
+            "checkpoints": [
+                row("xjq", "checkpoint_1", 1, false, n.clone(), n.clone(),
+                    "lane-failure", json!("plan-repo-missing"), n.clone()),
+                row("xjq", "checkpoint_2", 2, true, json!("phase-1-checkpoint-1"),
+                    json!("in-progress"), "lane-failure", json!("unfinished"),
+                    json!("in-progress")),
+            ],
+        },
+    ]});
+    assert_eq!(arm_record(&b.record(), "full-lane")["lane"], expected);
 }

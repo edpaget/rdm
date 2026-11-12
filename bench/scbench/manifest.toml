@@ -34,6 +34,20 @@ prompt = "configs/prompts/just-solve.jinja"   # relative to the SCBench checkout
 name = "anti_slop"
 prompt = "configs/prompts/anti_slop.jinja"
 
+# The full rdm lane (README.md § "Full-lane arm"): one roadmap per problem,
+# one phase per checkpoint, driven by rdm:dispatch-phase and landed by
+# rdm:land. Its limits override [agent]'s for this arm only: the lane's main
+# session needs far more than 100 turns, cost never truncates it (0 is
+# unlimited), and 1000 is a finite backstop against a runaway loop.
+[[arm]]
+name = "full-lane"
+prompt = "prompts/full-lane.jinja"   # relative to this manifest
+prompt_from = "manifest"
+image = "rdm"
+step_limit = 1000
+cost_limit = 0
+net_cost_limit = 0
+
 # The rdm-equipped agent image (README.md § "rdm-equipped image"). An arm runs
 # in it with `image = "rdm"`; `scbench image build|check` read this table.
 # plan_root is the plan repo inside the agent container: it must lie outside

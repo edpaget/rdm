@@ -78,16 +78,75 @@ pub struct Agent {
 }
 
 /// One arm: a named prompt, run in the stock or the rdm-equipped image.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Arm {
     /// The arm name (used as a directory name).
     pub name: String,
-    /// The prompt template, relative to the SCBench checkout.
+    /// The prompt template, relative to the SCBench checkout or, with
+    /// [`PromptFrom::Manifest`], to the manifest's directory.
     pub prompt: String,
+    /// Where [`Arm::prompt`] lives (default [`PromptFrom::Scbench`]).
+    #[serde(default)]
+    pub prompt_from: PromptFrom,
     /// The agent image the arm runs in (default [`ArmImage::Stock`]).
     #[serde(default)]
     pub image: ArmImage,
+    /// Overrides `[agent] step_limit` for this arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_limit: Option<u64>,
+    /// Overrides `[agent] cost_limit` for this arm (0 = unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_limit: Option<f64>,
+    /// Overrides `[agent] net_cost_limit` for this arm (0 = unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_cost_limit: Option<f64>,
+}
+
+/// Where an arm's prompt template lives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptFrom {
+    /// In the SCBench checkout, used in place and unrendered.
+    #[default]
+    Scbench,
+    /// rdm's own template beside the manifest: the runner fills its
+    /// `@RDM_ROADMAP@`/`@RDM_PROJECT@` placeholders and writes it to
+    /// `<out>/<arm>/prompt.jinja` (see [`super::lane::render_prompt`]).
+    Manifest,
+}
+
+/// The agent limits one arm runs with (SCBench's `cost_limits`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Limits {
+    /// The agent's step limit (`--max-turns`).
+    pub step_limit: u64,
+    /// The agent's cost limit (0 = unlimited).
+    pub cost_limit: f64,
+    /// The agent's net cost limit (0 = unlimited).
+    pub net_cost_limit: f64,
+}
+
+impl Agent {
+    /// The agent-wide limits every arm inherits.
+    pub fn limits(&self) -> Limits {
+        Limits {
+            step_limit: self.step_limit,
+            cost_limit: self.cost_limit,
+            net_cost_limit: self.net_cost_limit,
+        }
+    }
+}
+
+impl Arm {
+    /// This arm's limits: each one the arm sets, else `agent`'s.
+    pub fn limits(&self, agent: &Agent) -> Limits {
+        Limits {
+            step_limit: self.step_limit.unwrap_or(agent.step_limit),
+            cost_limit: self.cost_limit.unwrap_or(agent.cost_limit),
+            net_cost_limit: self.net_cost_limit.unwrap_or(agent.net_cost_limit),
+        }
+    }
 }
 
 /// Which agent image an arm runs in.
@@ -153,6 +212,12 @@ impl Manifest {
         self.rdm
             .as_ref()
             .ok_or_else(|| "rdm: scbench image needs an [rdm] table".to_owned())
+    }
+
+    /// The absolute path of `arm`'s prompt when it is a
+    /// [`PromptFrom::Manifest`] prompt; `None` for an SCBench prompt.
+    pub fn manifest_prompt_source(&self, arm: &Arm) -> Option<PathBuf> {
+        (arm.prompt_from == PromptFrom::Manifest).then(|| self.dir.join(&arm.prompt))
     }
 
     /// The model file's absolute source path.
@@ -228,6 +293,12 @@ impl Manifest {
             if arm.image == ArmImage::Rdm && self.rdm.is_none() {
                 return Err(format!(
                     "rdm: arm \"{}\" selects image \"rdm\" but the manifest has no [rdm] table",
+                    arm.name
+                ));
+            }
+            if arm.prompt_from == PromptFrom::Manifest && self.rdm.is_none() {
+                return Err(format!(
+                    "arm.prompt_from of arm \"{}\" is \"manifest\" but the manifest has no [rdm] table to render it with",
                     arm.name
                 ));
             }
@@ -432,6 +503,73 @@ prompt = "configs/prompts/anti_slop.jinja"
         fails_naming(
             &format!("{}{}", RDM.replace("\"bench\"", "\"\""), text()),
             "rdm.project",
+        );
+    }
+
+    #[test]
+    fn arm_without_prompt_from_is_scbench() {
+        let m = parse(&text()).expect("valid");
+        assert!(m.arms.iter().all(|a| a.prompt_from == PromptFrom::Scbench));
+        assert_eq!(m.manifest_prompt_source(&m.arms[0]), None);
+    }
+
+    fn with_manifest_prompt_arm(t: &str, extra: &str) -> String {
+        format!(
+            "{t}\n[[arm]]\nname = \"lane\"\nprompt = \"prompts/l.jinja\"\nprompt_from = \"manifest\"\n{extra}"
+        )
+    }
+
+    #[test]
+    fn manifest_prompt_resolves_against_manifest_dir() {
+        let m = parse(&with_manifest_prompt_arm(&format!("{RDM}{}", text()), "")).expect("valid");
+        assert_eq!(m.arms[2].prompt_from, PromptFrom::Manifest);
+        assert_eq!(
+            m.manifest_prompt_source(&m.arms[2]),
+            Some(PathBuf::from("/m/prompts/l.jinja"))
+        );
+    }
+
+    #[test]
+    fn manifest_prompt_without_rdm_table_fails() {
+        fails_naming(&with_manifest_prompt_arm(&text(), ""), "prompt_from");
+    }
+
+    #[test]
+    fn arm_without_limits_inherits_agent_limits() {
+        let m = parse(&text()).expect("valid");
+        assert_eq!(m.arms[0].limits(&m.agent), m.agent.limits());
+        assert_eq!(m.agent.limits().step_limit, 100);
+    }
+
+    #[test]
+    fn arm_setting_only_step_limit_keeps_agent_cost_limits() {
+        let t = text().replace("cost_limit = 0\nnet", "cost_limit = 3.5\nnet");
+        let t = with_manifest_prompt_arm(&format!("{RDM}{t}"), "step_limit = 1000\n");
+        let m = parse(&t).expect("valid");
+        assert_eq!(
+            m.arms[2].limits(&m.agent),
+            Limits {
+                step_limit: 1000,
+                cost_limit: 3.5,
+                net_cost_limit: 0.0,
+            }
+        );
+    }
+
+    #[test]
+    fn arm_overriding_every_limit_uses_its_own() {
+        let t = with_manifest_prompt_arm(
+            &format!("{RDM}{}", text()),
+            "step_limit = 4321\ncost_limit = 12.5\nnet_cost_limit = 25\n",
+        );
+        let m = parse(&t).expect("valid");
+        assert_eq!(
+            m.arms[2].limits(&m.agent),
+            Limits {
+                step_limit: 4321,
+                cost_limit: 12.5,
+                net_cost_limit: 25.0,
+            }
         );
     }
 

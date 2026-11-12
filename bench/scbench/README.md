@@ -2,9 +2,9 @@
 
 `rdm-measure scbench run` drives [SlopCodeBench](https://github.com/SprocketLab/slop-code-bench)
 (SCBench) from the pinned manifest in this directory. Each manifest arm gets
-one `slop-code run` and one `slop-code eval`. The arms here are upstream's
-own control prompts, `just-solve` and `anti_slop`. rdm's arms are measured
-against them later.
+one `slop-code run` and one `slop-code eval`. Two arms are upstream's own
+control prompts, `just-solve` and `anti_slop`. The `full-lane` arm (see
+"Full-lane arm") runs the full rdm lane and is measured against them.
 
 > **COST WARNING.** `scbench run` without `--dry-run` runs paid Claude Code
 > agents in Docker. Each arm runs every problem in the subset, and every
@@ -109,8 +109,10 @@ bench/scbench/
     <arm>/
       agent.yaml              # the generated agent config
       docker.j2               # rdm arms only: the rendered agent template
+      prompt.jinja            # prompt_from = "manifest" arms: the rendered prompt
       run.yaml                # the generated run config
       output/                 # SCBench's own run directory, layout untouched
+      plan-repos/<problem>/<checkpoint>/  # rdm arms only: each checkpoint's plan repo
 ```
 
 The run record `rdm-scbench-run.json` sits beside the arm directories, never
@@ -121,6 +123,8 @@ inside SCBench's `output/` trees. It holds:
 - the observed `uv`, Docker and `claude` versions
 - the model file's source, installed path and SHA-256
 - each arm's generated configs and run directory
+- for an rdm arm, each checkpoint's copied plan repo and lane
+  classification (`lane`, see "Full-lane arm")
 - every command spawned, with its working directory, `SCBENCH_*`
   environment, exit code and timestamps
 
@@ -208,6 +212,103 @@ Some choices follow from how the pinned SCBench works:
 planned commands. The first real `image build` and `image check` are what
 confirm the Dockerfile builds, the payload copies in, and `claude` lists the
 plugin inside the container.
+
+## Full-lane arm
+
+The `full-lane` arm is the full rdm development lane:
+
+```toml
+[[arm]]
+name = "full-lane"
+prompt = "prompts/full-lane.jinja"   # relative to this manifest
+prompt_from = "manifest"
+image = "rdm"
+step_limit = 1000
+cost_limit = 0
+net_cost_limit = 0
+```
+
+**Checkpoints become phases.** Each problem gets one roadmap, `solution`, in
+its own plan repo. Each checkpoint becomes one phase of it, and the
+checkpoint's spec is the phase body, followed by two generic acceptance
+criteria. SCBench passes the template only `spec` and `is_continuation`, and
+no problem or checkpoint name. So the first checkpoint
+(`is_continuation` false) creates the roadmap and phase 1. Each continuation
+reads `rdm phase list` and appends the next number.
+
+**Two entrypoints.** The agent drives each phase with the shipped plugin's
+`rdm:dispatch-phase solution <N> --project bench`, unattended: plan, plan
+review, implement, verify, code review and triage. When that ends
+`reviewed`, the agent runs `rdm:land solution/<stem>`. `rdm:autopilot` is not
+used, because the shipped plugin's autopilot has no `--land` flag. The prompt
+tells the agent never to write code itself, and to stop when either
+entrypoint does not succeed.
+
+**The graded checkout.** The agent's working directory (`/workspace`) is the
+program's primary git checkout. `rdm:land` fast-forwards its `main`, and
+SCBench grades that directory, so each checkpoint ends with the landed
+result. There is no bench-side copy or merge. rdm puts the item worktrees at
+`/workspace__worktrees/`, which the image creates beside the graded
+directory. The graded tree also gains `.git/`, `.gitignore` and `CLAUDE.md`.
+None of these is Python, so the erosion metrics never read them.
+
+**Checks.** On the first checkpoint the agent sets
+`rdm config set dispatch.verify "<workspace>/.venv/bin/python -m pytest -q"`
+over its own tests. It also writes the same command under `## Checks` in
+`CLAUDE.md`, because `rdm:land` aborts when none of its discovery sources
+names a check. The command uses the primary checkout's absolute venv path,
+because a worktree has no `.venv`. The agent never sees SCBench's hidden
+tests.
+
+**Limits.** An arm's `step_limit`, `cost_limit` and `net_cost_limit` override
+`[agent]`'s for that arm only, and an arm that omits one inherits it. The
+lane's main session needs far more than the controls' 100 turns. `0` makes
+cost unlimited, and 1000 steps is a finite backstop against a runaway loop.
+Size these from the first live run.
+
+**Plan-repo copy.** The plan repo lives at `plan_root`, outside the graded
+directory, and the container is removed after each problem. So after every
+`claude` call, the wrapper tars the plan repo (working tree and `.git`) to
+`$HOME/.claude/projects/-workspace/rdm-plan/<n>.tar`, with `<n>` counting up
+from `000001`. SCBench copies every new file under the Claude trace directory
+`projects/-workspace/` into the checkpoint's
+`output/<problem>/<checkpoint>/agent/workspace/`. This relies on the pinned
+SCBench's trace export (`traces.copy_new_trace_files`); it is not a
+documented SCBench interface. After the arm's `slop-code run` and before its
+`eval`, the runner extracts each checkpoint's latest tar with `tar -xf` to
+`<out>/<arm>/plan-repos/<problem>/<checkpoint>/`. That is next to SCBench's
+`output/`, never inside it. A problem's last checkpoint copy is its final
+plan repo.
+
+**Classification.** The runner reads each copy through rdm-core, as
+`rdm phase list` does. A checkpoint's phase is the one that is new since the
+previous checkpoint. The runner writes each checkpoint into the run record's
+`lane`, and prints `<landed>/<total> checkpoints landed`:
+
+| Observed | `outcome` | `reason` | `detail` |
+|---|---|---|---|
+| the phase is `done` | `landed` | | |
+| no new phase | `lane-failure` | `phase-missing` | |
+| `blocked` | `lane-failure` | `parked` | the phase's blocked reason |
+| `reviewed` | `lane-failure` | `escalated` | `rdm:land` escalated or did not run |
+| `not-started` / `in-progress` / `needs-review` | `lane-failure` | `unfinished` | the status |
+| `wont-fix` | `lane-failure` | `abandoned` | |
+| no export in the checkpoint | `lane-failure` | `plan-repo-missing` | |
+| the plan repo cannot be read | `lane-failure` | `plan-repo-unreadable` | rdm-core's error |
+
+This separates "the lane produced worse code" from "the lane did not
+finish". The operator files each lane failure a live run exposes as an rdm
+task tagged `benchmark`. The fix goes into rdm proper, never into bench
+config.
+
+The hermetic tests cover the rendered prompt, the arm's invocation, the copy
+and the classification, all against fakes and fixture plan repos. Only a live
+run confirms the rest:
+
+- that Claude Code loads the plugin's skills under `--print` in the container
+- that the trace export copies the tars
+- that `rdm worktree add` and `rdm:land` work at `/workspace`
+- that 1000 steps is enough
 
 ## Cost figures under a subscription
 

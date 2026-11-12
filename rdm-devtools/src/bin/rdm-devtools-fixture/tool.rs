@@ -4,9 +4,11 @@
 //! Scenario keys: `record` (call log path), `responses` (an array tried in
 //! order; each carries `argvContains` — strings that must all be substrings
 //! of the space-joined argv), `default` (used when nothing matches). A
-//! response is `{ "stdout": "...", "stderr": "...", "exit": 0 }`. Each record
-//! line also carries `scbench`: the `SCBENCH_PROBLEMS_PATH` and
-//! `SCBENCH_HOME` the call saw.
+//! response is `{ "stdout": "...", "stderr": "...", "exit": 0 }`, plus an
+//! optional `place`: `[{ "from": "<abs>", "to": "<abs>" }]`, files copied
+//! (parent directories created) before the fake exits, so a test can leave
+//! output where the real tool would. Each record line also carries
+//! `scbench`: the `SCBENCH_PROBLEMS_PATH` and `SCBENCH_HOME` the call saw.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -47,6 +49,29 @@ pub fn run(role: &str) -> ExitCode {
     if chosen.is_null() {
         eprintln!("fake {role}: no scenario response for `{joined}`");
         return ExitCode::from(2);
+    }
+    for item in chosen
+        .get("place")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(from), Some(to)) = (
+            item.get("from").and_then(Value::as_str),
+            item.get("to").and_then(Value::as_str),
+        ) else {
+            eprintln!("fake {role}: a `place` entry needs `from` and `to`: {item}");
+            return ExitCode::from(2);
+        };
+        let to = std::path::Path::new(to);
+        let placed = to
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::copy(from, to));
+        if let Err(e) = placed {
+            eprintln!("fake {role}: cannot place {from} at {}: {e}", to.display());
+            return ExitCode::from(2);
+        }
     }
     if let Some(out) = chosen.get("stdout").and_then(Value::as_str) {
         let _ = std::io::stdout().lock().write_all(out.as_bytes());
