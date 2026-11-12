@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-11-12
+
 ### Changed
 
 - **Frontmatter errors name the document and the line.** A document whose frontmatter cannot be read now fails with the plan-repo path of the file and the line and column of the problem, counted from the top of the file, each stated once — for a task whose `status` is not a status, `rdm task show fix-login` prints ``error: failed to load task: failed to parse frontmatter in projects/demo/tasks/fix-login.md: unknown variant `nearly`, expected one of open, in-progress, needs-review, reviewed, done, blocked, wont-fix at line 4, column 9`` — where it used to give only the YAML reader's message, with a line counted from the first frontmatter line. A document read at an earlier revision (`--at <sha>`) names that revision as well — `failed to parse frontmatter in <path> at <sha>: …` — because the file as it stands now may be fine. A review comment anchored by an `anchor_type` this build does not recognize still keeps every field and value when the review is rewritten, but its keys are now written back in sorted order rather than as they were. Breaking (rdm-core API): `Error::FrontmatterParse` carries the new `error::FrontmatterError` (`document()`, `revision()`, `problem()`, `line()`, `column()`) instead of `serde_yaml::Error`, and has no `source()` because its own message is the whole of it; `impl From<serde_yaml::Error> for Error` is removed; and `Anchor::Unknown`'s `raw` is a `serde_json::Value` instead of a `serde_yaml::Value`. No `serde_yaml` type is left in rdm-core's public API.
