@@ -36,18 +36,27 @@
 //! rewritten after every command, so a failed run still records the command
 //! that failed.
 //!
+//! `scbench report` ([`report`]) aggregates a run's SCBench outputs
+//! ([`outputs`]) per arm with seed-bootstrap confidence intervals
+//! ([`stats`]), sets every rdm arm against every control arm, and saves or
+//! compares a baseline ([`baseline`]). It makes no call at all.
+//!
 //! `scbench image build` (slow: a release build of rdm plus SCBench's base
 //! image) builds the payload image from the rdm checkout under test, then has
 //! SCBench build the agent image; `scbench image check` runs the smoke check
 //! in it. Neither runs an agent or makes a paid call.
 
+pub mod baseline;
 pub mod environment;
 pub mod exec;
 pub mod image;
 pub mod lane;
 pub mod manifest;
+pub mod outputs;
 pub mod plan;
 pub mod rdm_image;
+pub mod report;
+pub mod stats;
 
 use std::collections::BTreeMap;
 use std::io::Write;

@@ -22,6 +22,8 @@
 //!                         [--arms NAME,...] [--seeds N]
 //!                         [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
 //!                         [--dry-run]
+//! rdm-measure scbench report --run DIR [--baseline NAME] [--save-baseline NAME]
+//!                            [--format markdown|json]
 //! rdm-measure scbench image build [--manifest PATH] [--cache-dir DIR]
 //!                                 [--docker-bin PATH] [--uv-bin PATH]
 //! rdm-measure scbench image check [--manifest PATH] [--cache-dir DIR]
@@ -114,9 +116,38 @@ enum ScbenchCmd {
     /// --dry-run this runs paid Claude Code agents in Docker (arms x seeds x
     /// problems x checkpoints).
     Run(ScbenchRunArgs),
+    /// Report a run per arm (pass rate, erosion, cost, tokens, wall-clock,
+    /// lane failures) with seed-bootstrap confidence intervals and every rdm
+    /// arm against every control arm; save or compare a baseline. Writes
+    /// <run>/rdm-scbench-report.{json,md}; never gates. No paid call.
+    Report(ScbenchReportArgs),
     /// Build or smoke-check the rdm-equipped agent image that arms with
     /// `image = "rdm"` run in. No paid call.
     Image(ScbenchImageArgs),
+}
+
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum MarkdownOrJson {
+    Markdown,
+    Json,
+}
+
+#[derive(clap::Args)]
+struct ScbenchReportArgs {
+    /// The run directory (`scbench run --out`), holding rdm-scbench-run.json.
+    #[arg(long, value_name = "DIR", value_parser = flag_value)]
+    run: String,
+    /// Render the run beside this saved baseline (bench/scbench/baselines/NAME.json
+    /// beside the run's manifest) and flag any differing non-rdm pin.
+    #[arg(long, value_name = "NAME", value_parser = flag_value)]
+    baseline: Option<String>,
+    /// Save the run as baseline NAME with its five pins; refused when NAME
+    /// already exists.
+    #[arg(long, value_name = "NAME", value_parser = flag_value)]
+    save_baseline: Option<String>,
+    /// What to print (both are always written).
+    #[arg(long, value_enum, default_value = "markdown")]
+    format: MarkdownOrJson,
 }
 
 #[derive(clap::Args)]
@@ -634,9 +665,24 @@ fn scbench_image_cmd(a: &ScbenchImageArgs) -> Result<ExitCode, String> {
     Ok(ExitCode::from(code))
 }
 
+fn scbench_report_cmd(a: &ScbenchReportArgs) -> Result<ExitCode, String> {
+    let options = scbench::report::ReportOptions {
+        run: PathBuf::from(&a.run),
+        baseline: a.baseline.clone(),
+        save_baseline: a.save_baseline.clone(),
+        format: match a.format {
+            MarkdownOrJson::Markdown => scbench::report::Format::Markdown,
+            MarkdownOrJson::Json => scbench::report::Format::Json,
+        },
+    };
+    let code = scbench::report::run(&options, &mut std::io::stdout(), &mut std::io::stderr())?;
+    Ok(ExitCode::from(code))
+}
+
 fn scbench_cmd(a: &ScbenchArgs) -> Result<ExitCode, String> {
     let r = match &a.command {
         ScbenchCmd::Run(r) => r,
+        ScbenchCmd::Report(r) => return scbench_report_cmd(r),
         ScbenchCmd::Image(i) => return scbench_image_cmd(i),
     };
     let bench = checkout_root().join("bench/scbench");

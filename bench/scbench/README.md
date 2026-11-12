@@ -155,6 +155,36 @@ inside SCBench's `output/` trees. It holds:
 It is rewritten after every command, so a failed run still records the
 command that failed.
 
+## Reporting a run
+
+```bash
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench report \
+  --run bench/scbench/runs/<name> [--format markdown|json] \
+  [--save-baseline <name>] [--baseline <name>]
+```
+
+`scbench report` makes no call. It reads the run record and each finished
+unit's SCBench checkpoint tree (`evaluation.json`,
+`quality_analysis/overall_quality.json` and `inference_result.json` per
+checkpoint), then writes `rdm-scbench-report.json` and
+`rdm-scbench-report.md` beside the run record and prints the chosen format
+(default markdown). Per arm it gives the checkpoint pass rate (under the
+manifest's `pass_policy`), the erosion metrics at the last checkpoint and
+their change since the first, every erosion metric per checkpoint with its
+change from the previous one, cost, tokens, agent wall-clock and the
+lane-failure count. Each figure carries a 95% bootstrap interval over seeds.
+It also gives every `rdm` arm's difference from every `control` arm, with an
+interval. A unit whose eval never finished is listed under `skipped_runs`
+rather than counted. A phase 1 to 4 run record (one seed, no `schema`) is
+still read.
+
+`--save-baseline <name>` also writes `baselines/<name>.json` beside the
+run's manifest, keyed by five pins: the rdm, SCBench and `scb-problems` SHAs,
+the model and the Claude Code version. It is refused when a pin is missing
+or the name already exists. `--baseline <name>` renders the run beside that
+baseline and flags any non-rdm pin that differs. Neither changes the exit
+code.
+
 ## rdm-equipped image
 
 An arm runs in the rdm-equipped agent image when it sets `image = "rdm"`:

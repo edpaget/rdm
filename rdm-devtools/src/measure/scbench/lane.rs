@@ -219,7 +219,7 @@ struct CheckpointYaml {
 }
 
 /// The checkpoints under `<run_dir>/<problem>`, sorted by `(order, name)`.
-fn checkpoints(problem_dir: &Path) -> Result<Vec<(i64, String, PathBuf)>, String> {
+pub(super) fn checkpoints(problem_dir: &Path) -> Result<Vec<(i64, String, PathBuf)>, String> {
     let entries = match std::fs::read_dir(problem_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
