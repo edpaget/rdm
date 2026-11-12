@@ -1,13 +1,14 @@
-//! The YAML frontmatter reader.
+//! The YAML frontmatter reader and writer.
 //!
-//! Every frontmatter read in rdm-core goes through [`from_str`], and nothing
-//! outside this module names the YAML library, so the library can change
-//! without touching a caller.
+//! Every frontmatter read in rdm-core goes through [`from_str`] and every
+//! write through [`to_string`], and nothing outside this module names the
+//! YAML library, so the library can change without touching a caller.
 //!
-//! The reader is `serde-saphyr`, a YAML 1.2 parser. The files it reads were
-//! written by `serde_yaml` (libyaml, YAML 1.1 flavoured), and rdm promises
-//! that those files keep loading to the same model. Out of the box the two
-//! disagree, so this module does two things on top of the library:
+//! The reader is `serde-saphyr`, a YAML 1.2 parser. The files in an existing
+//! plan repo were written by `serde_yaml` (libyaml, YAML 1.1 flavoured), and
+//! rdm promises that those files keep loading to the same model. Out of the
+//! box the two disagree, so this module does two things on top of the
+//! library:
 //!
 //! * [`options`] turns off the inference and strictness the old reader did
 //!   not have;
@@ -22,17 +23,25 @@
 //! is one pass over the text and the reader reads it once, so the work
 //! grows with the length of the frontmatter and not with how much of it
 //! needs adjusting.
+//!
+//! The writer is the same library's serializer, under [`writer_options`].
+//! What it writes is rdm's on-disk format, which `docs/file-formats.md`
+//! describes; a file the old writer wrote is rewritten in it the next time
+//! rdm writes that file. On top of the library it does one thing:
+//! [`to_string`] leaves an empty line after a block scalar that ends the
+//! frontmatter with a line break, so the reader does not take that line
+//! break for the one `strip_unterminated_block_scalar` drops.
 
 use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 
 use serde::de::{DeserializeOwned, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_saphyr::granit_parser::{Event, Parser, ScalarStyle};
 use serde_saphyr::{
     DuplicateKeyPolicy, Localizer, Location, MergeKeyPolicy, MessageFormatter,
-    NonFiniteFloatPolicy, Options, SnippetMode, Span, UserMessageFormatter,
+    NonFiniteFloatPolicy, Options, SerializerOptions, SnippetMode, Span, UserMessageFormatter,
 };
 
 use crate::error::FrontmatterError;
@@ -51,6 +60,46 @@ pub(crate) fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Frontmatter
     text.apply(quote_scalars_read_differently(text.as_str()));
     serde_saphyr::from_str_with_options::<T>(text.as_str(), options())
         .map_err(|err| describe(&err, &text))
+}
+
+/// Writes `value` as the YAML that goes between a document's `---`
+/// delimiters.
+///
+/// The text ends with a line break. When the last value in it is a block
+/// scalar whose value ends in a line break, an empty line follows it:
+/// frontmatter reaches [`from_str`] without the line break before the
+/// closing `---`, and without the empty line the scalar would run into the
+/// end of the text and be read one line break short.
+///
+/// # Errors
+///
+/// Returns a [`FrontmatterError`] carrying the serializer's description of
+/// the problem, with no position, if `value` cannot be written as YAML.
+pub(crate) fn to_string<T: Serialize>(value: &T) -> Result<String, FrontmatterError> {
+    let mut text = serde_saphyr::to_string_with_options(value, writer_options())
+        .map_err(|err| FrontmatterError::new(err.to_string(), None))?;
+    if last_block_scalar_kept_break(&text).is_some() {
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+/// The writer options under which frontmatter is laid out as close to what
+/// `serde_yaml` wrote as the serializer gets. Each differs from the
+/// library's default.
+fn writer_options() -> SerializerOptions {
+    serde_saphyr::ser_options! {
+        // Dates, timestamps and `yes`/`no` are written bare, as they always
+        // were, and not quoted for the benefit of a YAML 1.1 reader. The
+        // reader takes them for text either way.
+        yaml_12: true,
+        // No `%YAML 1.2` and `---` at the top, which `yaml_12` turns on: the
+        // `---` would be taken for the document's closing delimiter.
+        no_lang_directive: true,
+        // A long single-line string stays on the line of its key and is not
+        // folded over several as `>-`.
+        folded_wrap_chars: usize::MAX,
+    }
 }
 
 /// One change an adjustment makes to the text it is given: the bytes at
@@ -234,29 +283,30 @@ fn line_separators_as_breaks(text: &str) -> Vec<Replacement> {
         .collect()
 }
 
-/// Rewrites a block scalar that runs into the end of `text` so it ends
-/// without a line break, returning the change to its header, or `None`
-/// when `text` has no such scalar.
+/// Where a block scalar that is the last value in a text lies in it.
+struct LastBlockScalar {
+    /// The byte offset its content starts at.
+    content_start: usize,
+    /// The byte offset it ends at.
+    end: usize,
+    /// The byte offset the node before it ends at, or 0 when it is the
+    /// first.
+    previous_end: usize,
+}
+
+/// Finds the last value in `text` when it is a block scalar whose value
+/// ends in a line break, or `None` when the last value is anything else or
+/// `text` does not parse.
 ///
-/// Frontmatter reaches the reader without the line break before the closing
-/// `---`. When the last thing in it is a block scalar (`body: |`), the old
-/// reader found no final line break to keep and returned the text without
-/// one; `serde-saphyr` supplies one. That last scalar is real data — the
-/// body or reply of a review's last comment — so the header's chomping
-/// indicator is replaced with `-` (strip), which says what the old reader
-/// did.
-fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
-    // Cheap pre-filter: only a text that stops in the middle of an indented
-    // line, and has a block-scalar indicator somewhere, can be affected. A
-    // text that ends with a line break — a file with CRLF line endings still
-    // carries the `\r` — has the break and keeps it.
-    let last_line = text.rsplit(['\n', '\r']).next().unwrap_or(text);
-    if !last_line.starts_with([' ', '\t']) || !text.contains(['|', '>']) {
+/// The reader and the writer both ask this. To the reader such a scalar may
+/// have run into the end of the text ([`strip_unterminated_block_scalar`]);
+/// the writer, having written one, leaves an empty line after it
+/// ([`to_string`]).
+fn last_block_scalar_kept_break(text: &str) -> Option<LastBlockScalar> {
+    // Cheap pre-filter: a block scalar has an indicator.
+    if !text.contains(['|', '>']) {
         return None;
     }
-
-    // Find the last node. It must be a block scalar that ends at the end of
-    // the text with a line break the text does not have.
     let mut last_scalar = None;
     let mut previous_end = 0;
     for event in Parser::new_from_str(text) {
@@ -265,7 +315,11 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
         match event {
             Event::Scalar(value, style, ..) => {
                 let block = matches!(style, ScalarStyle::Literal | ScalarStyle::Folded);
-                last_scalar = Some((start, end, previous_end, block && value.ends_with('\n')));
+                last_scalar = (block && value.ends_with('\n')).then_some(LastBlockScalar {
+                    content_start: start,
+                    end,
+                    previous_end,
+                });
                 previous_end = end;
             }
             // Closing events follow the last node without being one.
@@ -281,9 +335,37 @@ fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
             }
         }
     }
-    let (content_start, end, previous_end, true) = last_scalar? else {
+    last_scalar
+}
+
+/// Rewrites a block scalar that runs into the end of `text` so it ends
+/// without a line break, returning the change to its header, or `None`
+/// when `text` has no such scalar.
+///
+/// Frontmatter reaches the reader without the line break before the closing
+/// `---`. When the last thing in it is a block scalar (`body: |`), the old
+/// reader found no final line break to keep and returned the text without
+/// one; `serde-saphyr` supplies one. That last scalar is real data — the
+/// body or reply of a review's last comment — so the header's chomping
+/// indicator is replaced with `-` (strip), which says what the old reader
+/// did.
+fn strip_unterminated_block_scalar(text: &str) -> Option<Replacement> {
+    // Cheap pre-filter: only a text that stops in the middle of an indented
+    // line can be affected. A text that ends with a line break — a file
+    // with CRLF line endings still carries the `\r` — has the break and
+    // keeps it.
+    let last_line = text.rsplit(['\n', '\r']).next().unwrap_or(text);
+    if !last_line.starts_with([' ', '\t']) {
         return None;
-    };
+    }
+
+    // The last node must be a block scalar that ends at the end of the text
+    // with a line break the text does not have.
+    let LastBlockScalar {
+        content_start,
+        end,
+        previous_end,
+    } = last_block_scalar_kept_break(text)?;
     if end != text.len() {
         return None;
     }
@@ -641,9 +723,9 @@ mod tests {
                 prefix: word.to_string(),
                 suffix: word.to_string(),
             };
-            let written = serde_yaml::to_string(&target).unwrap();
+            let written = to_string(&target).unwrap();
             assert_eq!(from_str::<ReviewTarget>(&written).unwrap(), target);
-            let written = serde_yaml::to_string(&anchor).unwrap();
+            let written = to_string(&anchor).unwrap();
             assert_eq!(from_str::<Anchor>(&written).unwrap(), anchor);
         }
     }
@@ -1186,5 +1268,237 @@ mod tests {
             .map(|at| text.original_offset(at))
             .collect();
         assert_eq!(traced, [0, 1, 2, 5, 6, 7, 7, 7, 7, 7, 7, 11, 12, 13]);
+    }
+
+    // -- what the writer writes --
+    //
+    // These pin rdm's on-disk format. A change to the text expected here
+    // reformats every plan file the next time rdm writes it.
+
+    /// The text written for `value` where another value follows it.
+    fn written(value: &str) -> String {
+        to_string(&json!({"k": value, "z": 1})).unwrap()
+    }
+
+    /// The text written for `value` where it is the last value.
+    fn written_last(value: &str) -> String {
+        to_string(&json!({"k": value})).unwrap()
+    }
+
+    #[test]
+    fn a_string_that_reads_as_itself_is_written_bare() {
+        for value in [
+            "plain",
+            "two words",
+            "it's",
+            "a \"q\" b",
+            "back\\slash",
+            "---a",
+            "héllo 日本語",
+        ] {
+            assert_eq!(written(value), format!("k: {value}\nz: 1\n"));
+        }
+    }
+
+    #[test]
+    fn a_string_that_would_be_misread_is_double_quoted() {
+        let cases = [
+            ("fix: the parser", r#""fix: the parser""#),
+            ("", r#""""#),
+            ("true", r#""true""#),
+            ("null", r#""null""#),
+            ("~", r#""~""#),
+            ("12", r#""12""#),
+            ("1.5", r#""1.5""#),
+            ("0755", r#""0755""#),
+            ("- item", r#""- item""#),
+            ("#hash", r##""#hash""##),
+            ("@at", r#""@at""#),
+            (" lead", r#"" lead""#),
+            ("trail ", r#""trail ""#),
+            // A double quote and a backslash inside the quotes are escaped;
+            // a single quote is not.
+            ("say \"hi\": now", r#""say \"hi\": now""#),
+            ("C:\\x: y", r#""C:\\x: y""#),
+            ("it's: here", r#""it's: here""#),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                written(value),
+                format!("k: {expected}\nz: 1\n"),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_date_a_timestamp_and_a_yes_are_written_bare() {
+        for value in [
+            "yes",
+            "no",
+            "on",
+            "off",
+            "2026-03-14",
+            "2026-03-14T10:00:00Z",
+        ] {
+            assert_eq!(written(value), format!("k: {value}\nz: 1\n"));
+        }
+
+        // And as the models hold them.
+        let task: Task = from_str(&format!("{}tags:\n- yes\n", task_titled("T"))).unwrap();
+        assert_eq!(
+            to_string(&task).unwrap(),
+            "project: p\ntitle: T\nstatus: open\npriority: high\ncreated: 2026-03-14\n\
+             tags:\n- yes\n"
+        );
+        let run: Run = from_str(&run_yaml("r", "auth", "on")).unwrap();
+        assert_eq!(
+            to_string(&run).unwrap(),
+            "id: r\nproject: rdm\ndriver: autopilot\nroadmap: auth\nargs: on\nstatus: open\n\
+             started: 2026-09-24T15:30:12.345Z\nstop_reason: on\nunits: []\n"
+        );
+    }
+
+    #[test]
+    fn a_number_look_alike_the_old_writer_left_bare_is_quoted() {
+        for value in ["nan", "1_000", "0X1F", "1e999"] {
+            assert_eq!(written(value), format!("k: \"{value}\"\nz: 1\n"));
+        }
+    }
+
+    #[test]
+    fn a_multi_line_string_is_a_literal_block_scalar() {
+        let cases = [
+            // The header says how the value ends: with no line break, with
+            // one, with more.
+            ("a\nb", "k: |-\n  a\n  b\nz: 1\n"),
+            ("a\nb\n", "k: |\n  a\n  b\nz: 1\n"),
+            ("a\nb\n\n", "k: |+\n  a\n  b\n\nz: 1\n"),
+            // A line that ends in a space, and one that starts with a tab.
+            ("a \nb", "k: |-\n  a \n  b\nz: 1\n"),
+            ("\ta\nb", "k: |-\n  \ta\n  b\nz: 1\n"),
+            // A first line that starts with a space, and a leading line
+            // break.
+            (" a\nb", "k: |2-\n   a\n  b\nz: 1\n"),
+            ("\na", "k: |-\n\n  a\nz: 1\n"),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(written(value), expected, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn a_string_no_block_scalar_can_carry_is_one_quoted_line() {
+        let cases = [
+            ("a\u{2028}b", r#""a\Lb""#),
+            ("a\u{2029}b", r#""a\Pb""#),
+            ("a\u{85}b", r#""a\Nb""#),
+            ("a\nb\u{2028}\n", r#""a\nb\L\n""#),
+            ("a\r\n", r#""a\r\n""#),
+            ("a\tb", r#""a\tb""#),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                written(value),
+                format!("k: {expected}\nz: 1\n"),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_single_line_string_stays_on_one_line() {
+        for value in ["x".repeat(200), format!("{}word", "word ".repeat(49))] {
+            assert_eq!(written(&value), format!("k: {value}\nz: 1\n"));
+        }
+    }
+
+    #[test]
+    fn an_empty_line_follows_a_block_scalar_that_ends_the_text_with_a_line_break() {
+        let cases = [
+            // One line break, several, and nothing but line breaks.
+            (json!({"k": "a\n"}), "k: |\n  a\n\n"),
+            (json!({"k": "a\nb\n"}), "k: |\n  a\n  b\n\n"),
+            (json!({"k": "a\n\n\n"}), "k: |+\n  a\n\n\n\n"),
+            (json!({"k": "\n"}), "k: |+\n\n\n"),
+            (json!({"k": "\n\n"}), "k: |+\n\n\n\n"),
+            // The last item of a list, and the last value of a nested
+            // mapping.
+            (json!({"k": ["x", "a\n"]}), "k:\n- x\n- |\n  a\n\n"),
+            (json!({"k": {"j": "a\n"}}), "k:\n  j: |\n    a\n\n"),
+        ];
+        for (value, expected) in cases {
+            let text = to_string(&value).unwrap();
+            assert_eq!(text, expected, "{value}");
+            // The reader is handed the text without the line break before
+            // the closing delimiter, and still finds the value whole.
+            let read: Value = from_str(text.strip_suffix('\n').unwrap()).unwrap();
+            assert_eq!(read, value);
+        }
+    }
+
+    #[test]
+    fn no_empty_line_follows_any_other_last_value() {
+        // A block scalar that ends in a line break and is not last.
+        assert_eq!(written("a\nb\n"), "k: |\n  a\n  b\nz: 1\n");
+        assert_eq!(
+            to_string(&json!({"k": ["a\n", "x"]})).unwrap(),
+            "k:\n- |\n  a\n- x\n"
+        );
+
+        let cases = [
+            // A block scalar that does not end in a line break.
+            ("a\nb", "k: |-\n  a\n  b\n"),
+            // A string that ends in a line break and is quoted.
+            ("a\u{2028}\n", "k: \"a\\L\\n\"\n"),
+            ("a\r\n", "k: \"a\\r\\n\"\n"),
+            // A bare one.
+            ("plain", "k: plain\n"),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(written_last(value), expected, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_anchor_with_awkward_keys_and_values_reads_back_as_written() {
+        let raw = json!({
+            "anchor_type": "heading-path",
+            "yes": "yes",
+            "null": "null",
+            "1": "1",
+            "": "",
+            "a: b": "a: b",
+            "list": ["yes", "null", "1", "", "a: b", 1, null, true],
+        });
+        let anchor = Anchor::Unknown {
+            anchor_type: "heading-path".to_string(),
+            raw: raw.clone(),
+        };
+
+        let text = to_string(&anchor).unwrap();
+        assert_eq!(
+            text,
+            r#""": ""
+"1": "1"
+"a: b": "a: b"
+anchor_type: heading-path
+list:
+- yes
+- "null"
+- "1"
+- ""
+- "a: b"
+- 1
+- null
+- true
+"null": "null"
+yes: yes
+"#
+        );
+        let Anchor::Unknown { raw: read, .. } = from_str::<Anchor>(&text).unwrap() else {
+            panic!("expected Anchor::Unknown");
+        };
+        assert_eq!(read, raw);
     }
 }

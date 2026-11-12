@@ -723,12 +723,12 @@ mod tests {
     /// `comments.status`) documents a nested field, which serde reports
     /// under its parent key rather than at the top level.
     fn assert_fields_match<T: serde::Serialize + Describe>(sample: &T) {
-        let value = serde_yaml::to_value(sample).expect("sample should serialize");
+        let value = serde_json::to_value(sample).expect("sample should serialize");
         let serde_keys: HashSet<&str> = value
-            .as_mapping()
+            .as_object()
             .expect("sample should serialize to a mapping")
             .keys()
-            .map(|k| k.as_str().expect("keys should be strings"))
+            .map(String::as_str)
             .collect();
 
         let describe_keys: HashSet<&str> = T::describe()
@@ -902,9 +902,9 @@ mod tests {
             crate::model::RunTarget::Roadmap("alpha".to_string()),
             crate::model::RunTarget::Task("fix".to_string()),
         ] {
-            let value = serde_yaml::to_value(sample(target)).unwrap();
-            for k in value.as_mapping().unwrap().keys() {
-                serde_keys.insert(k.as_str().unwrap().to_string());
+            let value = serde_json::to_value(sample(target)).unwrap();
+            for k in value.as_object().unwrap().keys() {
+                serde_keys.insert(k.clone());
             }
         }
         let describe_keys: HashSet<String> = crate::model::Run::describe()

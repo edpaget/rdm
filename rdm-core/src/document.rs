@@ -1,7 +1,7 @@
 /// Generic document wrapper combining YAML frontmatter with a markdown body.
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, FrontmatterError, Result};
+use crate::error::{Error, Result};
 use crate::frontmatter;
 use crate::markdown;
 
@@ -58,8 +58,7 @@ where
     /// Returns [`Error::FrontmatterParse`] if the frontmatter cannot be
     /// serialized to YAML.
     pub fn render(&self) -> Result<String> {
-        let yaml = serde_yaml::to_string(&self.frontmatter)
-            .map_err(|err| Error::FrontmatterParse(FrontmatterError::new(err.to_string(), None)))?;
+        let yaml = frontmatter::to_string(&self.frontmatter).map_err(Error::FrontmatterParse)?;
         Ok(markdown::join_frontmatter(&yaml, &self.body))
     }
 }
@@ -669,9 +668,9 @@ Still loads.
     // -- what today's writer emits, the reader gives back --
 
     /// Strings a YAML reader could take for something else: other types,
-    /// syntax, indentation, line breaks. None ends its document — the writer
-    /// drops the final line break of a document's last string, an old
-    /// quirk these tests leave alone.
+    /// syntax, indentation, line breaks. In the three tests of this section
+    /// none is the last value of its document; the next section puts them
+    /// there too.
     fn awkward_strings() -> Vec<String> {
         let mut strings: Vec<String> = [
             "",
@@ -912,6 +911,304 @@ Still loads.
                 };
                 assert_written_then_read(&doc, &format!("run strings {s:?}"));
             }
+        }
+    }
+
+    // -- a document is read back whole, and written the same a second time --
+    //
+    // Each string goes in every string position of each kind of document,
+    // the last one included: a string that ends its frontmatter is the one
+    // whose final line break the reader could take for the text's own.
+
+    /// [`awkward_strings`], and the strings that decide how a value is laid
+    /// out or what happens to it at the end of the frontmatter.
+    fn strings_for_every_position() -> Vec<String> {
+        let mut strings = awkward_strings();
+        strings.extend(
+            [
+                // One line break at the end, two, and nothing but line breaks.
+                "a\n",
+                "a\nb\n",
+                "a\nb\n\n",
+                "\n",
+                "\n\n",
+                // Lines that end in spaces and tabs.
+                "a \nb",
+                "a\nb ",
+                "a\nb \n",
+                "a\t\nb",
+                "a\nb\t",
+                "trail\t",
+                // A multi-line string that starts with a space, a tab and a
+                // line break.
+                " a\nb",
+                "\ta\nb",
+                "\n\na",
+                "a\r\nb\r\n",
+                // Characters a block scalar cannot carry.
+                "a\u{85}b",
+                "a\nb\u{85}",
+                "a\u{2028}b",
+                "a\nb\u{2028}",
+                "a\u{2028}\n",
+                "a\u{2029}b",
+                "\u{2029}",
+                "\u{feff}a",
+                "a\nb\u{feff}",
+                // Quotes and backslashes.
+                "'",
+                "''",
+                "\"",
+                "\"a\"",
+                "a'b\"c",
+                "\\",
+                "a\\nb",
+                "C:\\x",
+            ]
+            .map(String::from),
+        );
+        strings.push("x".repeat(250));
+        strings.push(format!("{}  {}", "a".repeat(120), "b".repeat(120)));
+        strings
+    }
+
+    /// Asserts that `frontmatter`, written as a document, reads back as
+    /// exactly what was written, and that what was read is written to the
+    /// same bytes.
+    fn assert_stable<T>(frontmatter: T, body: &str, what: &str)
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let doc = Document {
+            frontmatter,
+            body: body.to_string(),
+        };
+        let first = doc.render().unwrap();
+        let read =
+            Document::<T>::parse(&first).unwrap_or_else(|err| panic!("{what}: {err}\n{first}"));
+        assert_eq!(read, doc, "{what}\n{first}");
+        let second = read.render().unwrap();
+        assert_eq!(second, first, "{what}: written a second time");
+    }
+
+    #[test]
+    fn a_phase_is_read_back_whole_and_written_the_same_twice() {
+        use crate::model::{Difficulty, GateOverride, ModelTier};
+
+        for s in strings_for_every_position() {
+            // `blocked_reason` is the last value.
+            let phase = Phase {
+                phase: 3,
+                title: s.clone(),
+                status: PhaseStatus::Blocked,
+                tags: Some(vec![s.clone(), "z".to_string()]),
+                completed: Some(NaiveDate::from_ymd_opt(2026, 3, 13).unwrap()),
+                commit: Some(s.clone()),
+                review_sha: Some(s.clone()),
+                review_branch: Some(s.clone()),
+                started_head: Some(s.clone()),
+                difficulty: Some(Difficulty::Hard),
+                model: Some(ModelTier::Large),
+                blocked_reason: Some(s.clone()),
+                gate_override: None,
+            };
+            let overridden = Phase {
+                gate_override: Some(GateOverride {
+                    reason: s.clone(),
+                    actor: s.clone(),
+                    at: NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+                }),
+                ..phase.clone()
+            };
+            assert_stable(phase, "Body.\n", &format!("phase {s:?}"));
+            assert_stable(overridden, "Body.\n", &format!("overridden phase {s:?}"));
+        }
+    }
+
+    #[test]
+    fn a_task_is_read_back_whole_and_written_the_same_twice() {
+        for s in strings_for_every_position() {
+            // `close_reason` is the last value.
+            let task = Task {
+                project: "p".to_string(),
+                title: s.clone(),
+                status: TaskStatus::WontFix,
+                priority: Priority::High,
+                created: NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
+                tags: Some(vec![s.clone()]),
+                completed: None,
+                commit: Some(s.clone()),
+                review_sha: Some(s.clone()),
+                review_branch: Some(s.clone()),
+                started_head: Some(s.clone()),
+                close_reason: Some(s.clone()),
+                gate_override: None,
+            };
+            assert_stable(task, "Body.\n", &format!("task {s:?}"));
+        }
+    }
+
+    #[test]
+    fn a_roadmap_and_a_project_are_read_back_whole_and_written_the_same_twice() {
+        use crate::model::{Project, Roadmap, Source};
+
+        for s in strings_for_every_position() {
+            // The last tag is the last value.
+            let roadmap = Roadmap {
+                project: "p".to_string(),
+                roadmap: "r".to_string(),
+                title: s.clone(),
+                phases: vec!["phase-1-a".to_string(), s.clone()],
+                dependencies: Some(vec![s.clone()]),
+                priority: Some(Priority::Low),
+                tags: Some(vec!["a".to_string(), s.clone()]),
+            };
+            assert_stable(roadmap, "Body.\n", &format!("roadmap {s:?}"));
+
+            // `default_branch` is the last value.
+            let project = Project {
+                name: "p".to_string(),
+                title: s.clone(),
+                source: Some(Source {
+                    repo: s.clone(),
+                    default_branch: Some(s.clone()),
+                }),
+            };
+            assert_stable(project, "", &format!("project {s:?}"));
+        }
+    }
+
+    #[test]
+    fn a_plan_is_read_back_whole_and_written_the_same_twice() {
+        for s in strings_for_every_position() {
+            let plan = Plan {
+                project: "p".to_string(),
+                plan: "impl".to_string(),
+                title: s.clone(),
+                implements: ReviewTarget::Phase {
+                    roadmap: "r".to_string(),
+                    stem: "phase-1-a".to_string(),
+                },
+                supersedes: Some(ReviewTarget::Plan {
+                    slug: "old".to_string(),
+                }),
+                status: PlanStatus::Approved,
+                created: NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
+                updated: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+            };
+            assert_stable(plan, "Body.\n", &format!("plan {s:?}"));
+        }
+    }
+
+    #[test]
+    fn a_review_is_read_back_whole_and_written_the_same_twice() {
+        use crate::model::AnchorState;
+
+        for s in strings_for_every_position() {
+            let anchors = [
+                Anchor::TextQuote {
+                    quote: s.clone(),
+                    prefix: s.clone(),
+                    suffix: s.clone(),
+                },
+                Anchor::LineRange {
+                    start_line: 3,
+                    end_line: 4,
+                    snippet: s.clone(),
+                },
+                Anchor::FileQuote {
+                    path: s.clone(),
+                    quote: s.clone(),
+                    occurrence: 2,
+                    start_line: 1,
+                    end_line: 2,
+                },
+                Anchor::Unknown {
+                    anchor_type: "heading-path".to_string(),
+                    raw: serde_json::json!({
+                        "anchor_type": "heading-path",
+                        "label": s,
+                        "path": [s, 5, 1.5, true, null, {"deep": s}],
+                        "none": [],
+                        "nothing": {},
+                    }),
+                },
+            ];
+            // The last comment has no reply, so its body is the last value.
+            let comments = anchors
+                .into_iter()
+                .zip(1..)
+                .map(|(anchor, id)| ReviewComment {
+                    id,
+                    doc: Some(CommentDoc {
+                        kind: CommentDocKind::Phase,
+                        stem: s.clone(),
+                    }),
+                    status: ReviewCommentStatus::Addressed,
+                    applied_commit: Some(s.clone()),
+                    anchor: Some(anchor),
+                    anchor_state: Some(AnchorState::Unknown(s.clone())),
+                    intended_path: Some(s.clone()),
+                    body: s.clone(),
+                    reply: (id < 4).then(|| s.clone()),
+                })
+                .collect();
+            let review = Review {
+                id: "2026-07-01-1430-a1b2".to_string(),
+                author: s.clone(),
+                target: ReviewTarget::Change {
+                    head: s.clone(),
+                    base: Some(s.clone()),
+                },
+                state: ReviewState::Submitted,
+                verdict: Some(Verdict::RequestChanges),
+                created: Utc.with_ymd_and_hms(2026, 7, 1, 14, 30, 0).unwrap(),
+                submitted: Some(Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
+                created_commit: Some(s.clone()),
+                implements: Some(ReviewTarget::Plan {
+                    slug: "impl".to_string(),
+                }),
+                change_branch: Some(s.clone()),
+                comments,
+            };
+            assert_stable(review, "Summary.\n", &format!("review {s:?}"));
+        }
+    }
+
+    #[test]
+    fn a_run_is_read_back_whole_and_written_the_same_twice() {
+        use crate::model::{Run, RunDriver, RunStatus, RunTarget, RunUnit};
+
+        let started = Utc.with_ymd_and_hms(2026, 9, 24, 15, 30, 12).unwrap();
+        for s in strings_for_every_position() {
+            // The last unit's `outcome` is the last value.
+            let run = Run {
+                id: s.clone(),
+                project: "rdm".to_string(),
+                driver: RunDriver::Autopilot,
+                target: RunTarget::Roadmap(s.clone()),
+                session_uuid: Some(s.clone()),
+                args: Some(s.clone()),
+                status: RunStatus::Closed,
+                started,
+                ended: Some(started),
+                stop_reason: Some(s.clone()),
+                units: vec![RunUnit {
+                    unit: s.clone(),
+                    attempt: 2,
+                    started,
+                    ended: Some(started),
+                    outcome: Some(s.clone()),
+                }],
+            };
+            // Nothing follows `stop_reason` but an empty list.
+            let without_units = Run {
+                target: RunTarget::Task(s.clone()),
+                units: vec![],
+                ..run.clone()
+            };
+            assert_stable(run, "", &format!("run {s:?}"));
+            assert_stable(without_units, "", &format!("run without units {s:?}"));
         }
     }
 }

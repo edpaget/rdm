@@ -45,10 +45,67 @@ Markdown body starts here.
 
 When editing frontmatter by hand, give every required text field a value: a
 bare `null`, a `~` or nothing after the colon (`title:`) is an error, not an
-empty or literal string — write `title: ''` or `title: 'null'` if that is what
+empty or literal string — write `title: ""` or `title: "null"` if that is what
 you mean. An optional field may be left empty or removed. A file whose
 frontmatter cannot be read fails with its path and the line and column of the
 problem.
+
+### How rdm writes frontmatter
+
+rdm reads frontmatter in any valid YAML style and writes it in one:
+
+```
+---
+project: rdm
+title: "fix: the parser"
+status: wont-fix
+priority: high
+created: 2026-03-14
+tags:
+- parser
+- "true"
+- yes
+close_reason: |
+  Superseded by the roadmap.
+  See `parser-rewrite`.
+
+---
+```
+
+- **Layout.** Block style throughout: one key per line, a nested mapping
+  indented two spaces, the items of a list at the column of their key. An
+  empty list is `[]` and an empty mapping `{}`.
+- **Strings.** A string is written bare where it cannot be read as anything
+  else (`title: Fix the parser`). Otherwise it is in double quotes, with `"`
+  and `\` inside it escaped by a backslash: `"fix: the parser"`, `""`,
+  `"true"`, `"null"`, `"0755"`, `"1_000"`, `"say \"hi\": now"`. A tab in a
+  single-line string is written `\t`, and U+2028 and U+2029 are written `\L`
+  and `\P`. Single quotes are never written.
+- **Dates and words like `yes`.** Dates (`2026-03-14`), timestamps
+  (`2026-09-24T15:30:12.345Z`) and `yes`, `no`, `on` and `off` are written
+  bare. To rdm each is text — `yes` is a tag named "yes", not a boolean —
+  though other YAML tools may read them differently.
+- **Multi-line strings.** A string with a line break in it is a literal block
+  scalar: `|` when it ends in one line break, `|-` when it ends in none, `|+`
+  when it ends in several. Its lines are written as they are, a line that
+  ends in spaces included, so an editor that strips trailing whitespace
+  changes the value. A multi-line string holding a character a block scalar
+  cannot carry (a carriage return, U+2028) is one double-quoted line with
+  `\n` escapes instead.
+- **Long lines.** A single-line string stays on the line of its key however
+  long it is; it is never folded.
+- **The empty line before the closing `---`.** When the last value of the
+  frontmatter is a block scalar that ends in a line break — `close_reason`
+  above — rdm leaves an empty line between it and the closing `---`. The
+  empty line is what keeps that final line break: without it the value is
+  read without one. Remove the line by hand and the value loses its last
+  line break, nothing else.
+
+A file written by an earlier version of rdm, or edited by hand in another
+YAML style — single quotes, flow lists, folded scalars — keeps loading to the
+same data. The next time rdm writes that file it is rewritten in the form
+above, once: that write shows a frontmatter-only diff, and the write after it
+shows none. rdm never rewrites files it has no other reason to write.
 
 ## `rdm.toml`
 

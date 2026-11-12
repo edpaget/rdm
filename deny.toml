@@ -20,12 +20,3 @@ allow = [
     "LGPL-3.0",
     "MPL-2.0",
 ]
-
-[advisories]
-# TEMPORARY — the entry is removed by the `replace-unmaintained-deps` roadmap
-# (plan repo), which replaces the dependency instead of ignoring the notice.
-# It is an "unmaintained" notice with no upgrade available at the time of
-# writing; it is not a vulnerability.
-ignore = [
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: via serde_yaml in rdm-core; removed when rdm-core moves to serde-saphyr" },
-]

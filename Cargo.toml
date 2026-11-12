@@ -12,8 +12,7 @@ homepage = "https://github.com/edpaget/rdm"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
-serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize"] }
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
 chrono = { version = "0.4", features = ["serde", "clock"], default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"

@@ -2439,7 +2439,7 @@ mod tests {
             head: "a".repeat(40),
             base: Some("b".repeat(40)),
         };
-        let yaml = serde_yaml::to_string(&target).unwrap();
+        let yaml = crate::frontmatter::to_string(&target).unwrap();
         assert!(yaml.contains("kind: change"), "{yaml}");
         assert!(
             yaml.contains(&format!("head: {}", "a".repeat(40))),
@@ -2453,7 +2453,7 @@ mod tests {
             head: "c".repeat(40),
             base: None,
         };
-        let yaml = serde_yaml::to_string(&bare).unwrap();
+        let yaml = crate::frontmatter::to_string(&bare).unwrap();
         assert!(!yaml.contains("base"), "{yaml}");
         assert_eq!(
             crate::frontmatter::from_str::<ReviewTarget>(&yaml).unwrap(),
@@ -2553,7 +2553,7 @@ mod tests {
             start_line: 7,
             end_line: 9,
         };
-        let yaml = serde_yaml::to_string(&anchor).unwrap();
+        let yaml = crate::frontmatter::to_string(&anchor).unwrap();
         assert!(yaml.contains("anchor_type: file-quote"), "{yaml}");
         // AC6: no surrounding context is ever persisted.
         assert!(!yaml.contains("prefix"), "{yaml}");
@@ -2580,7 +2580,7 @@ comments: []
         assert!(review.implements.is_none());
         assert!(review.change_branch.is_none());
         // …and round-trips back without gaining the keys.
-        let out = serde_yaml::to_string(&review).unwrap();
+        let out = crate::frontmatter::to_string(&review).unwrap();
         assert!(!out.contains("implements"), "{out}");
         assert!(!out.contains("change_branch"), "{out}");
     }
@@ -2637,7 +2637,7 @@ comments: []
             body: "b".to_string(),
             reply: None,
         };
-        let yaml = serde_yaml::to_string(&comment).unwrap();
+        let yaml = crate::frontmatter::to_string(&comment).unwrap();
         assert!(yaml.contains("anchor_state: outside-hunk"), "{yaml}");
         assert!(yaml.contains("intended_path: src/lib.rs"), "{yaml}");
         assert_eq!(
@@ -2653,7 +2653,7 @@ comments: []
         assert_eq!(comment.anchor_state, None);
         assert_eq!(comment.intended_path, None);
         // …and re-serializes without gaining either key.
-        let out = serde_yaml::to_string(&comment).unwrap();
+        let out = crate::frontmatter::to_string(&comment).unwrap();
         assert!(!out.contains("anchor_state"), "{out}");
         assert!(!out.contains("intended_path"), "{out}");
     }
@@ -2758,7 +2758,7 @@ comments: []
             comment.anchor_state,
             Some(AnchorState::Unknown("some-future-reason".to_string()))
         );
-        let out = serde_yaml::to_string(&comment).unwrap();
+        let out = crate::frontmatter::to_string(&comment).unwrap();
         assert!(out.contains("anchor_state: some-future-reason"), "{out}");
         assert!(
             comment.anchor_state.unwrap().is_degradation(),
@@ -3017,7 +3017,7 @@ comments: []
 
     #[test]
     fn frontier_tier_yaml_round_trip() {
-        let yaml = serde_yaml::to_string(&ModelTier::Frontier).unwrap();
+        let yaml = crate::frontmatter::to_string(&ModelTier::Frontier).unwrap();
         assert_eq!(yaml.trim(), "frontier");
         let parsed: ModelTier = crate::frontmatter::from_str("frontier").unwrap();
         assert_eq!(parsed, ModelTier::Frontier);
@@ -3060,9 +3060,9 @@ comments: []
 
     #[test]
     fn difficulty_model_tier_yaml_round_trip() {
-        let yaml = serde_yaml::to_string(&Difficulty::Hard).unwrap();
+        let yaml = crate::frontmatter::to_string(&Difficulty::Hard).unwrap();
         assert_eq!(yaml.trim(), "hard");
-        let yaml = serde_yaml::to_string(&ModelTier::Large).unwrap();
+        let yaml = crate::frontmatter::to_string(&ModelTier::Large).unwrap();
         assert_eq!(yaml.trim(), "large");
     }
 
@@ -3097,7 +3097,7 @@ comments: []
             (PhaseStatus::WontFix, "wont-fix"),
         ];
         for (variant, expected_yaml) in variants {
-            let yaml = serde_yaml::to_string(&variant).unwrap();
+            let yaml = crate::frontmatter::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
             let parsed: PhaseStatus = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
@@ -3116,7 +3116,7 @@ comments: []
             (TaskStatus::WontFix, "wont-fix"),
         ];
         for (variant, expected_yaml) in variants {
-            let yaml = serde_yaml::to_string(&variant).unwrap();
+            let yaml = crate::frontmatter::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
             let parsed: TaskStatus = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
@@ -3132,7 +3132,7 @@ comments: []
             (Priority::Critical, "critical"),
         ];
         for (variant, expected_yaml) in variants {
-            let yaml = serde_yaml::to_string(&variant).unwrap();
+            let yaml = crate::frontmatter::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
             let parsed: Priority = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
@@ -3202,7 +3202,7 @@ status: not-started
             blocked_reason: None,
             gate_override: None,
         };
-        let yaml = serde_yaml::to_string(&phase).unwrap();
+        let yaml = crate::frontmatter::to_string(&phase).unwrap();
         assert!(!yaml.contains("difficulty"));
         assert!(!yaml.contains("model"));
         assert!(!yaml.contains("blocked_reason"));
@@ -3225,7 +3225,7 @@ status: not-started
             blocked_reason: None,
             gate_override: None,
         };
-        let yaml = serde_yaml::to_string(&phase).unwrap();
+        let yaml = crate::frontmatter::to_string(&phase).unwrap();
         assert!(yaml.contains("difficulty: hard"));
         assert!(yaml.contains("model: large"));
         let parsed: Phase = crate::frontmatter::from_str(&yaml).unwrap();
@@ -3250,7 +3250,7 @@ status: not-started
             blocked_reason: Some("ambiguous acceptance criterion".to_string()),
             gate_override: None,
         };
-        let yaml = serde_yaml::to_string(&phase).unwrap();
+        let yaml = crate::frontmatter::to_string(&phase).unwrap();
         assert!(yaml.contains("blocked_reason: ambiguous acceptance criterion"));
         let parsed: Phase = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(
@@ -3287,7 +3287,7 @@ status: not-started
             blocked_reason: None,
             gate_override: None,
         };
-        let yaml = serde_yaml::to_string(&phase).unwrap();
+        let yaml = crate::frontmatter::to_string(&phase).unwrap();
         assert!(yaml.contains("started_head: deadbeefcafe"));
         let parsed: Phase = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed.started_head.as_deref(), Some("deadbeefcafe"));
@@ -3413,7 +3413,7 @@ created: 2026-01-01
             close_reason: None,
             gate_override: None,
         };
-        let yaml = serde_yaml::to_string(&task).unwrap();
+        let yaml = crate::frontmatter::to_string(&task).unwrap();
         assert!(yaml.contains("started_head: deadbeefcafe"));
         let parsed: Task = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed.started_head.as_deref(), Some("deadbeefcafe"));
@@ -3437,7 +3437,7 @@ created: 2026-01-01
             close_reason: Some("superseded by task/survivor".to_string()),
             gate_override: None,
         };
-        let yaml = serde_yaml::to_string(&task).unwrap();
+        let yaml = crate::frontmatter::to_string(&task).unwrap();
         assert!(yaml.contains("close_reason: superseded by task/survivor"));
         let parsed: Task = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(
@@ -3451,7 +3451,7 @@ created: 2026-01-01
             gate_override: None,
             ..task
         };
-        let yaml = serde_yaml::to_string(&task).unwrap();
+        let yaml = crate::frontmatter::to_string(&task).unwrap();
         assert!(!yaml.contains("close_reason"));
         let parsed: Task = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(parsed.close_reason, None);
@@ -3530,7 +3530,7 @@ phases:
             priority: Some(Priority::Critical),
             tags: None,
         };
-        let yaml = serde_yaml::to_string(&roadmap).unwrap();
+        let yaml = crate::frontmatter::to_string(&roadmap).unwrap();
         assert!(yaml.contains("priority: critical"));
     }
 
@@ -3545,7 +3545,7 @@ phases:
             priority: None,
             tags: None,
         };
-        let yaml = serde_yaml::to_string(&roadmap).unwrap();
+        let yaml = crate::frontmatter::to_string(&roadmap).unwrap();
         assert!(!yaml.contains("priority"));
     }
 
@@ -3559,7 +3559,7 @@ title: Fantasy Baseball Manager
         assert_eq!(project.name, "fbm");
         assert_eq!(project.title, "Fantasy Baseball Manager");
 
-        let serialized = serde_yaml::to_string(&project).unwrap();
+        let serialized = crate::frontmatter::to_string(&project).unwrap();
         let parsed: Project = crate::frontmatter::from_str(&serialized).unwrap();
         assert_eq!(parsed, project);
     }
@@ -3575,7 +3575,7 @@ title: Fantasy Baseball Manager
     #[test]
     fn naive_date_serializes_as_yyyy_mm_dd() {
         let date = NaiveDate::from_ymd_opt(2026, 3, 14).unwrap();
-        let yaml = serde_yaml::to_string(&date).unwrap();
+        let yaml = crate::frontmatter::to_string(&date).unwrap();
         assert_eq!(yaml.trim(), "2026-03-14");
     }
 
@@ -3629,7 +3629,7 @@ title: Fantasy Baseball Manager
             (ReviewState::Dismissed, "dismissed"),
         ];
         for (variant, expected_yaml) in variants {
-            let yaml = serde_yaml::to_string(&variant).unwrap();
+            let yaml = crate::frontmatter::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
             let parsed: ReviewState = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
@@ -3667,7 +3667,7 @@ title: Fantasy Baseball Manager
             (Verdict::Comment, "comment"),
         ];
         for (variant, expected_yaml) in variants {
-            let yaml = serde_yaml::to_string(&variant).unwrap();
+            let yaml = crate::frontmatter::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
             let parsed: Verdict = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
@@ -3705,7 +3705,7 @@ title: Fantasy Baseball Manager
             (ReviewCommentStatus::WontFix, "wont-fix"),
         ];
         for (variant, expected_yaml) in variants {
-            let yaml = serde_yaml::to_string(&variant).unwrap();
+            let yaml = crate::frontmatter::to_string(&variant).unwrap();
             assert_eq!(yaml.trim(), expected_yaml);
             let parsed: ReviewCommentStatus = crate::frontmatter::from_str(&yaml).unwrap();
             assert_eq!(parsed, variant);
@@ -3718,7 +3718,7 @@ title: Fantasy Baseball Manager
         let doc: CommentDoc = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(doc.kind, CommentDocKind::Phase);
         assert_eq!(doc.stem, "phase-1-design");
-        let serialized = serde_yaml::to_string(&doc).unwrap();
+        let serialized = crate::frontmatter::to_string(&doc).unwrap();
         let parsed: CommentDoc = crate::frontmatter::from_str(&serialized).unwrap();
         assert_eq!(parsed, doc);
     }
@@ -3728,7 +3728,7 @@ title: Fantasy Baseball Manager
         let target = ReviewTarget::Roadmap {
             roadmap: "auth".to_string(),
         };
-        let yaml = serde_yaml::to_string(&target).unwrap();
+        let yaml = crate::frontmatter::to_string(&target).unwrap();
         assert!(yaml.contains("kind: roadmap"));
         assert!(yaml.contains("roadmap: auth"));
         let parsed: ReviewTarget = crate::frontmatter::from_str(&yaml).unwrap();
@@ -3741,7 +3741,7 @@ title: Fantasy Baseball Manager
             roadmap: "auth".to_string(),
             stem: "phase-1-design".to_string(),
         };
-        let yaml = serde_yaml::to_string(&target).unwrap();
+        let yaml = crate::frontmatter::to_string(&target).unwrap();
         assert!(yaml.contains("kind: phase"));
         assert!(yaml.contains("roadmap: auth"));
         assert!(yaml.contains("stem: phase-1-design"));
@@ -3754,7 +3754,7 @@ title: Fantasy Baseball Manager
         let target = ReviewTarget::Task {
             slug: "fix-login".to_string(),
         };
-        let yaml = serde_yaml::to_string(&target).unwrap();
+        let yaml = crate::frontmatter::to_string(&target).unwrap();
         assert!(yaml.contains("kind: task"));
         assert!(yaml.contains("slug: fix-login"));
         let parsed: ReviewTarget = crate::frontmatter::from_str(&yaml).unwrap();
@@ -3870,7 +3870,7 @@ title: Fantasy Baseball Manager
             prefix: "right?\n\n".to_string(),
             suffix: "\n\n- [ ] Criterion".to_string(),
         };
-        let yaml = serde_yaml::to_string(&anchor).unwrap();
+        let yaml = crate::frontmatter::to_string(&anchor).unwrap();
         assert!(yaml.contains("anchor_type: text-quote"));
         assert!(yaml.contains("quote:"));
         assert!(yaml.contains("prefix:"));
@@ -3903,7 +3903,7 @@ title: Fantasy Baseball Manager
             other => panic!("expected Anchor::Unknown, got {other:?}"),
         }
         // Serializing an Unknown anchor re-emits the original mapping verbatim.
-        let reserialized = serde_yaml::to_string(&parsed).unwrap();
+        let reserialized = crate::frontmatter::to_string(&parsed).unwrap();
         let reparsed: Anchor = crate::frontmatter::from_str(&reserialized).unwrap();
         assert_eq!(reparsed, parsed);
     }
@@ -3915,7 +3915,7 @@ title: Fantasy Baseball Manager
             end_line: 4,
             snippet: "third line\nfourth line".to_string(),
         };
-        let yaml = serde_yaml::to_string(&anchor).unwrap();
+        let yaml = crate::frontmatter::to_string(&anchor).unwrap();
         assert!(yaml.contains("anchor_type: line-range"), "{yaml}");
         assert!(yaml.contains("start_line: 3"), "{yaml}");
         assert!(yaml.contains("end_line: 4"), "{yaml}");
@@ -3948,7 +3948,7 @@ title: Fantasy Baseball Manager
                 }
                 other => panic!("expected Anchor::Unknown for {yaml:?}, got {other:?}"),
             }
-            let reserialized = serde_yaml::to_string(&parsed).unwrap();
+            let reserialized = crate::frontmatter::to_string(&parsed).unwrap();
             let original: serde_json::Value = crate::frontmatter::from_str(yaml).unwrap();
             let round: serde_json::Value = crate::frontmatter::from_str(&reserialized).unwrap();
             assert_eq!(round, original, "{yaml}");
@@ -3963,7 +3963,7 @@ title: Fantasy Baseball Manager
         let yaml = "id: 1\nstatus: open\nanchor_state: line-out-of-range\nbody: b\n";
         let comment: ReviewComment = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(comment.anchor_state, Some(AnchorState::LineOutOfRange));
-        let out = serde_yaml::to_string(&comment).unwrap();
+        let out = crate::frontmatter::to_string(&comment).unwrap();
         assert!(out.contains("anchor_state: line-out-of-range"), "{out}");
     }
 
@@ -4091,12 +4091,12 @@ title: Fantasy Baseball Manager
     fn run_driver_and_status_display_from_str_round_trip() {
         for d in [RunDriver::Autopilot, RunDriver::DispatchPhase] {
             assert_eq!(d.to_string().parse::<RunDriver>().unwrap(), d);
-            let yaml = serde_yaml::to_string(&d).unwrap();
+            let yaml = crate::frontmatter::to_string(&d).unwrap();
             assert_eq!(yaml.trim(), d.to_string());
         }
         for s in [RunStatus::Open, RunStatus::Closed, RunStatus::Abandoned] {
             assert_eq!(s.to_string().parse::<RunStatus>().unwrap(), s);
-            let yaml = serde_yaml::to_string(&s).unwrap();
+            let yaml = crate::frontmatter::to_string(&s).unwrap();
             assert_eq!(yaml.trim(), s.to_string());
         }
         assert!("paused".parse::<RunStatus>().is_err());
@@ -4127,13 +4127,13 @@ title: Fantasy Baseball Manager
     #[test]
     fn run_target_serializes_as_a_single_roadmap_or_task_key() {
         let run = sample_run(RunTarget::Roadmap("auth".to_string()));
-        let yaml = serde_yaml::to_string(&run).unwrap();
+        let yaml = crate::frontmatter::to_string(&run).unwrap();
         assert!(yaml.contains("roadmap: auth"), "{yaml}");
         assert!(!yaml.contains("task:"), "{yaml}");
         assert_eq!(crate::frontmatter::from_str::<Run>(&yaml).unwrap(), run);
 
         let run = sample_run(RunTarget::Task("fix-bug".to_string()));
-        let yaml = serde_yaml::to_string(&run).unwrap();
+        let yaml = crate::frontmatter::to_string(&run).unwrap();
         assert!(yaml.contains("task: fix-bug"), "{yaml}");
         assert!(!yaml.contains("roadmap:"), "{yaml}");
         assert_eq!(crate::frontmatter::from_str::<Run>(&yaml).unwrap(), run);
@@ -4142,7 +4142,7 @@ title: Fantasy Baseball Manager
     #[test]
     fn run_timestamps_keep_sub_second_precision() {
         let run = sample_run(RunTarget::Roadmap("auth".to_string()));
-        let yaml = serde_yaml::to_string(&run).unwrap();
+        let yaml = crate::frontmatter::to_string(&run).unwrap();
         let back: Run = crate::frontmatter::from_str(&yaml).unwrap();
         assert_eq!(back.started.timestamp_subsec_millis(), 345);
     }

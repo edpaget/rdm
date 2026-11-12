@@ -1260,8 +1260,9 @@ mod tests {
     //
     // Each constant is a whole file as `serde_yaml` wrote it: the text was
     // generated once, while that writer was the one in use, and is kept as
-    // written. `\u{2028}` stands for the raw character, which that writer
-    // put in the file unescaped.
+    // written. It is never generated again; the writer in use now lays the
+    // same documents out differently. `\u{2028}` stands for the raw
+    // character, which that writer put in the file unescaped.
 
     const PREVIOUS_PROJECT: &str = "\
 ---
@@ -1798,13 +1799,24 @@ units: []
         }
     }
 
+    /// Whether a file the previous writer wrote holds a string in single
+    /// quotes, which the writer in use now puts in double quotes.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Quotes {
+        Single,
+        DoubleOnly,
+    }
+
     /// Stores `file`, a file the previous writer wrote, at `path` and
     /// asserts that it is read to `expected`, that writing what was read
     /// and reading it again gives the same document, and that writing that
     /// a second time leaves the stored bytes as the first write left them.
+    /// A file that holds single quotes is not written back as it was: the
+    /// first write reformats it, and only the first.
     fn assert_previous_file_keeps_its_document<T>(
         path: &RelPath,
         file: &str,
+        quotes: Quotes,
         expected: &Document<T>,
         load: impl Fn(&MemoryStore) -> Result<Document<T>>,
         write: impl Fn(&mut MemoryStore, &Document<T>) -> Result<()>,
@@ -1821,6 +1833,9 @@ units: []
         let first = store.read(path).unwrap();
         let reloaded = load(&store).unwrap();
         assert_eq!(&reloaded, expected, "{path}: once rewritten\n{first}");
+        if quotes == Quotes::Single {
+            assert_ne!(first, file, "{path}: rewritten as it was");
+        }
 
         write(&mut store, &reloaded).unwrap();
         let second = store.read(path).unwrap();
@@ -1835,6 +1850,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &project,
             PREVIOUS_PROJECT,
+            Quotes::Single,
             &previous_project(),
             |store| Document::parse(&store.read(&project)?),
             |store, doc| store.write(&project, doc.render()?),
@@ -1842,6 +1858,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::roadmap_path("rdm", "alpha"),
             PREVIOUS_ROADMAP,
+            Quotes::Single,
             &previous_roadmap(),
             |store| load_roadmap(store, "rdm", "alpha"),
             |store, doc| write_roadmap(store, "rdm", "alpha", doc),
@@ -1849,6 +1866,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::phase_path("rdm", "alpha", "phase-3-three"),
             PREVIOUS_PHASE,
+            Quotes::Single,
             &previous_phase(),
             |store| load_phase(store, "rdm", "alpha", "phase-3-three"),
             |store, doc| write_phase(store, "rdm", "alpha", "phase-3-three", doc),
@@ -1856,6 +1874,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::task_path("rdm", "split-the-parser"),
             PREVIOUS_TASK,
+            Quotes::Single,
             &previous_task(),
             |store| load_task(store, "rdm", "split-the-parser"),
             |store, doc| write_task(store, "rdm", "split-the-parser", doc),
@@ -1863,6 +1882,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::plan_path("rdm", "impl-parser"),
             PREVIOUS_PLAN,
+            Quotes::DoubleOnly,
             &previous_plan(),
             |store| load_plan(store, "rdm", "impl-parser"),
             |store, doc| write_plan(store, "rdm", "impl-parser", doc),
@@ -1870,6 +1890,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::review_path("rdm", "2026-11-11-2018-af41"),
             PREVIOUS_REVIEW,
+            Quotes::Single,
             &previous_review(),
             |store| load_review(store, "rdm", "2026-11-11-2018-af41"),
             |store, doc| write_review(store, "rdm", "2026-11-11-2018-af41", doc),
@@ -1877,6 +1898,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::review_path("rdm", "2026-07-01-0900-c3d4"),
             PREVIOUS_REVIEW_WITHOUT_COMMENTS,
+            Quotes::Single,
             &previous_review_without_comments(),
             |store| load_review(store, "rdm", "2026-07-01-0900-c3d4"),
             |store, doc| write_review(store, "rdm", "2026-07-01-0900-c3d4", doc),
@@ -1884,6 +1906,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::run_path("rdm", "2026-09-24-1530-a1b2"),
             PREVIOUS_RUN,
+            Quotes::Single,
             &previous_run(),
             |store| load_run(store, "rdm", "2026-09-24-1530-a1b2"),
             |store, doc| write_run(store, "rdm", "2026-09-24-1530-a1b2", doc),
@@ -1891,6 +1914,7 @@ units: []
         assert_previous_file_keeps_its_document(
             &crate::paths::run_path("rdm", "2026-09-24-1530-ffff"),
             PREVIOUS_RUN_WITHOUT_UNITS,
+            Quotes::Single,
             &previous_run_without_units(),
             |store| load_run(store, "rdm", "2026-09-24-1530-ffff"),
             |store, doc| write_run(store, "rdm", "2026-09-24-1530-ffff", doc),
