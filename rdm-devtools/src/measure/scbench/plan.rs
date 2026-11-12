@@ -75,6 +75,9 @@ pub struct Checkout {
     pub sha: String,
     /// Run only when `dir` does not exist yet.
     pub clone: CommandSpec,
+    /// Run only when `dir` already exists: points the cached checkout's
+    /// `origin` at the manifest's `repo`, so a changed `repo` is fetched from.
+    pub set_url: CommandSpec,
     /// Always run.
     pub fetch: CommandSpec,
     /// Always run; detaches at the pin.
@@ -152,6 +155,7 @@ fn checkout(repo: &str, sha: &str, dir: PathBuf) -> Checkout {
     let d = s(&dir);
     Checkout {
         clone: CommandSpec::new("git", &["clone", "--no-checkout", repo, &d]),
+        set_url: CommandSpec::new("git", &["-C", &d, "remote", "set-url", "origin", repo]),
         fetch: CommandSpec::new("git", &["-C", &d, "fetch", "--quiet", "origin"]),
         checkout: CommandSpec::new("git", &["-C", &d, "checkout", "--quiet", "--detach", sha]),
         sha: sha.to_owned(),
@@ -329,6 +333,18 @@ prompt = "configs/prompts/a2.jinja"
         assert_eq!(
             p.problems.clone.argv(),
             ["git", "clone", "--no-checkout", "R2", "/c/scb-problems"]
+        );
+        assert_eq!(
+            p.problems.set_url.argv(),
+            [
+                "git",
+                "-C",
+                "/c/scb-problems",
+                "remote",
+                "set-url",
+                "origin",
+                "R2"
+            ]
         );
         assert_eq!(
             p.rdm_sha.argv(),

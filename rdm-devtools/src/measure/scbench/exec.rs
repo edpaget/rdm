@@ -203,7 +203,7 @@ impl Executor {
 
     fn provision(&mut self, name: &str, c: &super::plan::Checkout) -> Result<(), String> {
         let steps: Vec<&CommandSpec> = if c.dir.exists() {
-            vec![&c.fetch, &c.checkout]
+            vec![&c.set_url, &c.fetch, &c.checkout]
         } else {
             vec![&c.clone, &c.fetch, &c.checkout]
         };

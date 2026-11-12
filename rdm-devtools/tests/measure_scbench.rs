@@ -668,6 +668,56 @@ fn second_run_reuses_cached_checkouts() {
         .map(|c| strs(&c["argv"]).join(" "))
         .collect();
     assert!(!argvs.iter().any(|a| a.contains(" clone ")), "{argvs:?}");
+    for (dir, repo) in [
+        (b.scbench_dir(), b.root.join("src/slop-code-bench")),
+        (b.problems_dir(), b.root.join("src/scb-problems")),
+    ] {
+        let set_url = format!("git -C {} remote set-url origin {}", p(&dir), p(&repo));
+        let fetch = format!("git -C {} fetch --quiet origin", p(&dir));
+        let at = argvs.iter().position(|a| *a == set_url);
+        assert!(at.is_some(), "{argvs:?}");
+        assert_eq!(argvs.get(at.map_or(0, |i| i + 1)), Some(&fetch));
+    }
     assert_eq!(argvs.iter().filter(|a| a.contains(" fetch ")).count(), 2);
     assert_eq!(argvs.iter().filter(|a| a.contains(" checkout ")).count(), 2);
+}
+
+#[test]
+fn cached_checkout_follows_a_changed_repo() {
+    let b = Bench::new(&Spec::default());
+    ok(&b.run(&[]));
+    // A fork of SCBench whose pinned commit exists only on the fork.
+    let home = b.home();
+    let upstream = b.root.join("src/slop-code-bench");
+    let fork = b.root.join("src/slop-code-bench-fork");
+    git(&home, &b.root, &["clone", "-q", &p(&upstream), &p(&fork)]);
+    write(&fork.join("FORK"), "fork only\n");
+    git(&home, &fork, &["add", "-A"]);
+    git(&home, &fork, &["commit", "-q", "-m", "fork only"]);
+    let fork_sha = git(&home, &fork, &["rev-parse", "HEAD"]);
+    let text = std::fs::read_to_string(&b.manifest).expect("manifest");
+    let text = text
+        .replacen(
+            &format!("repo = \"{}\"", p(&upstream)),
+            &format!("repo = \"{}\"", p(&fork)),
+            1,
+        )
+        .replacen(&b.scbench_sha, &fork_sha, 1);
+    write(&b.manifest, &text);
+
+    let second = b.root.join("out2");
+    let o = b.run_into(&second, &[]);
+    assert!(o.status.success(), "stderr: {}", stderr(&o));
+    assert_eq!(
+        git(&home, &b.scbench_dir(), &["rev-parse", "HEAD"]),
+        fork_sha
+    );
+    assert_eq!(
+        git(&home, &b.scbench_dir(), &["remote", "get-url", "origin"]),
+        p(&fork)
+    );
+    assert_eq!(
+        b.record_at(&second)["manifest"]["scbench"]["repo"],
+        p(&fork)
+    );
 }
