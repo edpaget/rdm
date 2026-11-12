@@ -26,21 +26,65 @@ step_limit = 100
 cost_limit = 0
 net_cost_limit = 0
 
+# The arms are the ablation ladder (ladder.md), run in ladder order: the
+# upstream controls first, then the rdm rungs. `group` tags each arm as an rdm
+# treatment or a control; the report compares by it.
+
 [[arm]]
 name = "just-solve"
+group = "control"
 prompt = "configs/prompts/just-solve.jinja"   # relative to the SCBench checkout
 
 [[arm]]
 name = "anti_slop"
+group = "control"
 prompt = "configs/prompts/anti_slop.jinja"
+
+[[arm]]
+name = "plan_first"
+group = "control"
+prompt = "configs/prompts/plan_first.jinja"
+
+[[arm]]
+name = "plan-and-test"
+group = "control"
+prompt = "configs/prompts/plan-and-test.jinja"
+
+# Every rdm rung's limits override [agent]'s for that arm only: the rdm
+# commands (and planned's whole plan-only pass) run in the main session, so it
+# needs far more than 100 turns; cost never truncates it (0 is unlimited), and
+# 1000 is a finite backstop against a runaway loop.
+
+# tracked (ladder.md): one phase per checkpoint, implemented directly on main
+# and marked done; no plan, review or land stage.
+[[arm]]
+name = "tracked"
+group = "rdm"
+prompt = "prompts/tracked.jinja"   # relative to this manifest
+prompt_from = "manifest"
+image = "rdm"
+step_limit = 1000
+cost_limit = 0
+net_cost_limit = 0
+
+# planned (ladder.md): rdm:dispatch-phase --plan-only plans and plan-reviews
+# each phase; the agent implements the approved plan directly on main.
+[[arm]]
+name = "planned"
+group = "rdm"
+prompt = "prompts/planned.jinja"
+prompt_from = "manifest"
+image = "rdm"
+step_limit = 1000
+cost_limit = 0
+net_cost_limit = 0
 
 # The full rdm lane (README.md § "Full-lane arm"): one roadmap per problem,
 # one phase per checkpoint, driven by rdm:dispatch-phase and landed by
-# rdm:land. Its limits override [agent]'s for this arm only: the lane's main
-# session needs far more than 100 turns, cost never truncates it (0 is
-# unlimited), and 1000 is a finite backstop against a runaway loop.
+# rdm:land.
 [[arm]]
 name = "full-lane"
+group = "rdm"
 prompt = "prompts/full-lane.jinja"   # relative to this manifest
 prompt_from = "manifest"
 image = "rdm"

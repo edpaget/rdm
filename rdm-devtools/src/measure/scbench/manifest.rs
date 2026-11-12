@@ -92,6 +92,10 @@ pub struct Arm {
     /// The agent image the arm runs in (default [`ArmImage::Stock`]).
     #[serde(default)]
     pub image: ArmImage,
+    /// The treatment group the arm belongs to; when absent it follows
+    /// [`Arm::image`] (see [`Arm::group`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<ArmGroup>,
     /// Overrides `[agent] step_limit` for this arm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_limit: Option<u64>,
@@ -147,6 +151,28 @@ impl Arm {
             net_cost_limit: self.net_cost_limit.unwrap_or(agent.net_cost_limit),
         }
     }
+
+    /// This arm's treatment group: the explicit [`Arm::group`], else
+    /// [`ArmGroup::Rdm`] for the rdm image and [`ArmGroup::Control`] for the
+    /// stock one.
+    pub fn group(&self) -> ArmGroup {
+        self.group.unwrap_or(match self.image {
+            ArmImage::Rdm => ArmGroup::Rdm,
+            ArmImage::Stock => ArmGroup::Control,
+        })
+    }
+}
+
+/// The treatment group an arm belongs to, which the ablation comparison keys
+/// on. It is distinct from [`ArmImage`]: an rdm-image arm whose prompt never
+/// uses rdm is a control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArmGroup {
+    /// An rdm treatment: the arm drives its work through rdm.
+    Rdm,
+    /// A control: the arm does not use rdm.
+    Control,
 }
 
 /// Which agent image an arm runs in.
@@ -293,6 +319,12 @@ impl Manifest {
             if arm.image == ArmImage::Rdm && self.rdm.is_none() {
                 return Err(format!(
                     "rdm: arm \"{}\" selects image \"rdm\" but the manifest has no [rdm] table",
+                    arm.name
+                ));
+            }
+            if arm.group == Some(ArmGroup::Rdm) && arm.image != ArmImage::Rdm {
+                return Err(format!(
+                    "arm.group of arm \"{}\" is \"rdm\" but the arm runs in the stock image, which has no rdm",
                     arm.name
                 ));
             }
@@ -570,6 +602,49 @@ prompt = "configs/prompts/anti_slop.jinja"
                 cost_limit: 12.5,
                 net_cost_limit: 25.0,
             }
+        );
+    }
+
+    #[test]
+    fn arm_without_group_derives_it_from_image() {
+        let m = parse(&with_rdm_arm(&format!("{RDM}{}", text()))).expect("valid");
+        assert!(m.arms.iter().all(|a| a.group.is_none()));
+        assert_eq!(m.arms[0].group(), ArmGroup::Control);
+        assert_eq!(m.arms[1].group(), ArmGroup::Control);
+        assert_eq!(m.arms[2].group(), ArmGroup::Rdm);
+    }
+
+    #[test]
+    fn explicit_control_group_on_rdm_image_is_kept() {
+        let t = format!(
+            "{}group = \"control\"\n",
+            with_rdm_arm(&format!("{RDM}{}", text()))
+        );
+        let m = parse(&t).expect("valid");
+        assert_eq!(m.arms[2].image, ArmImage::Rdm);
+        assert_eq!(m.arms[2].group, Some(ArmGroup::Control));
+        assert_eq!(m.arms[2].group(), ArmGroup::Control);
+    }
+
+    #[test]
+    fn rdm_group_on_stock_image_fails() {
+        fails_naming(
+            &text().replace(
+                "name = \"anti_slop\"",
+                "name = \"anti_slop\"\ngroup = \"rdm\"",
+            ),
+            "arm.group",
+        );
+    }
+
+    #[test]
+    fn unknown_group_fails() {
+        fails_naming(
+            &text().replace(
+                "name = \"anti_slop\"",
+                "name = \"anti_slop\"\ngroup = \"bogus\"",
+            ),
+            "group",
         );
     }
 

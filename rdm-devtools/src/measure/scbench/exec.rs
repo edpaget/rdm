@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use super::environment;
 use super::lane::{self, LaneRecord};
-use super::manifest::{ArmImage, Manifest};
+use super::manifest::{ArmGroup, ArmImage, Manifest};
 use super::plan::{self, CommandSpec, Paths, RunPlan, Tools};
 
 /// The run record written to `<out>/rdm-scbench-run.json`.
@@ -70,6 +70,8 @@ pub struct ArmRecord {
     pub name: String,
     /// The agent image the arm runs in.
     pub image: ArmImage,
+    /// The arm's treatment group, which the ablation comparison keys on.
+    pub group: ArmGroup,
     /// SCBench's graded directory (the environment's `docker.workdir`), read
     /// for an rdm arm; `null` for a stock arm.
     pub graded_dir: Option<String>,
@@ -337,6 +339,7 @@ pub fn execute(
         .map(|a| ArmRecord {
             name: a.name.clone(),
             image: a.image,
+            group: a.group,
             graded_dir: None,
             agent_config: a.agent_config.clone(),
             run_config: a.run_config.clone(),

@@ -2,9 +2,11 @@
 
 `rdm-measure scbench run` drives [SlopCodeBench](https://github.com/SprocketLab/slop-code-bench)
 (SCBench) from the pinned manifest in this directory. Each manifest arm gets
-one `slop-code run` and one `slop-code eval`. Two arms are upstream's own
-control prompts, `just-solve` and `anti_slop`. The `full-lane` arm (see
-"Full-lane arm") runs the full rdm lane and is measured against them.
+one `slop-code run` and one `slop-code eval`. The arms are the ablation
+ladder described in [`ladder.md`](ladder.md). Four arms are upstream's own
+control prompts: `just-solve`, `anti_slop`, `plan_first` and `plan-and-test`.
+The `tracked` and `planned` arms add rdm tracking, then rdm's planning lane.
+The `full-lane` arm (see "Full-lane arm") runs the full rdm lane.
 
 > **COST WARNING.** `scbench run` without `--dry-run` runs paid Claude Code
 > agents in Docker. Each arm runs every problem in the subset, and every
@@ -122,7 +124,7 @@ inside SCBench's `output/` trees. It holds:
 - the rdm SHA
 - the observed `uv`, Docker and `claude` versions
 - the model file's source, installed path and SHA-256
-- each arm's generated configs and run directory
+- each arm's `group`, generated configs and run directory
 - for an rdm arm, each checkpoint's copied plan repo and lane
   classification (`lane`, see "Full-lane arm")
 - every command spawned, with its working directory, `SCBENCH_*`
@@ -138,9 +140,13 @@ An arm runs in the rdm-equipped agent image when it sets `image = "rdm"`:
 ```toml
 [[arm]]
 name = "just-solve-rdm"
+group = "control"
 prompt = "configs/prompts/just-solve.jinja"
 image = "rdm"
 ```
+
+This arm is a control even though it runs in the rdm image, because its
+prompt never uses rdm; without `group` it would default to `rdm`.
 
 Arms without `image` run in SCBench's stock `claude_code` image. An rdm arm
 needs the manifest's `[rdm]` table, which names the plan repo's path in the
@@ -213,6 +219,17 @@ planned commands. The first real `image build` and `image check` are what
 confirm the Dockerfile builds, the payload copies in, and `claude` lists the
 plugin inside the container.
 
+## Ablation ladder
+
+Each arm carries a `group`, `rdm` or `control`, which says whether it is an
+rdm treatment. The report compares runs by `group`. An arm without `group`
+takes it from `image`: `rdm` for the rdm image, `control` for the stock one.
+`group = "rdm"` on a stock-image arm is refused. The committed manifest sets
+`group` on every arm. The dry-run plan and the run record carry each arm's
+resolved `group`. [`ladder.md`](ladder.md) lists every rung, the shipped
+entrypoints it uses, what each comparison attributes, and the rungs that were
+dropped and why.
+
 ## Full-lane arm
 
 The `full-lane` arm is the full rdm development lane:
@@ -220,6 +237,7 @@ The `full-lane` arm is the full rdm development lane:
 ```toml
 [[arm]]
 name = "full-lane"
+group = "rdm"
 prompt = "prompts/full-lane.jinja"   # relative to this manifest
 prompt_from = "manifest"
 image = "rdm"

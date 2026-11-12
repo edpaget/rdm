@@ -411,29 +411,187 @@ fn p(path: &Path) -> String {
     path.display().to_string()
 }
 
-#[test]
-fn committed_manifest_plans_every_arm() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let cache = tmp.path().join("cache");
-    let out = tmp.path().join("out");
+/// The committed manifest's `--dry-run` plan, built against `cache` and `out`.
+fn committed_plan(cache: &Path, out: &Path) -> Value {
     let o = measure_support::run(&[
         "scbench",
         "run",
         "--dry-run",
         "--cache-dir",
-        &p(&cache),
+        &p(cache),
         "--out",
-        &p(&out),
+        &p(out),
     ]);
-    let plan = json(&ok(&o));
-    let names: Vec<_> = plan["plan"]["arms"]
-        .as_array()
-        .expect("arms")
+    json(&ok(&o))
+}
+
+/// Where an arm's prompt template comes from in the committed ladder.
+enum Template {
+    /// Upstream's `configs/prompts/<file>` in the SCBench checkout.
+    Upstream(&'static str),
+    /// rdm's own template, rendered to `<out>/<arm>/prompt.jinja`.
+    Rdm,
+}
+
+/// One committed ladder rung: name, group, image, template and limits
+/// (`step_limit`, `cost_limit`, `net_cost_limit`).
+struct Rung {
+    name: &'static str,
+    group: &'static str,
+    image: &'static str,
+    template: Template,
+    limits: (u64, f64, f64),
+}
+
+const CONTROL_LIMITS: (u64, f64, f64) = (100, 0.0, 0.0);
+const RDM_LIMITS: (u64, f64, f64) = (1000, 0.0, 0.0);
+
+const LADDER: &[Rung] = &[
+    Rung {
+        name: "just-solve",
+        group: "control",
+        image: "stock",
+        template: Template::Upstream("just-solve.jinja"),
+        limits: CONTROL_LIMITS,
+    },
+    Rung {
+        name: "anti_slop",
+        group: "control",
+        image: "stock",
+        template: Template::Upstream("anti_slop.jinja"),
+        limits: CONTROL_LIMITS,
+    },
+    Rung {
+        name: "plan_first",
+        group: "control",
+        image: "stock",
+        template: Template::Upstream("plan_first.jinja"),
+        limits: CONTROL_LIMITS,
+    },
+    Rung {
+        name: "plan-and-test",
+        group: "control",
+        image: "stock",
+        template: Template::Upstream("plan-and-test.jinja"),
+        limits: CONTROL_LIMITS,
+    },
+    Rung {
+        name: "tracked",
+        group: "rdm",
+        image: "rdm",
+        template: Template::Rdm,
+        limits: RDM_LIMITS,
+    },
+    Rung {
+        name: "planned",
+        group: "rdm",
+        image: "rdm",
+        template: Template::Rdm,
+        limits: RDM_LIMITS,
+    },
+    Rung {
+        name: "full-lane",
+        group: "rdm",
+        image: "rdm",
+        template: Template::Rdm,
+        limits: RDM_LIMITS,
+    },
+];
+
+#[test]
+fn committed_ladder_arms_construct_their_invocations() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cache = tmp.path().join("cache");
+    let out = tmp.path().join("out");
+    let plan = committed_plan(&cache, &out);
+    let arms = plan["plan"]["arms"].as_array().expect("arms");
+    let names: Vec<_> = arms
         .iter()
-        .map(|a| a["name"].as_str().expect("name").to_owned())
+        .map(|a| a["name"].as_str().expect("name"))
         .collect();
-    assert_eq!(names, ["just-solve", "anti_slop", "full-lane"]);
+    let want: Vec<_> = LADDER.iter().map(|r| r.name).collect();
+    assert_eq!(names, want);
+
+    for (arm, rung) in arms.iter().zip(LADDER) {
+        let ctx = rung.name;
+        assert_eq!(arm["group"], rung.group, "{ctx}");
+        assert_eq!(arm["image"], rung.image, "{ctx}");
+        let run_yaml = out.join(rung.name).join("run.yaml");
+        assert_eq!(
+            strs(&arm["run"]["args"]),
+            [
+                "run",
+                "slop-code",
+                "run",
+                "--config",
+                &p(&run_yaml),
+                "--no-evaluate",
+                "--no-live-progress",
+            ],
+            "{ctx}"
+        );
+        match rung.template {
+            Template::Upstream(file) => {
+                assert_eq!(
+                    arm["run_config"]["prompt"],
+                    p(&cache.join("slop-code-bench/configs/prompts").join(file)),
+                    "{ctx}"
+                );
+                assert_eq!(arm["prompt"], Value::Null, "{ctx}");
+            }
+            Template::Rdm => {
+                assert_eq!(
+                    arm["run_config"]["prompt"],
+                    p(&out.join(rung.name).join("prompt.jinja")),
+                    "{ctx}"
+                );
+                let prompt = arm["prompt"].as_str().expect("rendered prompt");
+                assert!(!prompt.trim().is_empty(), "{ctx}");
+                assert!(!prompt.contains("@RDM_"), "{ctx}: {prompt}");
+            }
+        }
+        let agent = &arm["agent_config"];
+        if rung.image == "rdm" {
+            assert_eq!(agent["binary"], "/opt/rdm/bin/claude-rdm", "{ctx}");
+            assert_eq!(
+                agent["extra_args"],
+                json!(["--plugin-dir", "/opt/rdm/plugin"]),
+                "{ctx}"
+            );
+            assert!(arm["plan_repos_dir"].is_string(), "{ctx}");
+        } else {
+            assert_eq!(agent["binary"], "claude", "{ctx}");
+            assert_eq!(arm["plan_repos_dir"], Value::Null, "{ctx}");
+        }
+        let (step_limit, cost_limit, net_cost_limit) = rung.limits;
+        assert_eq!(
+            agent["cost_limits"],
+            json!({
+                "step_limit": step_limit,
+                "cost_limit": cost_limit,
+                "net_cost_limit": net_cost_limit,
+            }),
+            "{ctx}"
+        );
+    }
     assert!(!cache.exists() && !out.exists());
+}
+
+#[test]
+fn run_record_carries_each_arms_group() {
+    let b = Bench::new(&Spec {
+        rdm_arm: true,
+        ..Spec::default()
+    });
+    ok(&b.run(&[]));
+    let record = b.record();
+    for (name, group) in [
+        ("just-solve", "control"),
+        ("anti_slop", "control"),
+        ("just-solve-rdm", "rdm"),
+    ] {
+        assert_eq!(arm_record(&record, name)["group"], group, "{name}");
+    }
 }
 
 #[test]
@@ -1074,25 +1232,18 @@ fn image_check_reports_every_failure() {
 // --- The full rdm lane arm -------------------------------------------------
 
 /// The full-lane arm of a dry-run plan of the committed manifest.
-fn committed_full_lane_prompt() -> String {
+/// The committed arm `name`'s prompt as the dry-run plan renders it
+/// (placeholders filled, Jinja left for SCBench).
+fn committed_arm_prompt(name: &str) -> String {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let o = measure_support::run(&[
-        "scbench",
-        "run",
-        "--dry-run",
-        "--cache-dir",
-        &p(&tmp.path().join("cache")),
-        "--out",
-        &p(&tmp.path().join("out")),
-    ]);
-    let plan = json(&ok(&o));
+    let plan = committed_plan(&tmp.path().join("cache"), &tmp.path().join("out"));
     let arm = plan["plan"]["arms"]
         .as_array()
         .expect("arms")
         .iter()
-        .find(|a| a["name"] == "full-lane")
+        .find(|a| a["name"] == name)
         .cloned()
-        .expect("a full-lane arm");
+        .unwrap_or_else(|| panic!("no committed arm {name}"));
     assert_eq!(arm["image"], "rdm");
     arm["prompt"].as_str().expect("rendered prompt").to_owned()
 }
@@ -1114,14 +1265,17 @@ fn jinja(template: &str, is_continuation: bool) -> String {
         .expect("template renders")
 }
 
-#[test]
-fn full_lane_prompt_renders_first_checkpoint_and_continuation() {
-    let template = committed_full_lane_prompt();
-    let first = jinja(&template, false);
-    let cont = jinja(&template, true);
-    let has = |text: &str, want: &str| assert!(text.contains(want), "missing {want:?} in:\n{text}");
-    let lacks = |text: &str, not: &str| assert!(!text.contains(not), "has {not:?} in:\n{text}");
+fn has(text: &str, want: &str) {
+    assert!(text.contains(want), "missing {want:?} in:\n{text}");
+}
 
+fn lacks(text: &str, not: &str) {
+    assert!(!text.contains(not), "has {not:?} in:\n{text}");
+}
+
+/// The first-checkpoint and continuation setup every rdm rung shares: one
+/// roadmap, created once, and one new phase per checkpoint.
+fn assert_checkpoint_setup(first: &str, cont: &str) {
     for want in [
         "git init -b main",
         "rdm config set dispatch.verify",
@@ -1129,17 +1283,25 @@ fn full_lane_prompt_renders_first_checkpoint_and_continuation() {
         "rdm phase create checkpoint-1 ",
         "--number 1 ",
     ] {
-        has(&first, want);
+        has(first, want);
     }
-    lacks(&first, "rdm phase list");
+    lacks(first, "rdm phase list");
 
     has(
-        &cont,
+        cont,
         "rdm phase list --roadmap solution --project bench --format json",
     );
-    has(&cont, "rdm phase create checkpoint-N ");
-    lacks(&cont, "rdm roadmap create");
-    lacks(&cont, "git init");
+    has(cont, "rdm phase create checkpoint-N ");
+    lacks(cont, "rdm roadmap create");
+    lacks(cont, "git init");
+}
+
+#[test]
+fn full_lane_prompt_renders_first_checkpoint_and_continuation() {
+    let template = committed_arm_prompt("full-lane");
+    let first = jinja(&template, false);
+    let cont = jinja(&template, true);
+    assert_checkpoint_setup(&first, &cont);
 
     for text in [&first, &cont] {
         has(
@@ -1149,6 +1311,40 @@ fn full_lane_prompt_renders_first_checkpoint_and_continuation() {
         has(text, "`rdm:land` with arguments `solution/");
         has(text, "SPEC-SENTINEL");
         lacks(text, "@RDM_");
+    }
+}
+
+#[test]
+fn ladder_rung_prompts_render_first_checkpoint_and_continuation() {
+    for rung in ["tracked", "planned"] {
+        let template = committed_arm_prompt(rung);
+        let first = jinja(&template, false);
+        let cont = jinja(&template, true);
+        assert_checkpoint_setup(&first, &cont);
+        for text in [&first, &cont] {
+            has(text, "rdm phase update N --status done");
+            has(text, "--roadmap solution --project bench");
+            has(text, "SPEC-SENTINEL");
+            lacks(text, "@RDM_");
+            lacks(text, "rdm:land");
+            if rung == "tracked" {
+                lacks(text, "rdm:dispatch-phase");
+                lacks(text, "rdm plan");
+            } else {
+                has(
+                    text,
+                    "`rdm:dispatch-phase` with arguments `solution N --plan-only --project bench`",
+                );
+                has(
+                    text,
+                    "rdm plan list --implements phase/solution/N --status approved --project bench",
+                );
+                has(
+                    text,
+                    "rdm worktree remove solution --delete-branch --project bench",
+                );
+            }
+        }
     }
 }
 

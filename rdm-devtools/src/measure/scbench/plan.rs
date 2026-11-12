@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::lane;
-use super::manifest::{Agent, ArmImage, Limits, Manifest};
+use super::manifest::{Agent, ArmGroup, ArmImage, Limits, Manifest};
 use super::rdm_image;
 
 /// The directories a plan is built against (all absolute).
@@ -113,6 +113,8 @@ pub struct ArmPlan {
     pub name: String,
     /// The agent image the arm runs in.
     pub image: ArmImage,
+    /// The arm's treatment group ([`super::manifest::Arm::group`]).
+    pub group: ArmGroup,
     /// `<out>/<arm>/agent.yaml`.
     pub agent_config_path: PathBuf,
     /// The agent config written there.
@@ -302,6 +304,7 @@ pub fn build_plan(
             ArmPlan {
                 name: arm.name.clone(),
                 image: arm.image,
+                group: arm.group(),
                 docker_template_path,
                 docker_template,
                 prompt_path,
