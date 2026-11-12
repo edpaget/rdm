@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use super::baseline::{self, BaselineComparison};
 use super::exec::write_file;
+use super::lane::{Outcome, Reason};
+use super::manifest::{self, ArmGroup, ArmImage};
 use super::outputs::{self, EROSION, PassPolicy, ProblemOutput};
 use super::plan::RECORD_FILE;
 use super::stats;
@@ -180,9 +182,9 @@ pub struct ArmReport {
     /// The arm name.
     pub name: String,
     /// `rdm` or `control`.
-    pub group: String,
+    pub group: ArmGroup,
     /// The agent image (`stock` or `rdm`), when recorded.
-    pub image: Option<String>,
+    pub image: Option<ArmImage>,
     /// The seeds included, in order.
     pub seeds: Vec<Option<u64>>,
     /// Every summary metric ([`Report::metrics`]); `null` when no seed has a
@@ -296,8 +298,8 @@ pub(super) struct ObservedView {
 #[serde(default)]
 struct ArmView {
     name: String,
-    group: Option<String>,
-    image: Option<String>,
+    group: Option<ArmGroup>,
+    image: Option<ArmImage>,
     seed: Option<u64>,
     run_dir: PathBuf,
     lane: Option<LaneView>,
@@ -316,11 +318,11 @@ struct LaneProblemView {
     checkpoints: Vec<LaneCheckpointView>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Deserialize)]
 struct LaneCheckpointView {
-    outcome: String,
-    reason: Option<String>,
+    outcome: Outcome,
+    #[serde(default)]
+    reason: Option<Reason>,
 }
 
 impl LaneView {
@@ -328,7 +330,7 @@ impl LaneView {
         self.problems
             .iter()
             .flat_map(|p| &p.checkpoints)
-            .filter(|c| c.outcome == "lane-failure")
+            .filter(|c| c.outcome == Outcome::LaneFailure)
     }
 }
 
@@ -383,8 +385,8 @@ struct Unit {
 
 struct ArmUnits {
     name: String,
-    group: String,
-    image: Option<String>,
+    group: ArmGroup,
+    image: Option<ArmImage>,
     units: Vec<Unit>,
 }
 
@@ -633,17 +635,12 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
             .iter()
             .position(|x| x.name == a.name)
             .unwrap_or_else(|| {
-                let group = a.group.clone().unwrap_or_else(|| {
-                    if a.image.as_deref() == Some("rdm") {
-                        "rdm".to_owned()
-                    } else {
-                        "control".to_owned()
-                    }
-                });
+                // A phase 1-4 record has no `group`; one with no `image`
+                // ran the stock image.
                 arms.push(ArmUnits {
                     name: a.name.clone(),
-                    group,
-                    image: a.image.clone(),
+                    group: manifest::group_for(a.group, a.image.unwrap_or_default()),
+                    image: a.image,
                     units: Vec::new(),
                 });
                 arms.len() - 1
@@ -688,15 +685,15 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
         let lane_failure_reasons = (!lanes.is_empty()).then(|| {
             let mut reasons = BTreeMap::new();
             for c in lanes.iter().flat_map(|l| l.failures()) {
-                let reason = c.reason.clone().unwrap_or_else(|| "unknown".to_owned());
-                *reasons.entry(reason).or_insert(0) += 1;
+                let reason = c.reason.map_or("unknown", Reason::as_str);
+                *reasons.entry(reason.to_owned()).or_insert(0) += 1;
             }
             reasons
         });
         reports.push(ArmReport {
             name: arm.name.clone(),
-            group: arm.group.clone(),
-            image: arm.image.clone(),
+            group: arm.group,
+            image: arm.image,
             seeds: arm.units.iter().map(|u| u.seed).collect(),
             summary,
             lane_failure_reasons,
@@ -705,8 +702,8 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
     }
 
     let mut comparisons = Vec::new();
-    for r in reports.iter().filter(|a| a.group == "rdm") {
-        for c in reports.iter().filter(|a| a.group == "control") {
+    for r in reports.iter().filter(|a| a.group == ArmGroup::Rdm) {
+        for c in reports.iter().filter(|a| a.group == ArmGroup::Control) {
             let metrics = infos
                 .iter()
                 .map(|info| {
@@ -835,7 +832,11 @@ pub fn render_markdown(report: &Report) -> String {
         .arms
         .iter()
         .map(|a| {
-            let mut row = vec![a.name.clone(), a.group.clone(), a.seeds.len().to_string()];
+            let mut row = vec![
+                a.name.clone(),
+                a.group.as_str().to_owned(),
+                a.seeds.len().to_string(),
+            ];
             for key in [
                 PASS_RATE,
                 "cost_usd",

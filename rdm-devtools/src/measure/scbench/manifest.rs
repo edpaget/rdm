@@ -161,11 +161,18 @@ impl Arm {
     /// [`ArmGroup::Rdm`] for the rdm image and [`ArmGroup::Control`] for the
     /// stock one.
     pub fn group(&self) -> ArmGroup {
-        self.group.unwrap_or(match self.image {
-            ArmImage::Rdm => ArmGroup::Rdm,
-            ArmImage::Stock => ArmGroup::Control,
-        })
+        group_for(self.group, self.image)
     }
+}
+
+/// The treatment group of an arm with the explicit `group` (if any) that
+/// runs in `image`: `group`, else [`ArmGroup::Rdm`] for the rdm image and
+/// [`ArmGroup::Control`] for the stock one.
+pub fn group_for(group: Option<ArmGroup>, image: ArmImage) -> ArmGroup {
+    group.unwrap_or(match image {
+        ArmImage::Rdm => ArmGroup::Rdm,
+        ArmImage::Stock => ArmGroup::Control,
+    })
 }
 
 /// The treatment group an arm belongs to, which the ablation comparison keys
@@ -178,6 +185,16 @@ pub enum ArmGroup {
     Rdm,
     /// A control: the arm does not use rdm.
     Control,
+}
+
+impl ArmGroup {
+    /// The group's name as the manifest and every record spell it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rdm => "rdm",
+            Self::Control => "control",
+        }
+    }
 }
 
 /// Which agent image an arm runs in.
@@ -678,6 +695,27 @@ prompt = "configs/prompts/anti_slop.jinja"
         assert_eq!(m.arms[0].group(), ArmGroup::Control);
         assert_eq!(m.arms[1].group(), ArmGroup::Control);
         assert_eq!(m.arms[2].group(), ArmGroup::Rdm);
+    }
+
+    #[test]
+    fn group_for_prefers_the_explicit_group_and_names_it_as_serde_does() {
+        assert_eq!(group_for(None, ArmImage::Stock), ArmGroup::Control);
+        assert_eq!(group_for(None, ArmImage::Rdm), ArmGroup::Rdm);
+        assert_eq!(
+            group_for(Some(ArmGroup::Control), ArmImage::Rdm),
+            ArmGroup::Control
+        );
+        assert_eq!(
+            group_for(Some(ArmGroup::Rdm), ArmImage::Stock),
+            ArmGroup::Rdm
+        );
+        for g in [ArmGroup::Rdm, ArmGroup::Control] {
+            assert_eq!(
+                serde_json::to_value(g).expect("serialize"),
+                g.as_str(),
+                "{g:?}"
+            );
+        }
     }
 
     #[test]

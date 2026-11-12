@@ -562,6 +562,53 @@ fn report_pass_follows_the_pass_policy() {
     assert_eq!(js["summary"]["pass_rate"]["mean"], json!(0.25));
 }
 
+/// A checkpoint the agent never reached counts as a failure: the pass-rate
+/// denominator is the manifest's checkpoint count (mvvault 2, xjq 2), not
+/// the checkpoints on disk.
+#[test]
+fn report_pass_rate_counts_unreached_checkpoints_as_failures() {
+    let f = Fixture::new();
+    let unit = |seed: u64, checkpoints: Vec<Checkpoint>| UnitSpec {
+        arm: "just-solve",
+        group: Some("control"),
+        image: "stock",
+        seed: Some(seed),
+        finished: true,
+        checkpoints,
+        lane: None,
+    };
+    let run = f.write_run(
+        "unreached",
+        true,
+        &RecordPins::default(),
+        &[
+            // mvvault checkpoint_2 missing and no xjq directory: 1 of 4.
+            unit(
+                1,
+                vec![scbench_support::simple("mvvault", "checkpoint_1", 1)],
+            ),
+            // xjq checkpoint_2 missing: 3 of 4.
+            unit(
+                2,
+                vec![
+                    scbench_support::simple("mvvault", "checkpoint_1", 1),
+                    scbench_support::simple("mvvault", "checkpoint_2", 2),
+                    scbench_support::simple("xjq", "checkpoint_1", 1),
+                ],
+            ),
+        ],
+    );
+    assert!(!run.join("just-solve/seed-1/output/xjq").exists());
+    let r = report_json(&run, &[]);
+    assert_eq!(
+        arm(&r, "just-solve")["summary"]["pass_rate"]["samples"],
+        json!([
+            { "seed": 1, "value": 0.25 },
+            { "seed": 2, "value": 0.75 },
+        ])
+    );
+}
+
 #[test]
 fn report_is_deterministic() {
     let f = Fixture::new();

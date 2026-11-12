@@ -52,7 +52,7 @@ pub struct PhaseState {
 }
 
 /// Whether a checkpoint's phase landed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Outcome {
     /// The checkpoint's phase reached `done`.
@@ -62,7 +62,7 @@ pub enum Outcome {
 }
 
 /// Why a checkpoint is a lane failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Reason {
     /// No new phase appeared in the checkpoint's plan repo.
@@ -80,6 +80,21 @@ pub enum Reason {
     PlanRepoMissing,
     /// The checkpoint's plan repo could not be read.
     PlanRepoUnreadable,
+}
+
+impl Reason {
+    /// The reason as every lane record spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PhaseMissing => "phase-missing",
+            Self::Parked => "parked",
+            Self::Escalated => "escalated",
+            Self::Unfinished => "unfinished",
+            Self::Abandoned => "abandoned",
+            Self::PlanRepoMissing => "plan-repo-missing",
+            Self::PlanRepoUnreadable => "plan-repo-unreadable",
+        }
+    }
 }
 
 /// One checkpoint's classification.
@@ -441,6 +456,28 @@ mod tests {
         let c = classify(&[], &cur);
         assert_eq!(c.outcome, Outcome::Landed);
         assert_eq!(c.phase.as_deref(), Some("phase-3-checkpoint-3"));
+    }
+
+    #[test]
+    fn each_reason_names_itself_as_its_record_does() {
+        use Reason::*;
+        for r in [
+            PhaseMissing,
+            Parked,
+            Escalated,
+            Unfinished,
+            Abandoned,
+            PlanRepoMissing,
+            PlanRepoUnreadable,
+        ] {
+            let spelled = serde_json::to_value(r).expect("serialize");
+            assert_eq!(spelled, r.as_str(), "{r:?}");
+            assert_eq!(serde_json::from_value::<Reason>(spelled).ok(), Some(r));
+        }
+        for o in [Outcome::Landed, Outcome::LaneFailure] {
+            let spelled = serde_json::to_value(o).expect("serialize");
+            assert_eq!(serde_json::from_value::<Outcome>(spelled).ok(), Some(o));
+        }
     }
 
     #[test]
