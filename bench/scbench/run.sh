@@ -10,10 +10,20 @@
 # never written to disk, and `op run` masks it in the run's output. Override
 # the reference with SCBENCH_CLAUDE_TOKEN_REF (for example to a different
 # vault). Needs the 1Password CLI (`op`) signed in.
+#
+# SCBench talks to Docker through the Python SDK, which only reads DOCKER_HOST
+# or /var/run/docker.sock, not the docker CLI's active context. Docker Desktop
+# on macOS may create only ~/.docker/run/docker.sock, so when DOCKER_HOST is
+# unset it is taken from the active context's endpoint.
 set -eu
 
 ref="${SCBENCH_CLAUDE_TOKEN_REF:-op://rdm-dev/claude-token/credential}"
 root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+
+if [ -z "${DOCKER_HOST:-}" ]; then
+    DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
+    export DOCKER_HOST
+fi
 
 cd "$root"
 CLAUDE_CODE_OAUTH_TOKEN="$ref" exec op run -- \
