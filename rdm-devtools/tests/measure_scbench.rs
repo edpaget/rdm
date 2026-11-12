@@ -1613,3 +1613,154 @@ fn full_lane_classifies_each_checkpoint() {
     ]});
     assert_eq!(arm_record(&b.record(), "full-lane")["lane"], expected);
 }
+
+#[test]
+fn failed_extraction_stops_before_eval() {
+    let b = Bench::new(&full_lane_spec());
+    let junk = b.root.join("tars/junk.tar");
+    write(&junk, "not a tar archive\n");
+    full_lane_bench(
+        &b,
+        &[Checkpoint {
+            problem: "mvvault",
+            name: "checkpoint_1",
+            order: 1,
+            tars: vec![("000001.tar", junk)],
+        }],
+    );
+    let err = fails(&b.run(&[]));
+    let placed = b
+        .out
+        .join("full-lane/output/mvvault/checkpoint_1")
+        .join("agent/workspace/projects/-workspace/rdm-plan/000001.tar");
+    // The exit code is tar's own (bsdtar 1, GNU tar 2).
+    let want = format!("arm full-lane: extracting {} exited ", p(&placed));
+    assert!(err.contains(&want), "stderr: {err}");
+    assert!(
+        b.argvs("uv")
+            .iter()
+            .any(|a| a.iter().any(|x| x.ends_with("full-lane/run.yaml"))),
+        "{:?}",
+        b.argvs("uv")
+    );
+    assert!(
+        !b.argvs("uv")
+            .iter()
+            .any(|a| a.iter().any(|x| x.ends_with("full-lane/output"))),
+        "eval ran: {:?}",
+        b.argvs("uv")
+    );
+    let record = b.record();
+    let last = record["commands"]
+        .as_array()
+        .expect("commands")
+        .last()
+        .expect("a command");
+    assert_eq!(strs(&last["argv"])[..2], ["tar", "-xf"]);
+    assert_ne!(last["exit"], 0);
+}
+
+#[test]
+fn unreadable_plan_repo_keeps_previous_phases() {
+    use rdm_core::model::PhaseStatus::Done;
+    let b = Bench::new(&full_lane_spec());
+    let home = b.home();
+    let tars = b.root.join("tars");
+    let mut mv = PlanRepo::new(&home, &b.root.join("fixture/mvvault"));
+    mv.add(1, Done, None);
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1");
+    // A phase file rdm-core cannot parse makes the whole roadmap unreadable.
+    let corrupt = mv
+        .dir
+        .join("projects/bench/roadmaps/solution/phase-2-corrupt.md");
+    write(&corrupt, "---\nphase: [not a number\n---\n");
+    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "M2");
+    std::fs::remove_file(&corrupt).expect("remove corrupt phase");
+    // Back to checkpoint 1's phases: with `prev` carried over the unreadable
+    // checkpoint, nothing is new.
+    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "M3");
+    let cp = |name, order, tars| Checkpoint {
+        problem: "mvvault",
+        name,
+        order,
+        tars,
+    };
+    full_lane_bench(
+        &b,
+        &[
+            cp("checkpoint_1", 1, vec![("000001.tar", mv1)]),
+            cp("checkpoint_2", 2, vec![("000001.tar", mv2)]),
+            cp("checkpoint_3", 3, vec![("000001.tar", mv3)]),
+        ],
+    );
+    ok(&b.run(&[]));
+    let lane = &arm_record(&b.record(), "full-lane")["lane"];
+    let rows = lane["problems"][0]["checkpoints"]
+        .as_array()
+        .expect("checkpoints");
+    let summary: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            (
+                r["checkpoint"].clone(),
+                r["phase"].clone(),
+                r["outcome"].clone(),
+                r["reason"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (
+                json!("checkpoint_1"),
+                json!("phase-1-checkpoint-1"),
+                json!("landed"),
+                Value::Null
+            ),
+            (
+                json!("checkpoint_2"),
+                Value::Null,
+                json!("lane-failure"),
+                json!("plan-repo-unreadable")
+            ),
+            (
+                json!("checkpoint_3"),
+                Value::Null,
+                json!("lane-failure"),
+                json!("phase-missing")
+            ),
+        ]
+    );
+    let detail = rows[1]["detail"].as_str().expect("unreadable detail");
+    assert!(detail.contains("phase-2-corrupt"), "{}", rows[1]);
+    assert_eq!(rows[1]["status"], Value::Null);
+    let repos = b.out.join("full-lane/plan-repos/mvvault");
+    assert_eq!(rows[1]["plan_repo"], json!(p(&repos.join("checkpoint_2"))));
+    assert_eq!(
+        lane["problems"][0]["plan_repo"],
+        json!(p(&repos.join("checkpoint_3")))
+    );
+}
+
+#[test]
+fn missing_manifest_prompt_fails_before_any_spawn() {
+    let b = Bench::new(&full_lane_spec());
+    let prompt = b.rdm_dir().join("bench/scbench/prompts/full-lane.jinja");
+    std::fs::remove_file(&prompt).expect("remove full-lane prompt");
+    let want = format!("arm full-lane: cannot read prompt {}", p(&prompt));
+    for extra in [&[][..], &["--dry-run"][..]] {
+        let o = b.run(extra);
+        let err = fails(&o);
+        assert!(err.contains(&want), "{extra:?} stderr: {err}");
+        assert!(measure_support::stdout(&o).is_empty(), "{extra:?}");
+        for role in ["uv", "docker", "claude"] {
+            assert!(
+                !b.record_path(role).exists(),
+                "{extra:?}: {role} was spawned"
+            );
+        }
+        assert!(!b.cache.exists(), "{extra:?}: --cache-dir was created");
+        assert!(!b.out.exists(), "{extra:?}: --out was created");
+    }
+}
