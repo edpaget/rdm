@@ -69,7 +69,7 @@ pub mod source;
 pub mod source_select;
 /// Storage abstraction layer for plan repo data.
 pub mod store;
-/// Reserved-tag primitives (e.g. the `needs-plan-review` sentinel).
+/// Tag primitives: the shared tag-filter predicate and tag normalization.
 pub mod tags;
 /// Locating a Claude Code session on disk and building its anchored token
 /// ledger, behind the read-only `TranscriptSource` port.

@@ -147,9 +147,7 @@ For Claude Code, `--skills --out <dir>` also writes a `.claude/workflows/` direc
 
 #### Plan-review Stop hook (retired)
 
-`rdm agent-config claude/pi --hooks` — the Claude Code Stop hook / Pi `agent_end` extension that reprompted the agent while any item carried the `needs-plan-review` sentinel tag — has been retired now that plan review runs in-flow on the implementation-plan lane (`rdm-dispatch-phase`, `rdm-do`). The `--hooks` flag no longer exists.
-
-That in-flow review is a **distinct mechanism** from the `needs-plan-review` tag stamped onto persisted roadmaps/phases/tasks by `roadmap create` / `phase create` / `task create` when `plan_review` is enabled — it reviews an ephemeral plan draft, not the persisted item, and never touches the tag. With the Stop hook gone, clearing `needs-plan-review` on items created via `rdm-roadmap`, ad hoc `create` commands, or `rdm-do` side-task filing is **manual-only**: run the `rdm-plan-review` skill against the item (`--roadmap <slug>`, `--task <slug>`, or `<roadmap> <phase>`), or periodically sweep with `rdm search "" --tag needs-plan-review`. Active enforcement is tracked as a follow-up (see `wire-active-plan-review-tag-gate` in the plan repo).
+`rdm agent-config claude/pi --hooks` — the Claude Code Stop hook / Pi `agent_end` extension that reprompted the agent until newly created items had been plan-reviewed — has been retired now that plan review runs in-flow on the implementation-plan lane (`rdm-dispatch-phase`, `rdm-do`). The `--hooks` flag no longer exists.
 
 An earlier auto-review Stop hook / Pi extension pair, which reprompted whenever an item was left in `needs-review` after implementation, was retired for the same reason: the `rdm-do`, `rdm-dispatch-phase`, and `rdm-autopilot` finalize paths now actively run the canonical code review on every finalize, so nothing is left unreviewed for a passive net to catch. See [docs/autonomous-loop.md](docs/autonomous-loop.md).
 

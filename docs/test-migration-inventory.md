@@ -42,7 +42,7 @@ In the Dependencies column, "rdm bin" means a prebuilt `target/debug/rdm` and "c
 | 3c-mut | Planted mutants turn 3c red | same | `coverage::mutant_retry_deleted`, `coverage::mutant_complete_hardcoded`, `coverage::mutant_model_conditional_guard` | nextest | — |
 | 4 | Calibration phrase presence and its strip mutant | review.mjs | Retired | — | R-grep. The fake host has no model, so the phrase's effect cannot be observed in a component test |
 | 4a, 4a-guard | Forbidden and required tokens in dimension prose, refuter guard and ac-contract spans; M1–M3 and planted-token mutants | review.mjs prose | Retired | — | R-grep. No executable behaviour depends on those tokens |
-| 5 | `filterPlanReviewTag`, `classifyPlanOutcome`, independent per-unit gates, implementation-plan skips the gate | review.mjs, `rdm-wf-plan-review.js` | `plan::filter_plan_review_tag_preserves_siblings`, `plan::classify_plan_outcome`, `plan::per_unit_independent_gates`, `plan::implementation_plan_skips_gate` | nextest | Export-presence checks are subsumed: the tests call the functions |
+| 5 | `filterPlanReviewTag`, `classifyPlanOutcome`, independent per-unit gates, implementation-plan skips the gate | review.mjs, `rdm-wf-plan-review.js` | `plan::classify_plan_outcome`, `plan::per_unit_independent_outcomes`, `plan::implementation_plan_outcome_writes_nothing` | nextest | Export-presence checks are subsumed: the tests call the functions. `plan::filter_plan_review_tag_preserves_siblings` is **retired**: `filterPlanReviewTag` went with the `needs-plan-review` tag gate, and the two tests that used it were renamed and no longer do tag arithmetic |
 | 5b-drift | `plan-review-driver` block byte identity | `lib/plan-review.mjs`, `rdm-wf-plan-review.js` | Retired as a duplicate of `rdm-core/tests/workflow_plan_review_driver.rs::plan_review_driver_block_is_byte_identical` | nextest (existing) | — |
 | 5f | `formatRoundNote` → `parseRoundNotes` round trip; narrowed-regex mutant | `lib/plan-review.mjs` | `plan::round_note_severity_round_trip`, `plan::mutant_round_note_regex_narrowed` | nextest | — |
 | 8 | Non-gating skip: no refuter for a suggestion, marked pass-through, no budget consumed; a crash is not a skip | review.mjs `NON_GATING_SEVERITIES`/`needsRefutation` | `budget::needs_refutation_fail_safe` (also covers the `NON_GATING_SEVERITIES` value behaviourally), `budget::non_gating_suggestion_passes_through_{code,plan}`, `budget::crashed_refuter_keeps_gating_finding` | nextest | `UNREFUTED_DISPOSITION` prose checks ("reported, not verified", "not major", `FILE`, "evaporate"). R-grep |
@@ -829,9 +829,9 @@ task `t`, plan `p`).
 | A3 | `plan_driver::unit_commands_read_their_own_document` | `itemCommand`/`roadmapCommand` executed, returning the named item's JSON |
 | A4 | `plan_driver::roadmap_sweep_reviews_caller_named_stems` | |
 | A5 | `plan_driver::terminal_stems_skipped_and_reported` | |
-| A6 | `plan_driver::gate_commands_clear_only_the_plan_review_tag` | executed: tags read back `["depends-unlanded"]`; HEAD advances by exactly one commit |
-| A7 | `plan_driver::gate_without_tags_refuses_visibly` | |
-| A8 | `plan_driver::rework_keeps_tag_and_renders_round_note` | |
+| A6 | retired | the gate commands went with the `needs-plan-review` tag gate. `plan_driver::passing_unit_carries_the_verdict_and_a_persist_ladder_and_no_gate` covers what replaced them: the persist ladder is executed and the item's tags are read back unchanged |
+| A7 | retired | there is no tag list for the engine to be missing |
+| A8 | `plan_driver::rework_renders_round_note` | the tag half is retired |
 | A9, A9b | `plan_driver::round_from_caller_prior_reviews` | persist off and on |
 | A9c | `plan_driver::repeat_detection_reads_prior_comments` | |
 | A9d | `plan_driver::absent_vs_empty_prior_reviews` | |
@@ -847,7 +847,8 @@ task `t`, plan `p`).
 | C2d, C2e, C3, C4, C5 | `plan_driver::{implementation_plan_without_document_refused_before_agents, plan_naming_modes_mutually_exclusive, implementation_plan_is_report_only, parse_plan_args_refusals, retired_transport_keys_not_parsed}` | |
 | D1–D4, D7 | `plan_driver::reviewer_set_{absent_runs_all, declaration_order, unknown_dropped, only_empty_refused, no_selection_predicate}` | keys read from `DIMENSIONS`, never transcribed |
 | D5, D6, D8, D9, D10 | `plan_driver::{caller_set_reaches_pipeline, caller_set_narrows_real_finders, empty_set_refused_every_target, refusal_before_any_agent, failed_unit_named_not_dropped}` | |
-| E1, E2, E3 | `plan_driver::{injected_axes_reach_executed_commands, omitted_axes_use_plain_rdm_and_default_project, gate_ladder_executes_for_every_item_kind}` | executed under rule 2 (every read, gate and persist command of every target kind); the invocation-token scans over command text are replaced |
+| E1, E2 | `plan_driver::{injected_axes_reach_executed_commands, omitted_axes_use_plain_rdm_and_default_project}` | executed under rule 2 (every read and persist command of every target kind, proved by the reviews the ladders land in the target project); the invocation-token scans over command text are replaced |
+| E3 | retired | `gate_ladder_executes_for_every_item_kind` drove `buildGateAction` / `planGateCommands`, which went with the tag gate |
 | E4, E5 | `plan_driver::{invalid_axes_refused_at_parse, axes_not_read_from_flag_string}` | |
 | F1, F1b, F2, F3 | `plan_driver::source_pin_{task_form_reaches_every_prompt, phase_form_binds_phase, sweep_binds_each_unit, single_target_binds_itself}` | propagation of the injected pin values (source path, SHAs, branch); each unit binds its own item and never a sibling's; the roadmap unit carries none; at least one refuter ran. The mode-wording helpers are NR |
 | F1c, F1d | retired | NR: fixed prompt wording |

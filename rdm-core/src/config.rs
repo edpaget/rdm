@@ -21,7 +21,6 @@ pub const KNOWN_KEYS: &[&str] = &[
     "default_branch",
     "hook_timeout_secs",
     "server.quick_filters",
-    "plan_review",
     "max_refutations",
     "dispatch.verify",
     "gates.reviewed",
@@ -42,7 +41,6 @@ pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters", "dispatch.verify",
 pub const PROJECT_SCOPABLE_KEYS: &[&str] = &[
     "dispatch.verify",
     "gates.reviewed",
-    "plan_review",
     "default_branch",
     "max_refutations",
 ];
@@ -166,9 +164,6 @@ pub struct ProjectOverrides {
     /// Per-project override of [`Config::default_branch`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
-    /// Per-project override of [`Config::plan_review`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_review: Option<bool>,
     /// Per-project override of [`Config::dispatch`] (`[projects.<name>.dispatch]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<DispatchConfig>,
@@ -192,7 +187,6 @@ impl ProjectOverrides {
             key,
             ScopableFields {
                 default_branch: &self.default_branch,
-                plan_review: self.plan_review,
                 dispatch: &self.dispatch,
                 gates: &self.gates,
                 max_refutations: self.max_refutations,
@@ -204,7 +198,6 @@ impl ProjectOverrides {
 /// The project-scopable fields [`Config`] and [`ProjectOverrides`] share.
 struct ScopableFields<'a> {
     default_branch: &'a Option<String>,
-    plan_review: Option<bool>,
     dispatch: &'a Option<DispatchConfig>,
     gates: &'a Option<GatesConfig>,
     max_refutations: Option<u64>,
@@ -217,7 +210,6 @@ struct ScopableFields<'a> {
 fn scopable_field(key: &str, fields: ScopableFields<'_>) -> Option<String> {
     match key {
         "default_branch" => fields.default_branch.clone(),
-        "plan_review" => fields.plan_review.map(|b| b.to_string()),
         "dispatch.verify" => fields.dispatch.as_ref().and_then(|d| d.verify.clone()),
         "gates.reviewed" => fields
             .gates
@@ -507,13 +499,6 @@ pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<ModelsConfig>,
 
-    /// When `true`, `roadmap create`/`phase create`/`task create` stamp the
-    /// reserved `needs-plan-review` tag on new items so an agent-driven plan
-    /// review can find and clear them later. See [`Config::plan_review`] for
-    /// the repo-level counterpart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_review: Option<bool>,
-
     /// Per-run refutation budget for the review engines. See
     /// [`Config::max_refutations`] for the repo-level counterpart and
     /// [`resolve_max_refutations`] for the full resolution rule.
@@ -596,15 +581,6 @@ pub struct Config {
     /// Model-tier sizing policy (`[models]` table).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<ModelsConfig>,
-
-    /// When `true`, `roadmap create`/`phase create`/`task create` stamp the
-    /// reserved `needs-plan-review` tag on new items (in addition to any
-    /// user-supplied `--tags`) so an agent-driven plan review can find and
-    /// clear them later via `rdm search --tag needs-plan-review`. Defaults
-    /// to `false`. See [`crate::tags`] for the tag-manipulation primitives
-    /// this flag gates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_review: Option<bool>,
 
     /// Per-run refutation budget for the review engines: at most this many
     /// consolidated review units (distinct defects) are graded by a refuter
@@ -702,7 +678,6 @@ impl Config {
             server: self.server.clone(),
             hook_timeout_secs: self.hook_timeout_secs.or(global.hook_timeout_secs),
             models: self.models.clone().or_else(|| global.models.clone()),
-            plan_review: self.plan_review.or(global.plan_review),
             // A repo `Some(0)` wins: `0` is a deliberate value, not "unset".
             max_refutations: self.max_refutations.or(global.max_refutations),
             // Repo-only: no global fallback exists to fall back TO.
@@ -724,7 +699,6 @@ impl Config {
             key,
             ScopableFields {
                 default_branch: &self.default_branch,
-                plan_review: self.plan_review,
                 dispatch: &self.dispatch,
                 gates: &self.gates,
                 max_refutations: self.max_refutations,
@@ -746,8 +720,8 @@ impl Config {
 ///    variable the `reviewed` gate has always honored, so it comes first;
 ///    then the
 ///    generic `RDM_<KEY>` (dots become underscores, e.g.
-///    `RDM_DISPATCH_VERIFY`). Every value of a boolean key (`gates.reviewed`,
-///    `plan_review`) must be the literal `"true"` or `"false"`; a
+///    `RDM_DISPATCH_VERIFY`). Every value of the boolean key
+///    (`gates.reviewed`) must be the literal `"true"` or `"false"`; a
 ///    `max_refutations` value must parse under [`parse_max_refutations`] and
 ///    is returned as its canonical number (`" +4 "` becomes `"4"`); other
 ///    keys' values are returned raw.
@@ -809,7 +783,7 @@ pub fn resolve_scoped_value(
     let generic = env(&generic_env).and_then(present);
     if let Some(v) = generic {
         let v = match key {
-            "gates.reviewed" | "plan_review" => parse_bool_env(&generic_env, &v)?.to_string(),
+            "gates.reviewed" => parse_bool_env(&generic_env, &v)?.to_string(),
             "max_refutations" => parse_max_refutations(&generic_env, &v)?.to_string(),
             _ => v,
         };
@@ -827,7 +801,6 @@ pub fn resolve_scoped_value(
     }
     if !REPO_ONLY_KEYS.contains(&key) {
         let global_value = match key {
-            "plan_review" => global.plan_review.map(|b| b.to_string()),
             "default_branch" => global.default_branch.clone(),
             "max_refutations" => global.max_refutations.map(|n| n.to_string()),
             _ => None,
@@ -926,21 +899,6 @@ pub fn format_quick_filters(filters: &[QuickFilter]) -> String {
         .join(",")
 }
 
-/// Parses the `RDM_PLAN_REVIEW` env var override.
-///
-/// Accepts only the literal, case-sensitive strings `"true"` and `"false"` —
-/// this is a loud override, not a fuzzy boolean parse, so a typo (`"1"`,
-/// `"yes"`, `"True"`, an empty string) surfaces as an error instead of
-/// silently resolving to `false`.
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidConfigValue`] if `value` is anything other than
-/// `"true"` or `"false"`.
-pub fn parse_plan_review_env(value: &str) -> Result<bool> {
-    parse_bool_env("RDM_PLAN_REVIEW", value)
-}
-
 /// Parses a boolean env var override that accepts only the literal `"true"`
 /// or `"false"`, naming `var` in the error.
 fn parse_bool_env(var: &str, value: &str) -> Result<bool> {
@@ -957,10 +915,10 @@ fn parse_bool_env(var: &str, value: &str) -> Result<bool> {
 
 /// Parses the `RDM_REVIEWED_GATE` env var into a boolean.
 ///
-/// Like [`parse_plan_review_env`], this is a loud override rather than a fuzzy
-/// boolean parse, so a typo (`"1"`, `"yes"`, `"True"`, an empty string)
-/// surfaces as an error instead of silently resolving to `false` and quietly
-/// disabling the gate.
+/// Accepts only the literal, case-sensitive strings `"true"` and `"false"`:
+/// this is a loud override rather than a fuzzy boolean parse, so a typo
+/// (`"1"`, `"yes"`, `"True"`, an empty string) surfaces as an error instead
+/// of silently resolving to `false` and quietly disabling the gate.
 ///
 /// # Errors
 ///
@@ -1012,31 +970,6 @@ pub fn resolve_reviewed_gate(
         &GlobalConfig::default(),
         env,
     )
-}
-
-/// Resolves whether `roadmap|phase|task create` stamps the reserved
-/// `needs-plan-review` tag for `project`.
-///
-/// A boolean projection of [`resolve_scoped_value`] for `plan_review`, so the
-/// precedence is that function's: `RDM_PLAN_REVIEW` → `[projects.<project>]
-/// plan_review` → the plan-repo-wide `plan_review` → the global
-/// `plan_review` → `false`.
-///
-/// `repo` must be the repo config as read from `rdm.toml`, not one already
-/// merged with `global`. `env` is injected so the rule stays a pure function;
-/// pass `|k| std::env::var(k).ok()` for the process environment.
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidConfigValue`] if `RDM_PLAN_REVIEW` is set to
-/// anything other than the literal `"true"` or `"false"`.
-pub fn resolve_plan_review(
-    project: Option<&str>,
-    repo: &Config,
-    global: &GlobalConfig,
-    env: impl Fn(&str) -> Option<String>,
-) -> Result<bool> {
-    resolve_scoped_bool("plan_review", project, repo, global, env)
 }
 
 /// Resolves the default (trunk) branch name for `project`, with its source.
@@ -1488,7 +1421,6 @@ default = "upstream"
         assert_eq!(config.remote, None);
         assert_eq!(config.default_branch, None);
         assert_eq!(config.models, None);
-        assert_eq!(config.plan_review, None);
     }
 
     #[test]
@@ -1503,6 +1435,39 @@ auto_init = true
 "#;
         let config = GlobalConfig::from_toml(toml_str).unwrap();
         assert_eq!(config.root, Some(PathBuf::from("/some/path")));
+    }
+
+    #[test]
+    fn config_files_tolerate_the_retired_plan_review_key() {
+        // `plan_review` enabled a tag stamp that no longer exists. Plan repos
+        // and global configs that still set it, at the top level or under
+        // `[projects.<name>]`, must parse with every other key intact.
+        let global = GlobalConfig::from_toml("root = \"/some/path\"\nplan_review = true\n")
+            .expect("a global config that sets plan_review parses");
+        assert_eq!(global.root, Some(PathBuf::from("/some/path")));
+
+        let repo = Config::from_toml(
+            r#"
+default_branch = "trunk"
+plan_review = true
+
+[projects.a]
+plan_review = false
+max_refutations = 3
+
+[projects.b]
+plan_review = "not even a boolean"
+"#,
+        )
+        .expect("a repo config that sets plan_review parses");
+        assert_eq!(repo.default_branch.as_deref(), Some("trunk"));
+        assert_eq!(repo.projects["a"].max_refutations, Some(3));
+        assert_eq!(repo.projects["b"], ProjectOverrides::default());
+
+        // The retired key is dropped when the typed config is written back.
+        let rewritten = repo.to_toml().unwrap();
+        assert!(!rewritten.contains("plan_review"), "{rewritten}");
+        assert!(!KNOWN_KEYS.contains(&"plan_review"));
     }
 
     #[test]
@@ -2166,65 +2131,6 @@ mechanical = "small"
         assert!(KNOWN_KEYS.contains(&"max_refutations"));
     }
 
-    // --- plan_review tests ---
-
-    #[test]
-    fn parse_plan_review_env_true_and_false() {
-        assert!(parse_plan_review_env("true").unwrap());
-        assert!(!parse_plan_review_env("false").unwrap());
-    }
-
-    #[test]
-    fn parse_plan_review_env_invalid_rejected() {
-        for bad in ["1", "yes", "True", "FALSE", ""] {
-            let err = parse_plan_review_env(bad).unwrap_err();
-            match err {
-                Error::InvalidConfigValue { key, value, .. } => {
-                    assert_eq!(key, "RDM_PLAN_REVIEW");
-                    assert_eq!(value, bad);
-                }
-                other => panic!("unexpected error for '{bad}': {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn config_with_plan_review_round_trip() {
-        let config = Config {
-            plan_review: Some(true),
-            ..Default::default()
-        };
-        let toml_str = config.to_toml().unwrap();
-        let parsed = Config::from_toml(&toml_str).unwrap();
-        assert_eq!(parsed, config);
-        assert_eq!(parsed.plan_review, Some(true));
-    }
-
-    #[test]
-    fn with_global_defaults_includes_plan_review() {
-        let repo_config = Config::default();
-        let global = GlobalConfig {
-            plan_review: Some(true),
-            ..Default::default()
-        };
-        let merged = repo_config.with_global_defaults(&global);
-        assert_eq!(merged.plan_review, Some(true));
-    }
-
-    #[test]
-    fn with_global_defaults_repo_plan_review_wins() {
-        let repo_config = Config {
-            plan_review: Some(false),
-            ..Default::default()
-        };
-        let global = GlobalConfig {
-            plan_review: Some(true),
-            ..Default::default()
-        };
-        let merged = repo_config.with_global_defaults(&global);
-        assert_eq!(merged.plan_review, Some(false));
-    }
-
     #[test]
     fn partial_models_table_parses() {
         let toml_str = "[models]\nsmall = \"haiku\"\n";
@@ -2676,68 +2582,6 @@ effort = "medium"
     }
 
     #[test]
-    fn resolve_plan_review_precedence() {
-        let global = GlobalConfig::default();
-        // Default false.
-        assert!(!resolve_plan_review(None, &Config::default(), &global, no_env).unwrap());
-        // Repo fallback.
-        let repo_on = Config {
-            plan_review: Some(true),
-            ..Default::default()
-        };
-        assert!(resolve_plan_review(Some("a"), &repo_on, &global, no_env).unwrap());
-        // Global applies when the repo is silent.
-        let global_on = GlobalConfig {
-            plan_review: Some(true),
-            ..Default::default()
-        };
-        assert!(resolve_plan_review(Some("a"), &Config::default(), &global_on, no_env).unwrap());
-        // The repo beats global.
-        let repo_off = Config {
-            plan_review: Some(false),
-            ..Default::default()
-        };
-        assert!(!resolve_plan_review(Some("a"), &repo_off, &global_on, no_env).unwrap());
-    }
-
-    #[test]
-    fn resolve_plan_review_honors_a_project_override() {
-        let config =
-            Config::from_toml("plan_review = true\n\n[projects.b]\nplan_review = false\n").unwrap();
-        let global = GlobalConfig::default();
-        assert!(resolve_plan_review(Some("a"), &config, &global, no_env).unwrap());
-        assert!(!resolve_plan_review(Some("b"), &config, &global, no_env).unwrap());
-        assert!(resolve_plan_review(None, &config, &global, no_env).unwrap());
-    }
-
-    #[test]
-    fn resolve_plan_review_env_wins_over_a_project_override_in_both_directions() {
-        let config = Config::from_toml(
-            "[projects.a]\nplan_review = true\n\n[projects.b]\nplan_review = false\n",
-        )
-        .unwrap();
-        let global = GlobalConfig::default();
-        assert!(
-            resolve_plan_review(
-                Some("b"),
-                &config,
-                &global,
-                env_of(&[("RDM_PLAN_REVIEW", "true")])
-            )
-            .unwrap()
-        );
-        assert!(
-            !resolve_plan_review(
-                Some("a"),
-                &config,
-                &global,
-                env_of(&[("RDM_PLAN_REVIEW", "false")])
-            )
-            .unwrap()
-        );
-    }
-
-    #[test]
     fn resolve_default_branch_defaults_to_main() {
         let resolved = resolve_default_branch(
             Some("a"),
@@ -2793,18 +2637,6 @@ effort = "medium"
             (e.value.as_str(), e.source),
             ("env-branch", ConfigSource::Env)
         );
-    }
-
-    #[test]
-    fn resolve_plan_review_rejects_a_junk_env_value() {
-        let err = resolve_plan_review(
-            None,
-            &Config::default(),
-            &GlobalConfig::default(),
-            env_of(&[("RDM_PLAN_REVIEW", "yes")]),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("RDM_PLAN_REVIEW"), "{err}");
     }
 
     #[test]
@@ -2866,7 +2698,9 @@ effort = "medium"
     }
 
     /// A repo config with `value` set plan-repo-wide for every scopable key,
-    /// and `[projects.a]` overriding every one of them with `a-value`.
+    /// and `[projects.a]` overriding every one of them with `a-value`. It
+    /// also sets the retired `plan_review` key at both levels, which every
+    /// reader must ignore.
     fn layered_config() -> Config {
         Config::from_toml(
             r#"
@@ -2898,7 +2732,6 @@ reviewed = true
     fn global_with_scopables() -> GlobalConfig {
         GlobalConfig {
             default_branch: Some("global-branch".to_string()),
-            plan_review: Some(true),
             max_refutations: Some(8),
             ..Default::default()
         }
@@ -2912,13 +2745,12 @@ reviewed = true
     }
 
     #[test]
-    fn project_scopable_keys_are_the_five_known_keys() {
+    fn project_scopable_keys_are_the_four_known_keys() {
         assert_eq!(
             PROJECT_SCOPABLE_KEYS,
             &[
                 "dispatch.verify",
                 "gates.reviewed",
-                "plan_review",
                 "default_branch",
                 "max_refutations"
             ]
@@ -2972,10 +2804,6 @@ reviewed = true
             Some("false")
         );
         assert_eq!(
-            config.scopable_value("plan_review").as_deref(),
-            Some("false")
-        );
-        assert_eq!(
             config.scopable_value("default_branch").as_deref(),
             Some("repo-branch")
         );
@@ -2984,13 +2812,14 @@ reviewed = true
             Some("5")
         );
         assert_eq!(config.scopable_value("remote.default"), None);
+        assert_eq!(config.scopable_value("plan_review"), None);
         let a = &config.projects["a"];
         assert_eq!(a.value("dispatch.verify").as_deref(), Some("a-verify"));
         assert_eq!(a.value("gates.reviewed").as_deref(), Some("true"));
-        assert_eq!(a.value("plan_review").as_deref(), Some("true"));
+        assert_eq!(a.value("plan_review"), None);
         assert_eq!(a.value("default_branch").as_deref(), Some("a-branch"));
         assert_eq!(a.value("max_refutations").as_deref(), Some("0"));
-        assert_eq!(ProjectOverrides::default().value("plan_review"), None);
+        assert_eq!(ProjectOverrides::default().value("default_branch"), None);
     }
 
     #[test]
@@ -3000,14 +2829,12 @@ reviewed = true
         let env = env_of(&[
             ("RDM_DISPATCH_VERIFY", "env-verify"),
             ("RDM_GATES_REVIEWED", "false"),
-            ("RDM_PLAN_REVIEW", "false"),
             ("RDM_DEFAULT_BRANCH", "env-branch"),
             ("RDM_MAX_REFUTATIONS", "7"),
         ]);
         for (key, want) in [
             ("dispatch.verify", "env-verify"),
             ("gates.reviewed", "false"),
-            ("plan_review", "false"),
             ("default_branch", "env-branch"),
             ("max_refutations", "7"),
         ] {
@@ -3073,7 +2900,6 @@ reviewed = true
         for (key, want) in [
             ("dispatch.verify", "a-verify"),
             ("gates.reviewed", "true"),
-            ("plan_review", "true"),
             ("default_branch", "a-branch"),
             ("max_refutations", "0"),
         ] {
@@ -3093,7 +2919,6 @@ reviewed = true
             for (key, want) in [
                 ("dispatch.verify", "repo-verify"),
                 ("gates.reviewed", "false"),
-                ("plan_review", "false"),
                 ("default_branch", "repo-branch"),
                 ("max_refutations", "5"),
             ] {
@@ -3110,10 +2935,6 @@ reviewed = true
     fn resolver_falls_back_to_global_only_where_the_key_allows_it() {
         let config = Config::default();
         let global = global_with_scopables();
-        assert_eq!(
-            resolve_scoped_value("plan_review", Some("a"), &config, &global, no_env).unwrap(),
-            resolved("true", ConfigSource::Global)
-        );
         assert_eq!(
             resolve_scoped_value("default_branch", Some("a"), &config, &global, no_env).unwrap(),
             resolved("global-branch", ConfigSource::Global)
@@ -3168,14 +2989,14 @@ reviewed = true
         // RDM_REVIEWED_GATE applies to gates.reviewed only.
         assert_eq!(
             resolve_scoped_value(
-                "plan_review",
+                "default_branch",
                 None,
                 &config,
                 &global,
                 env_of(&[("RDM_REVIEWED_GATE", "true")])
             )
             .unwrap(),
-            resolved("false", ConfigSource::Repo)
+            resolved("repo-branch", ConfigSource::Repo)
         );
     }
 
@@ -3197,25 +3018,42 @@ reviewed = true
 
     #[test]
     fn resolver_rejects_an_invalid_generic_boolean_env_value() {
-        for (key, var) in [
-            ("gates.reviewed", "RDM_GATES_REVIEWED"),
-            ("plan_review", "RDM_PLAN_REVIEW"),
-        ] {
-            for bad in ["yes", "True", "1", ""] {
-                let err = resolve_scoped_value(
-                    key,
-                    None,
-                    &Config::default(),
-                    &GlobalConfig::default(),
-                    |k: &str| (k == var).then(|| bad.to_string()),
-                )
-                .unwrap_err();
-                assert!(
-                    matches!(&err, Error::InvalidConfigValue { key, value, .. }
-                        if key == var && value == bad),
-                    "{var}={bad:?}: got {err:?}"
-                );
-            }
+        let (key, var) = ("gates.reviewed", "RDM_GATES_REVIEWED");
+        for bad in ["yes", "True", "1", ""] {
+            let err = resolve_scoped_value(
+                key,
+                None,
+                &Config::default(),
+                &GlobalConfig::default(),
+                |k: &str| (k == var).then(|| bad.to_string()),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidConfigValue { key, value, .. }
+                    if key == var && value == bad),
+                "{var}={bad:?}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolver_refuses_the_retired_plan_review_key_and_never_reads_its_variable() {
+        let config = layered_config();
+        let global = global_with_scopables();
+        let err =
+            resolve_scoped_value("plan_review", Some("a"), &config, &global, no_env).unwrap_err();
+        assert!(
+            matches!(&err, Error::KeyNotProjectScopable { key } if key == "plan_review"),
+            "got {err:?}"
+        );
+        // A value `RDM_PLAN_REVIEW` used to reject changes no other key.
+        let junk = env_of(&[("RDM_PLAN_REVIEW", "yes")]);
+        for key in PROJECT_SCOPABLE_KEYS {
+            assert_eq!(
+                resolve_scoped_value(key, Some("a"), &config, &global, &junk).unwrap(),
+                resolve_scoped_value(key, Some("a"), &config, &global, no_env).unwrap(),
+                "{key}"
+            );
         }
     }
 

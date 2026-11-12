@@ -15,7 +15,7 @@ Read the item and its parent roadmap, relevant documentation, and current worktr
 "${RDM_BIN:-rdm}" worktree list {proj_flag}
 ```
 
-For a task, use `task show <slug>` instead. Confirm user authorization, prerequisites, and independent plan-review evidence. If `needs-plan-review` remains on the selected phase/task, or a parent-wide concern applies, stop for independent plan review by a human or working review host. A parent's tag may remain for other phases; do not clear it globally when only this phase passed. No available review host means a pending gate, never a pass.
+For a task, use `task show <slug>` instead. Confirm user authorization, prerequisites, and independent plan-review evidence: a review recorded on the selected phase/task or on its implementation plan (`"${RDM_BIN:-rdm}" review list --on <ref> {proj_flag}`). If there is none, or a parent-wide concern applies, stop for independent plan review by a human or working review host. No available review host means a pending gate, never a pass.
 
 Use one shared worktree per roadmap:
 

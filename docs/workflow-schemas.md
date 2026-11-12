@@ -1694,9 +1694,7 @@ Every `rdm` line this ladder emits also redirects stdin from `/dev/null`.
 `submit` (the CLI reads only `--body`, never stdin, for those three
 commands), so this is defense-in-depth: the ladder stays safe against the
 whole class of bug regardless of which `rdm` surface it invokes ever grows a
-stdin read in the future. `planGateCommands` (`lib/plan-review.mjs`'s tag-clear
-gate) carries the same redirect on its `task update`/`phase update`/`roadmap
-update`/`commit` lines, for the same reason.
+stdin read in the future.
 
 **The anchoring ladder is split between two mechanisms now: MECHANICAL, inside
 the emitted ladder itself, for the line that carries both `--path` and
@@ -2097,8 +2095,7 @@ the two apart:
 - `priorReviews` absent (`null` — the key was never supplied, e.g. a caller
   that skipped `rdm review list` entirely) — the engine cannot know the
   round, and must not report round 1 as if it did. `reviewUnit` sets
-  `roundUnknown: true` on the unit (mirroring `gateAction.tagsUnknown`'s
-  absent-vs-empty treatment of the tag list) and the unit's `summary` carries
+  `roundUnknown: true` on the unit and the unit's `summary` carries
   a visible `[round unknown: …]` clause (`roundUnknownClause`) naming the
   fix (`rdm review list --on <target> --format json` as `priorReviews`).
   `round` still reports 1 — no round arithmetic changes — but the absence is
@@ -2120,7 +2117,7 @@ note.
 **`planSlug` arg.** The slug of the persisted `plan/<slug>` document under
 review, for an `--implementation-plan` target. Read from the STRUCTURED `args`
 object only — never parsed out of the `$ARGUMENTS` flag string, the same rule as
-`phases`/`tags`/`priorReviews`/`wontFixedTexts`/`reviewers`.
+`phases`/`priorReviews`/`wontFixedTexts`/`reviewers`.
 
 **It is the ONLY way to name the plan.** `planText` is gone, and with it the
 dual-supply throw and the precedence rule that decided which of the two won —
@@ -2133,9 +2130,8 @@ different documents.
 `planSlug` is what makes an implementation-plan verdict persistable: with it and
 `persist` on, the run returns `persistCommands` / `persistScript` for
 `plan/<planSlug>` (never for `persist.on`, which is why a disagreeing one throws
-at parse time). It adds no gate and no act step — a plan document carries no
-tags, so there is no `needs-plan-review` to clear — and the branch returns without
-`gateAction` or any gate key. A no-slug run reports the outcome and findings only.
+at parse time). It adds no act step. A no-slug run reports the outcome and
+findings only.
 
 ### `VERDICT`
 
@@ -2350,8 +2346,7 @@ message branches, keeping the recognisable `check the [models] tier bindings`
 text on the model path. This mattered because `lib/plan-review.mjs` used to
 call `runPlanReview({ target })` with NO `findModel`/`verifyModel` at either
 call site, so a model-conditional guard would have been inert in plan mode and
-`GATE_POLICY.plan` would have cleared `needs-plan-review` off a review that
-never ran. `thread-plan-review-judgment-models` has since threaded both keys
+a review that never ran would have come back `reviewed`. `thread-plan-review-judgment-models` has since threaded both keys
 into plan-review's context (see the model-omission paragraph above), but the
 guard stays model-independent regardless — it must hold for any caller,
 threaded or not.
@@ -2838,65 +2833,16 @@ the one substitution point in the generator. Both local targets are
 (`local_skill_projection_in_sync_{code,plan}`) alongside the shipped ones.
 
 The gate itself is likewise mode-dispatched data rather than a fork:
-`GATE_POLICY[mode][outcome]` yields `{ status, writesCompletion,
-clearsPlanReviewTag, reasonPrefix }`, and `STATUS_MAPPING` *is*
-`GATE_POLICY.code`, so `statusFor`/`writesCompletion` are unchanged for the
-code lane (`rdm-dispatch-phase`/`rdm-autopilot`). The plan rows carry an explicit `status: null` — a
-plan review never persists an rdm status; it clears `needs-plan-review` on
-`reviewed` and leaves it on `rework`/`escalated`.
-
-### `rdm-wf-plan-review`'s gate disposition: `gateAction`
-
-`GATE_POLICY.plan` above says what the gate *should* do. `gateAction` is what the
-CALLER must run to do it: **the engine never writes the tag**, because it has no
-agent that can run a shell command.
-
-| field | where | meaning |
-|---|---|---|
-| `gateAction` | every unit, plus the single-target flatten | `{ kind, ident, roadmap, clearsPlanReviewTag, tagsUnknown, commands, remainingTags, removedTags }`. `commands` is `[updateCmd, commitCmd]` from `planGateCommands`; `[]` on a `rework`/`escalated` unit, which still gets an action so callers can iterate `units[].gateAction` without special-casing. |
-| `tagsUnknown` | inside `gateAction` | `true` when the outcome clears the tag but the caller supplied no `tags` list. `--tags` replaces the whole list, so writing one the engine was never shown would silently drop a sibling such as `depends-unlanded`; `commands` is `[]` and the refusal is visible rather than silent. |
-| `gatePendingCount` | run-level result | How many units are waiting on the caller to run their commands. Appended to the final `N unit(s) reviewed` log line when non-zero. |
-
-There is no `gateBlocked` and no `gateDeferred`. The first meant "the write was
-attempted and did not succeed" — nothing attempts it. The second meant
-"`gateMode: 'return'` made the driver compute and hand back" — that is now the
-only behaviour, so the distinction has no content. A unit still awaiting its
-write carries a ` [gate pending: … — <update> && <commit>]` clause on its
-`summary`, so a surface that reports only `summary` is already reporting exactly
-what remains to be done.
-
-The `--implementation-plan` branch has no persisted item, so it gains **none** of
-these keys.
-
-**Scope: `gateAction` is `rdm-wf-plan-review.js` driver surface.** It is
-deliberately absent from the shared `//|plan|` review spec,
-and therefore from the shipped `skill-plan-review-cli.md` templates and
-`plugins/rdm/skills/plan-review/` — those skills perform the gate write
-themselves, in hand-authored prose that shells out to `rdm … update --tags …`,
-and have no driver to read a returned action off. The shared spec states the same
-*policy* in terms of the write instead; the field name lives only in the
-hand-authored half of `.claude/skills/rdm-plan-review/SKILL.md`.
-`verify-workflow-review.sh` § 1d-gate-policy used to gate both directions,
-with a § 1g self-test proving the detector fired; that section was retired by
-the operator amendment to `task/retire-static-grep-harnesses` (2026-09-23), so
-the scoping is now held by convention and code review. See
-[`plan-review-gate-policy.md`](plan-review-gate-policy.md) § "What changed" ¶ 4.
-
-The pending clause embeds an exact rdm command containing double quotes
-(`--tags "a,b"`), so — unlike `coverageSummaryClause`, which is quote-free
-precisely *because* it is interpolated into Bash prompts — `summary`/`reason` in
-plan mode are returned **data** and must never reach a prompt builder.
-`lib/plan-review.mjs` builds no prompt at all any more, so there is nothing for
-the clause to leak into.
-
-**`gateMode` is gone.** It chose between "the `gate:clear-tag` agent writes the
-tag in-run" and "compute the action and hand it back", and only the second
-exists. The gate prompt it governed — a four-clause authorization preamble plus
-rendered review evidence — is gone too: it existed to persuade a safety
-classifier that a MECHANICAL AGENT's write was authorized, and there is no such
-agent to authorize. The decision it recorded, its boundary, and the classifier
-blocks that forced it remain in
-[`plan-review-gate-policy.md`](plan-review-gate-policy.md).
+`GATE_POLICY[mode][outcome]` yields `{ status, writesCompletion, reasonPrefix }`,
+and `STATUS_MAPPING` *is* `GATE_POLICY.code`, so `statusFor`/`writesCompletion`
+are unchanged for the code lane (`rdm-dispatch-phase`/`rdm-autopilot`). The plan
+rows carry an explicit `status: null` and write nothing: a plan review never
+persists an rdm status, a tag or a completion directive. A plan-mode unit carries
+its `outcome` and, unless `persist: false`, the `persistCommands` /
+`persistScript` ladder; the verdict is recorded on the item when the caller runs
+that ladder, which prints `reviewId=<id>`. The `tags` and `phases[].tags`
+arguments the engine once took are no longer read, and a caller that still
+passes them is not refused.
 
 Everything else inside the stamped block is **machinery** (JSON schemas,
 `survives`/`rankFindings`/`resolveReviewers`, the classifier and

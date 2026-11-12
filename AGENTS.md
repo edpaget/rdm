@@ -36,8 +36,8 @@ Use the discoverable `.agents/skills/rdm-*` manual lane. Read the selected skill
 fully. `rdm-roadmap` authors plans; `rdm-do` implements one authorized item and
 stops at `needs-review`; `rdm-revise` addresses document feedback; `rdm-land`
 requires explicit landing authorization and independent review evidence.
-Independent plan review must clear the selected item's `needs-plan-review`
-gate before implementation. Author checks do not clear independent code
+The selected item needs an independent plan review before implementation.
+Author checks do not clear independent code
 review. If no independent review host is available, leave the gate pending
 and hand off; never claim a workflow ran or mark the item `reviewed`/`done`.
 

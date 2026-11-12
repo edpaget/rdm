@@ -3,8 +3,8 @@
 // Reviews the PLAN of an rdm item before implementation begins (the earlier of
 // the two review gates), reusing the ONE canonical review core in
 // .claude/workflows/lib/review.mjs — `buildReviewPipeline('plan')` for
-// find → refute → filter, and `GATE_POLICY.plan` / `gateFor('plan', …)` for the
-// gate. It declares NO review dimension, finder, refuter, or gate table of its
+// find → refute → filter, and `GATE_POLICY.plan` / `gateFor('plan', …)` for what
+// an outcome means. It declares NO review dimension, finder, refuter, or policy table of its
 // own; the stamped block below is copied VERBATIM from the lib by
 // scripts/gen-workflow-review.sh (the Workflow runtime cannot import a module —
 // see docs/workflow-schemas.md § "Import spike"). Edit the lib, not the copy;
@@ -21,7 +21,7 @@
 //   1. `--task <slug>`            — review a task's plan.
 //   2. `--roadmap <slug>`         — review the roadmap document, plus one unit
 //                                   per phase stem the CALLER named in `phases`,
-//                                   each gated INDEPENDENTLY (an ambient
+//                                   each reviewed INDEPENDENTLY (an ambient
 //                                   parallel() fan-out). With no `phases` list
 //                                   the roadmap document is reviewed alone — the
 //                                   engine never reads a roadmap to discover its
@@ -32,7 +32,7 @@
 //                                   implementation, named by `planSlug`. This is
 //                                   the shape the in-repo dispatch uses. There is
 //                                   NO persisted rdm ITEM behind it, so it does
-//                                   no body edit, files no task, and never gates
+//                                   no body edit and files no task
 //                                   — but with a `planSlug`, unless `persist:
 //                                   false`, it returns the ladder that records
 //                                   the verdict on that `plan/<slug>` document.
@@ -40,7 +40,7 @@
 // Args may arrive as a raw $ARGUMENTS flag string, a JSON payload, or a
 // structured object ({ roadmap, phase }, { task }, { implementationPlan,
 // planSlug }). See parsePlanArgs. The structured-keys-only args (`phases`,
-// `tags`, `priorReviews`, `wontFixedTexts`, `reviewers`, `intentRecorded`,
+// `priorReviews`, `wontFixedTexts`, `reviewers`, `intentRecorded`,
 // `planSlug`, the three
 // judgment-site model ids `findModel`/`verifyModel`/`consolidateModel` and their
 // reasoning efforts `findEffort`/`verifyEffort`/`consolidateEffort`) are never
@@ -65,8 +65,8 @@
 export const meta = {
   name: 'rdm-wf-plan-review',
   description:
-    'Standalone plan-mode review: find → refute → filter over a task/phase/roadmap/implementation-plan, with per-phase independent needs-plan-review gating',
-  phases: [{ title: 'Read' }, { title: 'Find' }, { title: 'Consolidate' }, { title: 'Refute' }, { title: 'Act' }, { title: 'Gate' }],
+    'Standalone plan-mode review: find → refute → filter over a task/phase/roadmap/implementation-plan',
+  phases: [{ title: 'Read' }, { title: 'Find' }, { title: 'Consolidate' }, { title: 'Refute' }, { title: 'Act' }],
 }
 
 // The block below is GENERATED from .claude/workflows/lib/review.mjs by
@@ -472,11 +472,10 @@ const DIMENSIONS = {
     },
     //|plan|
     //|plan| **Plan target types.** A plan review targets a `roadmap` (its own body,
-    //|plan| plus every phase gated individually), a `phase`, a `task`, or an
+    //|plan| plus every phase reviewed individually), a `phase`, a `task`, or an
     //|plan| `implementation-plan` — an `rdm-do` plan document handed over in context
     //|plan| ahead of implementation. `implementation-plan` has **no persisted rdm
-    //|plan| item** behind it, so it is report-only: no body edit, no filed task, and
-    //|plan| no gate (see § Gate).
+    //|plan| item** behind it, so it is report-only: no body edit and no filed task.
     //|plan|
     //|plan| The target type selects the reviewers when the caller names none:
     //|plan|
@@ -1133,11 +1132,9 @@ function refutePrompt(mode, dim, finding, context) {
 //|plan|   step, a missing prerequisite, an untestable acceptance criterion).
 //|plan| - `reviewed` — clean, or clean with recorded concerns/suggestions.
 //|plan|
-//|plan| `rework` and `escalated` both leave the gate **closed**, so this is exactly
-//|plan| the outcome the retired PASS / PASS WITH CONCERNS / REWORK vocabulary
-//|plan| produced: PASS and PASS WITH CONCERNS both collapse to `reviewed` (they
-//|plan| cleared the tag), and REWORK splits into `rework` and `escalated` (both
-//|plan| leave it).
+//|plan| These are the outcomes the retired PASS / PASS WITH CONCERNS / REWORK
+//|plan| vocabulary produced: PASS and PASS WITH CONCERNS both collapse to
+//|plan| `reviewed`, and REWORK splits into `rework` and `escalated`.
 //|plan|
 //|plan| **Plan-stage severity calibration.** Each reviewer's prompt carries the
 //|plan| severity contract of its own document kind.
@@ -1171,12 +1168,11 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 //   code — the post-implementation gate: persist an rdm status on the item
 //          (per kind) and, on `reviewed` only, mark the item eligible for the
 //          land-time `done` write `rdm-land` performs directly.
-//          `clearsPlanReviewTag` is always false — the code gate has nothing
-//          to do with the pre-implementation tag.
-//   plan — the pre-implementation gate: a plan review NEVER persists an rdm
+//   plan — the pre-implementation review: a plan review NEVER persists an rdm
 //          status (`status` is an explicit `null`, never `undefined`, so a
-//          caller cannot round-trip it into an empty status), and instead
-//          clears the reserved `needs-plan-review` tag on `reviewed` only.
+//          caller cannot round-trip it into an empty status) and writes
+//          nothing else to the item either. Its verdict is recorded by the
+//          persisted review.
 //
 // The completion policy is expressed ONLY as the boolean `writesCompletion`:
 // `reviewed` means the item is eligible for the land-time `done` write
@@ -1185,27 +1181,25 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // stamped block, or written by any surface that consumes it.
 const GATE_POLICY = {
   code: {
-    reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true, clearsPlanReviewTag: false },
+    reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true },
     rework: {
       phase: 'in-progress',
       task: 'in-progress',
       status: 'in-progress',
       writesCompletion: false,
-      clearsPlanReviewTag: false,
     },
     escalated: {
       phase: 'blocked',
       task: 'blocked',
       status: 'blocked',
       writesCompletion: false,
-      clearsPlanReviewTag: false,
       reasonPrefix: '[code]',
     },
   },
   plan: {
-    reviewed: { status: null, writesCompletion: false, clearsPlanReviewTag: true },
-    rework: { status: null, writesCompletion: false, clearsPlanReviewTag: false },
-    escalated: { status: null, writesCompletion: false, clearsPlanReviewTag: false, reasonPrefix: '[plan]' },
+    reviewed: { status: null, writesCompletion: false },
+    rework: { status: null, writesCompletion: false },
+    escalated: { status: null, writesCompletion: false, reasonPrefix: '[plan]' },
   },
 };
 
@@ -3358,31 +3352,19 @@ function persistDegradationGateLines() {
   ].join('\n');
 }
 
-// --- Plan-standalone consolidation helpers -----------------------------------
-// Two pure, post-pipeline consolidation/gate helpers the standalone plan-review
-// workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
-// CONSOLIDATION, not find/refute logic — they operate on the ranked survivors a
-// `buildReviewPipeline('plan')` run already produced, and add no new review
-// dimension, finder, or refuter. They live inside the stamped block so the
-// workflow consumer picks them up verbatim (the runtime cannot import), and are
+// --- Plan-standalone consolidation helper ------------------------------------
+// The pure, post-pipeline consolidation helper the standalone plan-review
+// workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. It is
+// CONSOLIDATION, not find/refute logic — it operates on the ranked survivors a
+// `buildReviewPipeline('plan')` run already produced, and adds no new review
+// dimension, finder, or refuter. It lives inside the stamped block so the
+// workflow consumer picks it up verbatim (the runtime cannot import), and is
 // exported for the Node verify harness.
 //
-// Scoping a reviewer to a target kind is NOT one of them. Which reviewers run
+// Scoping a reviewer to a target kind is NOT its job. Which reviewers run
 // on which kind of document is decided BEFORE the fan-out, by
 // `resolveReviewers` over `PLAN_TARGET_REVIEWERS`; a post-hoc strip of the
 // survivors would be a second mechanism policing the first.
-
-// filterPlanReviewTag(tags) — the read-filter-write half of the plan gate: return
-// the tag list with the reserved `needs-plan-review` removed by EXACT string
-// match, order and every sibling tag (e.g. `depends-unlanded`) preserved.
-// Idempotent (a list already lacking it is a safe no-op) and returns [] when
-// `needs-plan-review` was the only tag. `--tags` replaces the whole list, so a
-// caller must always write back this COMPLETE remaining list, never a blind
-// single-tag removal.
-function filterPlanReviewTag(tags) {
-  const list = Array.isArray(tags) ? tags : [];
-  return list.filter((t) => t !== 'needs-plan-review');
-}
 
 // classifyPlanOutcome(survivors) — map post-strip plan survivors onto the
 // canonical outcome vocabulary, reusing `hasBlocking` (no new severity logic):
@@ -4064,7 +4046,7 @@ function buildReviewPipeline(mode, deps) {
 // run time). scripts/verify-workflow-review.sh gates the two copies for drift.
 // No Date.now / Math.random — pure array/string ops plus injected async deps.
 //
-// `buildReviewPipeline`, `filterPlanReviewTag`,
+// `buildReviewPipeline`,
 // `classifyPlanOutcome`, `gateFor`, `summarizeFindings`, `shellQuote`,
 // `resolveRefutationBudget` and `resolveReviewers` are NOT declared here: they belong to the canonical
 // review source (lib/review.mjs) and reach this block from the stamped review
@@ -4148,8 +4130,7 @@ function planSourceCommand(item, pin, rdmBin, projFlag) {
 //
 // EVERY VALUE HERE IS AN IDENTIFIER OR A SHORT LIST. `planSlug` names the
 // `plan/<slug>` document under review; `planFile` names a FREE-FORM plan by
-// absolute path; `phases` names which phase stems a roadmap sweep covers; `tags`
-// carries the item's current tag list so the gate can write back a filtered one.
+// absolute path; `phases` names which phase stems a roadmap sweep covers.
 // No document body is an argument any more — `planText` is gone with the
 // transport negotiation it belonged to, because a judgment agent fetches the
 // plan itself from the command its prompt names.
@@ -4250,7 +4231,7 @@ function parsePlanArgs(rawArgs) {
   // (`source`, `base`, `expectedHead`, `expectedBranch` — see
   // rdm-wf-review-refute-fix.js's driver region), reused rather than a nested
   // shape invented for this engine. Read from STRUCTURED OBJECT KEYS ONLY, like
-  // `planSlug`/`planFile`/`reviewers`/`tags` above: a positional target slug
+  // `planSlug`/`planFile`/`reviewers` above: a positional target slug
   // must never be able to pin a checkout. NONE-OR-ALL: pinning only some of the
   // four would silently review against an unverified path, so a partial pin
   // throws here, at parse time, before any agent runs — the same stance
@@ -4307,8 +4288,8 @@ function parsePlanArgs(rawArgs) {
   // `fetched` is GONE. It was the hoist that let a caller supply the document
   // body the fetch agent would otherwise transcribe. There is no fetch agent and
   // no transcription: a reviewer reads the document itself. What a caller passes
-  // now is what it knows and the engine cannot — which PHASES to sweep, what
-  // TAGS the item currently carries, which reviews it has already had.
+  // now is what it knows and the engine cannot — which PHASES to sweep and
+  // which reviews the item has already had.
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
   // The CALLER-SUPPLIED REVIEWER OVERRIDE, applied to every review unit in this
   // run. Read from a STRUCTURED key only, exactly like `fetched` below — a
@@ -4348,7 +4329,7 @@ function parsePlanArgs(rawArgs) {
   resolveReviewers('plan', reviewers)
   // The PHASE STEMS a roadmap sweep covers. The engine does NOT read a roadmap
   // to discover them: the orchestrator ran `rdm roadmap show` itself and says
-  // which phases to review. Each entry is `{ stem, tags?, status?, priorReviews? }`
+  // which phases to review. Each entry is `{ stem, status?, priorReviews? }`
   // — `stem` is required, the rest are what the caller happens to know. With no
   // list, a roadmap target reviews the roadmap document ALONE.
   const phases = Array.isArray(a.phases)
@@ -4356,11 +4337,6 @@ function parsePlanArgs(rawArgs) {
         .map((p) => (typeof p === 'string' ? { stem: p } : p))
         .filter((p) => p && typeof p === 'object' && typeof p.stem === 'string' && p.stem.trim() !== '')
     : null
-  // The item's CURRENT tag list, for a single-unit target. `--tags` replaces the
-  // whole list, so the gate can only write back a filtered copy of a list it was
-  // actually given: absent means no gate commands are emitted at all, rather
-  // than a `--tags ""` that would silently drop a sibling tag.
-  const tags = Array.isArray(a.tags) ? a.tags.filter((t) => typeof t === 'string') : null
   // The reviews already recorded on this target, as `rdm review list --on
   // <ref> --format json` reports them. Feeds the round channel (see
   // priorRoundFromReviews / priorFindingsFromReviews). Absent fails toward
@@ -4488,7 +4464,6 @@ function parsePlanArgs(rawArgs) {
     sourcePin: sourcePin,
     sourceItem: sourceItem,
     phases: phases,
-    tags: tags,
     priorReviews: priorReviews,
     wontFixedTexts: wontFixedTexts,
     reviewers: reviewers,
@@ -4564,135 +4539,6 @@ function persistTargetFor(unit, persist, unitCount) {
   return 'roadmap/' + u.ident
 }
 
-// `gateMode` is GONE, and with it `PLAN_GATE_MODES` / `resolvePlanGateMode`.
-// It chose between "the gate agent writes the tag in-run" and "compute the
-// action and hand it back". Only the second exists now — the engine has no
-// agent that can write — so the choice collapses: EVERY run returns the action,
-// and the orchestrator applies it. What used to be the named escalation path
-// for a caller too close to the plan is simply how the gate works.
-
-// planGateCommands(kind, roadmap, ident, remainingTags, cfg) — the ONE place the
-// gate's two commands are built, consumed by buildGateAction (what the caller
-// gets back to run itself). Pure string assembly; no side effects.
-//
-// `cfg` carries the ENVIRONMENT axes (`{ rdmBin, project }`, as parsePlanArgs
-// resolved them). Omitting it yields a plain `rdm` and no project flag, which is
-// exactly the contract — never a repo-local build path baked into the emitted
-// bytes.
-//
-// The COMPLETE remaining list (already filtered by filterPlanReviewTag) is
-// written back, since `--tags` replaces the whole list; an empty list writes
-// `--tags ""`.
-//
-// BOTH LINES CARRY `|| exit 1`, the emitted-ladder rule this lane applies
-// everywhere (see review.mjs's persistReviewCommands and the code engine's
-// gateCommands). A caller pastes these into a plain shell with no `set -e`, and
-// a refused `update` followed by a successful `commit` would otherwise exit 0
-// and report a tag cleared that is still set.
-function planGateCommands(kind, roadmap, ident, remainingTags, cfg) {
-  const tags = Array.isArray(remainingTags) ? remainingTags : []
-  const tagsFlag = tags.length === 0 ? '--tags ""' : '--tags "' + tags.join(',') + '"'
-  const label = kind === 'phase' ? roadmap + '/' + ident : ident
-  const bin = resolveRdmBin(cfg && cfg.rdmBin)
-  const proj = projectFlag(cfg)
-  // Defense-in-depth: every `rdm` line an engine emits into a persist/gate
-  // ladder carries `< /dev/null`, mirroring review.mjs's
-  // `persistReviewCommands` — see its comment. `update`/`commit` don't
-  // currently block on stdin (task/phase/roadmap `update` never reads it),
-  // but the redirect keeps this ladder safe against the whole class of bug
-  // regardless of which `rdm` surface later grows a stdin read.
-  let updateCmd
-  if (kind === 'task') {
-    updateCmd = bin + ' task update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' < /dev/null || exit 1'
-  } else if (kind === 'phase') {
-    updateCmd = bin + ' phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit' + proj + ' < /dev/null || exit 1'
-  } else {
-    updateCmd = bin + ' roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' < /dev/null || exit 1'
-  }
-  // `rdm commit` REJECTS a project flag, so it carries none — the allow-list
-  // rule lib/estimate.mjs states for the same pair.
-  const commitCmd = bin + ' commit -m "chore(plan): clear needs-plan-review on ' + label + '" < /dev/null || exit 1'
-  return { updateCmd: updateCmd, commitCmd: commitCmd, tagsFlag: tagsFlag, label: label }
-}
-
-// The gate's EVIDENCE PROSE is gone — `buildGateEvidence`, `renderGateEvidence`,
-// `gateTwoPartyClause`, `groupUngradedSurvivors`, `UNGRADED_SEVERITIES`,
-// `UNGRADED_REASONS` and `buildTagWritePrompt`. Every one of them existed to
-// persuade a safety classifier that a MECHANICAL AGENT's tag write was
-// authorized. No agent writes the tag any more: the gate returns the two
-// commands and the orchestrator runs them, under its own authority, in the
-// session the operator invoked. There is nobody left to persuade.
-
-// buildGateAction(unit, gate, cfg) — the DECLARATIVE gate action returned on
-// EVERY unit, so a caller can iterate `units[].gateAction` uniformly. `cfg` is
-// the `{ rdmBin, project }` pair parsePlanArgs resolved, threaded straight
-// through to planGateCommands.
-//
-// The engine never applies it. `commands` comes from `planGateCommands`, and the
-// orchestrator runs those two lines in Bash under its own authority. Three cases:
-//
-//   * the outcome does not clear the tag (`rework`/`escalated`) →
-//     `clearsPlanReviewTag: false` and an EMPTY `commands` array.
-//   * the outcome clears it and the caller supplied the unit's CURRENT tags →
-//     the read-filter-write pair, carrying the complete remaining list.
-//   * the outcome clears it and the caller supplied NO tags → still no commands,
-//     and `tagsUnknown: true` says why. `--tags` replaces the whole list, so
-//     writing one this engine was never shown would silently drop a sibling tag
-//     such as `depends-unlanded`. Refusing to guess is the only safe branch, and
-//     it is visible rather than silent.
-function buildGateAction(unit, gate, cfg) {
-  const u = unit || {}
-  const g = gate || {}
-  const cached = Array.isArray(u.tags) ? u.tags : null
-  const clears = g.clearsPlanReviewTag === true
-  const remaining = cached === null ? [] : filterPlanReviewTag(cached)
-  const emit = clears && cached !== null
-  const cmds = planGateCommands(u.kind, u.roadmap, u.ident, remaining, cfg)
-  return {
-    kind: u.kind,
-    ident: u.ident,
-    roadmap: u.roadmap,
-    clearsPlanReviewTag: clears,
-    tagsUnknown: clears && cached === null,
-    remainingTags: remaining,
-    removedTags: cached === null ? [] : cached.filter((t) => remaining.indexOf(t) === -1),
-    commands: emit ? [cmds.updateCmd, cmds.commitCmd] : [],
-  }
-}
-
-// `gateFailureClause` is gone. It marked a gate that ATTEMPTED the tag write and
-// did not succeed. Nothing attempts it here any more, so a blocked gate is not a
-// state this engine can be in; an orchestrator whose own `rdm ... update` exits
-// nonzero reports that itself, with the shell's message.
-
-// gatePendingClause(reportedUnit) — the marker that makes a unit whose tag the
-// CALLER must still clear self-describing in its summary line, without being
-// reported as a failure. Empty on every other unit.
-//
-// It carries the literal commands rather than only pointing at
-// `gateAction.commands`, because a caller that only ever reads `summary` (a log
-// line, a chat message) would otherwise have to go find the JSON to act.
-//
-// QUOTING HAZARD — read before reusing this clause anywhere. Unlike
-// `coverageSummaryClause`, which is documented as quote-free precisely BECAUSE
-// it is interpolated into Bash prompts, this clause embeds an exact rdm command
-// containing double quotes (`--tags "a,b"`). It must therefore NEVER be
-// interpolated into a prompt: in plan mode `summary`/`reason` are RETURNED DATA,
-// and no prompt builder in this file reads either.
-function gatePendingClause(reportedUnit) {
-  const u = reportedUnit || {}
-  const action = u.gateAction || {}
-  if (action.clearsPlanReviewTag !== true) return ''
-  if (action.tagsUnknown === true) {
-    return (
-      ' [gate pending: this unit is reviewed, but its current tag list was not supplied, so no ' +
-      'needs-plan-review clear could be written out — re-run with the tags, or clear it by hand]'
-    )
-  }
-  const cmds = Array.isArray(action.commands) ? action.commands : []
-  return ' [gate pending: needs-plan-review is cleared by running — ' + cmds.join(' && ') + ']'
-}
-
 // `buildActPrompt` is gone with the `act:*` agent. Applying a small plan fix and
 // filing a large finding as a task are judgment PLUS a write, which is exactly
 // what the orchestrator is: it reads the returned findings and acts. The
@@ -4738,10 +4584,8 @@ function gatePendingClause(reportedUnit) {
 // list` entirely) says "the caller does not know" and must not be reported as
 // the same thing. `reviewUnit` tells them apart via `roundUnknown`
 // (`!Array.isArray(unit.priorReviews)`) and reports it visibly — see
-// `roundUnknownClause` below, which mirrors `gatePendingClause`'s
-// `tagsUnknown` treatment of the same absent-vs-empty distinction on the tag
-// channel. The round STILL reports 1 either way (no arithmetic changes), but
-// only the genuinely-empty case reports it silently.
+// `roundUnknownClause` below. The round STILL reports 1 either way (no
+// arithmetic changes), but only the genuinely-empty case reports it silently.
 
 // `extractPriorReviewsFromTranscript` is gone with the transcript it read. The
 // prior reviews now arrive as CALLER DATA (`priorReviews` per unit): the
@@ -4801,15 +4645,13 @@ function priorFindingsFromReviews(reviews) {
 }
 
 // roundUnknownClause(reportedUnit) — the marker that makes a unit whose round
-// could not be determined self-describing in its summary line, mirroring
-// `gatePendingClause`'s `tagsUnknown` branch above: a caller-absent input
-// (here `priorReviews`, there the current tag list) is reported visibly
-// rather than silently taking the same fallback value a genuinely-empty input
-// would. Empty whenever `roundUnknown` is not `true` (including a healthy
+// could not be determined self-describing in its summary line: a
+// caller-absent input (`priorReviews`) is reported visibly rather than
+// silently taking the same fallback value a genuinely-empty input would.
+// Empty whenever `roundUnknown` is not `true` (including a healthy
 // `priorReviews: []` — a caller that looked and found no prior reviews really
 // is on round 1), so a run that supplied its prior reviews renders
-// byte-unchanged. Present regardless of outcome — unlike `gatePendingClause`,
-// which only ever fires on a `reviewed` unit, a round that could not be
+// byte-unchanged. Present regardless of outcome: a round that could not be
 // determined is worth flagging on every outcome, since `round` (still
 // reported as 1, per the "fails toward round 0" stance) feeds the round-cap
 // arithmetic for every later pass too.
@@ -5002,10 +4844,9 @@ function classifyRoundOutcome(round, survivors) {
 
 // TERMINAL_PHASE_STATUSES / isTerminalPhaseStatus(status) — the roadmap-wide
 // sweep (buildReviewUnits' roadmap branch below) excludes a phase whose
-// status is EXACTLY `done` or `wont-fix` from the review/act/gate pipeline
-// entirely: there is no implementation left to vet, and clearing
-// `needs-plan-review` on a retired phase would assert something untrue about
-// it (task plan-review-skips-terminal-phases, "Why it matters beyond cost").
+// status is EXACTLY `done` or `wont-fix` from the review pipeline entirely:
+// there is no implementation left to vet (task
+// plan-review-skips-terminal-phases, "Why it matters beyond cost").
 //
 // FAIL-OPEN by construction: `isTerminalPhaseStatus` is an exact string match
 // against a small, closed list. Anything else — a missing status, an empty
@@ -5048,7 +4889,7 @@ function formatSkippedPhasesClause(skippedPhases) {
 // buildReviewUnits(parsed) — pure: turn a parsed target into the list of
 // independent review units. A `phase`/`task` target is a single unit; a
 // `roadmap` target is the roadmap body plus one unit per CALLER-SUPPLIED,
-// non-terminal phase stem, each gated independently. Returns
+// non-terminal phase stem, each reviewed independently. Returns
 // `{ units, skippedPhases }`.
 //
 // IT READS NOTHING AND NEEDS NOTHING READ. Each unit carries IDENTIFIERS only:
@@ -5057,9 +4898,8 @@ function formatSkippedPhasesClause(skippedPhases) {
 // `rdm ... show --numbered` (so a finder's `start_line`/`end_line` can only
 // ever name lines of the document the review is persisted on), and
 // `roadmapCommand`, an un-numbered `roadmap show --format json`, where a
-// parent roadmap exists and its `## Intent` is relevant — the tag list the
-// caller supplied for the gate, and the prior reviews the caller supplied for
-// the round channel. There is no body here to be empty, so the old fail-closed
+// parent roadmap exists and its `## Intent` is relevant — and the prior
+// reviews the caller supplied for the round channel. There is no body here to be empty, so the old fail-closed
 // "an unread plan must never be silently marked reviewed" branch has nothing
 // left to guard: an unreadable document now fails inside the reviewer that
 // tried to read it, and shows up as a missing dimension in `coverage`.
@@ -5083,7 +4923,6 @@ function buildReviewUnits(parsed) {
         kind: 'roadmap',
         ident: parsed.roadmap,
         roadmap: parsed.roadmap,
-        tags: Array.isArray(parsed.tags) ? parsed.tags : null,
         priorReviews: parsed.priorReviews,
         target: 'roadmap/' + parsed.roadmap,
         itemCommand: RDM + ' roadmap show ' + parsed.roadmap + PROJ + ' --numbered',
@@ -5106,7 +4945,6 @@ function buildReviewUnits(parsed) {
         kind: 'phase',
         ident: p.stem,
         roadmap: parsed.roadmap,
-        tags: Array.isArray(p.tags) ? p.tags : null,
         priorReviews: Array.isArray(p.priorReviews) ? p.priorReviews : null,
         target: phaseTarget,
         itemCommand: RDM + ' phase show ' + p.stem + ' --roadmap ' + parsed.roadmap + PROJ + ' --numbered',
@@ -5135,7 +4973,6 @@ function buildReviewUnits(parsed) {
         kind: parsed.kind,
         ident: ident,
         roadmap: parsed.roadmap,
-        tags: Array.isArray(parsed.tags) ? parsed.tags : null,
         priorReviews: parsed.priorReviews,
         target: unitTarget,
         itemCommand: isTask
@@ -5148,14 +4985,6 @@ function buildReviewUnits(parsed) {
     ],
   }
 }
-
-// `snapshotOriginalTags` is gone. It cached tags off a FETCHED payload so the
-// gate write could not observe a value that had taken a detour through the
-// review machinery. Nothing fetches tags now: the CALLER supplies them per unit
-// (`tags`, and `phases[].tags` on a roadmap sweep), having read them itself, and
-// the gate writes back exactly that list filtered. A unit whose tags the caller
-// did not supply gets NO gate commands at all rather than a `--tags ""` that
-// would silently drop its siblings.
 
 // formatUnitBudget(budget) — the visible per-unit refutation-budget clause,
 // appended to a unit's log line ONLY when the bound was actually hit. A unit
@@ -5199,9 +5028,10 @@ function formatUnitBudget(budget) {
 // Returns the structured result the caller reports:
 //   - implementation-plan: { kind, outcome, summary, findings } plus, with a
 //     `planSlug` and `persist` on, the `persistCommands`/`persistScript` ladder.
-//     No gate: a plan document carries no tags.
 //   - persisted targets: { kind, units:[…] } with a single phase/task target
-//     also flattened onto { outcome, summary, findings, gateAction, … }.
+//     also flattened onto { outcome, summary, findings, persistCommands, … }.
+//     Nothing on the result writes to the reviewed item: the verdict is
+//     recorded by running the persist ladder.
 async function runPlanReviewDriver(args, deps) {
   const d = deps || {}
   const _parallel = d.parallel
@@ -5246,7 +5076,7 @@ async function runPlanReviewDriver(args, deps) {
   // REAL rdm review, so an agent's review is the same artifact a human's is. It
   // RUNS NOTHING: the ladder is returned on the unit result and the orchestrator
   // pastes it into Bash. A writer that throws (an unrepresentable target) logs
-  // and yields null, leaving the outcome and the gate exactly as they were — a
+  // and yields null, leaving the outcome exactly as it was — a
   // review that could not be DESCRIBED is a lost audit trail, never a changed
   // verdict.
   function planPersistCommands(persistTarget, outcome, survivors) {
@@ -5334,8 +5164,7 @@ async function runPlanReviewDriver(args, deps) {
   // is DERIVED from the same `planSlug`, so the graded document and the recorded
   // verdict cannot name different documents.
   //
-  // No act step and no gate: a plan document carries no tags, so there is no
-  // `needs-plan-review` to clear.
+  // No act step.
   if (kind === 'implementation-plan') {
     const slug = parsed.planSlug
     const file = parsed.planFile
@@ -5396,8 +5225,7 @@ async function runPlanReviewDriver(args, deps) {
       findings: survivors,
     }
     // PRESENT ONLY WHEN THEY EXIST, so a free-form run's returned shape stays
-    // minimal and the documented "no gateAction / gate keys at all" contract for
-    // this kind still holds. Exactly one of the two is ever set, and it names
+    // minimal. Exactly one of the two is ever set, and it names
     // the document the reviewers were told to read — so a caller reading the
     // result can always say WHAT was graded.
     if (slug) planResult.planSlug = slug
@@ -5443,7 +5271,6 @@ async function runPlanReviewDriver(args, deps) {
     }
     const u = r.unit
     const gate = gateFor('plan', r.outcome)
-    const gateAction = buildGateAction(u, gate, parsed)
 
     // The persist ladder for this unit, BUILT and returned, never run.
     const unitPersist = persistOn
@@ -5451,8 +5278,7 @@ async function runPlanReviewDriver(args, deps) {
       : null
 
     // `reason` derives from the UNDECORATED summary: only `escalated` carries a
-    // reasonPrefix in plan mode, and the gate clause only ever attaches to a
-    // `reviewed` unit, so the two never collide.
+    // reasonPrefix in plan mode.
     const reason = gate.reasonPrefix ? gate.reasonPrefix + ' ' + r.summary : ''
     const reportedUnit = {
       kind: u.kind,
@@ -5464,8 +5290,6 @@ async function runPlanReviewDriver(args, deps) {
       newlyReported: r.newlyReported,
       repeats: r.repeats,
       status: gate.status,
-      clearsPlanReviewTag: gate.clearsPlanReviewTag,
-      gateAction: gateAction,
       reason: reason,
       summary: r.summary,
       budget: r.budget || null,
@@ -5485,16 +5309,12 @@ async function runPlanReviewDriver(args, deps) {
       reportedUnit.persistScript = unitPersist.join('\n')
     }
     // Clause order is FIXED: summarizeFindings → coverage clause (inside
-    // r.summary) → round-unknown clause → gate clause.
-    reportedUnit.summary = r.summary + roundUnknownClause(reportedUnit) + gatePendingClause(reportedUnit)
+    // r.summary) → round-unknown clause.
+    reportedUnit.summary = r.summary + roundUnknownClause(reportedUnit)
     reported.push(reportedUnit)
     _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + reportedUnit.summary + formatUnitBudget(r.budget))
   }
 
-  // How many units are waiting on the caller to run their gate commands. Always
-  // present (0, never undefined) so a caller summing across runs never gets
-  // `undefined` at the moment it is deciding whether a tag was left set.
-  const gatePendingCount = reported.filter((x) => x.gateAction && x.gateAction.clearsPlanReviewTag === true).length
   const skippedClause = formatSkippedPhasesClause(skippedPhases)
   // Attached to every summary a unit-failure can reach, so "reviewed nothing"
   // can never present as "found nothing". Empty on a healthy run, so a healthy
@@ -5505,11 +5325,9 @@ async function runPlanReviewDriver(args, deps) {
   const result = {
     kind: kind,
     units: reported,
-    gatePendingCount: gatePendingCount,
     skippedPhases: skippedPhases,
-    // Always present (an array, never undefined) for the same reason
-    // `gatePendingCount` always is: a caller deciding whether a sweep covered
-    // its phases must not have to tell absent from zero.
+    // Always present (an array, never undefined): a caller deciding whether a
+    // sweep covered its phases must not have to tell absent from zero.
     failedUnits: failedUnits,
   }
   if (kind !== 'roadmap' && reported.length === 1) {
@@ -5519,7 +5337,6 @@ async function runPlanReviewDriver(args, deps) {
     result.budget = reported[0].budget
     result.coverage = reported[0].coverage
     result.findings = reported[0].findings
-    result.gateAction = reported[0].gateAction
     if (reported[0].roundNote) result.roundNote = reported[0].roundNote
     if (reported[0].persistCommands) {
       result.persistCommands = reported[0].persistCommands
@@ -5537,12 +5354,7 @@ async function runPlanReviewDriver(args, deps) {
     result.summary = 'plan-review (' + kind + '): 0 unit(s) reviewed' + skippedClause + failedClause
   }
   _log(
-    'plan-review (' + kind + '): ' + reported.length + ' unit(s) reviewed' +
-      (gatePendingCount > 0
-        ? ' — ' + gatePendingCount + ' gate(s) pending (run units[].gateAction.commands)'
-        : '') +
-      skippedClause +
-      failedClause
+    'plan-review (' + kind + '): ' + reported.length + ' unit(s) reviewed' + skippedClause + failedClause
   )
   return result
 }

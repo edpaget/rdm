@@ -19,7 +19,7 @@ Review the *plan* of an rdm roadmap, phase, or task — not its implementation. 
 Pass `$ARGUMENTS` through to the `rdm-wf-plan-review` Workflow with any `--rdm-bin <path>`, `--project <name>` and `--max-refutations N` pairs removed first — they travel only as the structured `rdmBin`/`project`/`maxRefutations` keys below, because the workflow's tokenizer would read their values as target slugs. Remove any `--models <preset>` pair too — it is **not** forwarded as a workflow key at all; it is consumed by this skill's own model resolutions (the `findModel` … `consolidateEffort` bullet below). `--models <preset>` — optional. The name of a model preset for this run. When given, every `rdm model resolve` this skill runs carries `--preset <preset>`; when absent, no flag is added and `RDM_MODEL_PRESET` / the `[models] preset` key still select (see `rdm model show` for the selectable names). The name is passed through verbatim and never interpreted here; an unknown name fails at the first resolve with rdm's own error. It accepts the same four target forms:
 
 - `--task <slug>` — review a task's plan.
-- `--roadmap <slug>` — review the whole roadmap: its own body plus **every phase, gated independently**. A phase whose status is exactly `done` or `wont-fix` is **excluded from this sweep** — there is no implementation left to vet, and clearing `needs-plan-review` on a retired phase would assert something untrue about it — and the exclusion is **reported, never silently dropped**: the run names every skipped phase (stem + status) in its summary and log. A phase with a missing, blank, or unrecognized status is **kept in the sweep** (fail-open) rather than skipped. This filter applies only to the aggregate `--roadmap` sweep — targeting a terminal phase explicitly (see the next bullet) still reviews it.
+- `--roadmap <slug>` — review the whole roadmap: its own body plus **every phase, each with its own outcome**. A phase whose status is exactly `done` or `wont-fix` is **excluded from this sweep** — there is no implementation left to vet — and the exclusion is **reported, never silently dropped**: the run names every skipped phase (stem + status) in its summary and log. A phase with a missing, blank, or unrecognized status is **kept in the sweep** (fail-open) rather than skipped. This filter applies only to the aggregate `--roadmap` sweep — targeting a terminal phase explicitly (see the next bullet) still reviews it.
 - `<roadmap-slug> [phase-number]` — a single phase when the phase arg is present; with no phase arg it behaves exactly like `--roadmap <slug>`. An explicitly-targeted phase is **always reviewed regardless of its status** — the terminal-phase exclusion above applies only to the `--roadmap`-wide sweep, never to a single-unit target.
 - `--implementation-plan` — review an `rdm-do` plan document handed over in context, ahead of implementation. There is **no persisted rdm item** behind this mode, so it is report-only (see the carve-out below). Also pass `task`, or `roadmap` + `phase`, naming the item the plan implements — the `implements` field of `rdm plan show <slug> {proj_flag} --format json` — so the `confirmation` reviewer can read that item's acceptance criteria. The item is reference material, not a second review target.
 
@@ -37,7 +37,7 @@ only IDENTIFIERS and short lists, all read from the structured `args` object and
 never parsed out of the `$ARGUMENTS` flag string:
 
 - **`phases`** — for a `--roadmap` target, the phase stems to sweep:
-  `[{ stem, tags, status, priorReviews }, …]`, from your own
+  `[{ stem, status, priorReviews }, …]`, from your own
   `rdm roadmap show <slug> {proj_flag} --format json`. **Omit it and
   the roadmap document is reviewed alone** — the workflow never reads a roadmap to
   discover its phases. A phase whose `status` is exactly `done` or `wont-fix` is
@@ -47,11 +47,6 @@ never parsed out of the `$ARGUMENTS` flag string:
   `priorReviews` below reaches only the roadmap-document unit itself, never the
   phases. Omit a phase's `priorReviews` key and that phase reports `roundUnknown`
   (see below).
-- **`tags`** — the target item's current tag list, for a single-unit target, exactly
-  as the binary printed it. The gate writes back a filtered copy, and `--tags`
-  replaces the whole list, so **a unit whose tags you did not supply gets no gate
-  commands at all** (`gateAction.tagsUnknown: true`) rather than a `--tags ""` that
-  would drop a sibling tag such as `depends-unlanded`.
 - **`priorReviews`** — `rdm review list --on <ref> {proj_flag}
   --format json`, for the round channel. Pass `[]`, not nothing, when the
   command returns no reviews — that is the genuinely-round-1 case. Omitting
@@ -110,7 +105,8 @@ repo. Run these yourself, in order, and report each exit status:
    `persistCommands` / `persistScript`: the `review start` → `review comment` per
    finding → `review submit` → `commit` ladder. Run the script in **one** Bash
    session (later lines read variables the earlier ones set); it prints
-   `reviewId=<id>`. Findings are anchored on line ranges
+   `reviewId=<id>`. That persisted review is the record that the document was
+   reviewed — nothing is written to the item itself. Findings are anchored on line ranges
    (`review comment --line <start>-<end> --on-anchor-failure whole-document`), so a
    refused line anchor lands whole-document mechanically, with rdm's reason in the
    comment's stored `anchor_state`, and is counted in the printed `anchorsDegraded=`
@@ -120,7 +116,7 @@ repo. Run these yourself, in order, and report each exit status:
    `review start` itself is refused, stop and report it.
 2. **Act on the findings** — apply a small, localized plan fix by writing the whole
    `--body` back; file a large structural finding as a task with
-   `--tags plan-review --no-plan-review`. This is yours because it is judgment plus
+   `--tags plan-review`. This is yours because it is judgment plus
    a write. Findings marked `unrefuted: true` were reported, not verified — treat
    them under the disposition rule in the Review specification below. Skip
    this step entirely in `--implementation-plan` mode — there is no persisted rdm
@@ -131,8 +127,8 @@ repo. Run these yourself, in order, and report each exit status:
    rdm phase update <phase-number> --roadmap <slug> --body "<full updated body>" --no-edit {proj_flag}
    # or: rdm task update <slug> --body "<full updated body>" --no-edit {proj_flag}
    # or: rdm roadmap update <slug> --body "<full updated body>" --no-edit {proj_flag}
-   # large: file it; --no-plan-review keeps the gate's own output out of the gate
-   rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-plan-review --no-edit {proj_flag}
+   # large: file it as a task
+   rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-edit {proj_flag}
    rdm commit -m "chore(plan): address plan review findings on <target>"
    ```
 3. **Record the round** — a non-`reviewed` unit carries `roundNote`, the rendered
@@ -147,31 +143,6 @@ repo. Run these yourself, in order, and report each exit status:
    whole-document-authoritative and there is no patch-shaped write, so do the
    read-modify-write in **Bash** — keep the body in a shell variable and never
    route it through your own output.
-4. **Clear the gate** — see below.
-
-### Applying the gate
-
-The workflow never writes the tag. Every unit comes back with
-
-```
-gateAction: { clearsPlanReviewTag, tagsUnknown, commands: [<update>, <commit>], remainingTags, removedTags }
-```
-
-Show the operator the outcome and the finding count first, then run
-`units[].gateAction.commands` yourself, in order. `gateAction.remainingTags` is the
-exact sibling-preserved list that will be written — `--tags` replaces the whole
-list, so do not retype it by hand. A unit that did not reach `reviewed` carries
-`commands: []`; there is nothing to apply for it. `result.gatePendingCount` says how
-many units are waiting on you.
-
-**Surface a pending gate at the TOP of your report**, with its exact commands,
-before anything else — and never describe such a unit as cleanly reviewed until you
-have run them: until then its tag is still set, so the item reads as
-un-plan-reviewed to every other surface. A unit with `tagsUnknown: true` reached
-`reviewed` but could not be given commands because you did not pass its tags; say
-so rather than clearing the tag from memory.
-
-The gate returns its commands rather than writing them, unconditionally, so every tag write happens in your session where a refusal can be surfaced and reported.
 
 ### Capture intent, if the target predates it
 
@@ -216,9 +187,8 @@ The pipeline runs `find → refute → filter → verdict → act → gate`; no 
 Key domain behaviors the workflow implements, worth knowing when reading its output:
 
 - **The workflow selects the reviewers by target type; `reviewers` overrides.** An item document and an implementation plan are judged against separate rubrics. With no `reviewers` key, a phase or a task runs `scope`, `specification` and `acceptance-criteria` (a phase adds `intent-alignment` when you pass `intentRecorded: true`), a roadmap body runs `specification`, and an `--implementation-plan` runs `code-change`, `confirmation` and `architectural-fit`. Pass `reviewers: ['scope', …]` to run exactly those instead, on every unit of the run. An unrecognised name is dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran`; nothing refuses a thin set. The per-reviewer cues are in **Review specification § Reviewers** below.
-- **Per-phase independent gating.** Under `--roadmap <slug>` the roadmap body and every non-terminal phase are reviewed and gated **individually**: one phase's `rework` never holds the tag on a sibling that reached `reviewed`. A phase excluded from the sweep as terminal (`done`/`wont-fix`) is **never gated** — there is no tag disposition to make on a unit that was never reviewed this run.
-- **The gate manages a tag, not a status.** Plan review owns the reserved `needs-plan-review` tag. On `reviewed` it emits the **read-filter-write** pair that drops it (`filterPlanReviewTag` preserves siblings like `depends-unlanded`, since `--tags` replaces the whole list); on `rework`/`escalated` it emits nothing and the tag stays. It **never** writes an rdm status and never writes a land-time completion directive — and it never runs the commands itself; you do.
-- **`--implementation-plan` is report-only.** No persisted rdm ITEM behind it, so there is no `needs-plan-review` to clear and no gate at all — it reports the outcome and findings, plus the persist ladder when you named the plan by `planSlug`.
+- **Per-phase independent outcomes.** Under `--roadmap <slug>` the roadmap body and every non-terminal phase are reviewed **individually**, and each gets its own outcome: one phase's `rework` says nothing about a sibling that reached `reviewed`. A phase excluded from the sweep as terminal (`done`/`wont-fix`) gets **no outcome** — it was never reviewed this run.
+- **`--implementation-plan` is report-only.** No persisted rdm ITEM behind it, so there is no body edit and no filed task — it reports the outcome and findings, plus the persist ladder when you named the plan by `planSlug`.
 - **An unread document fails where it is read.** The workflow no longer fetches anything, so there is no fetch to fail closed on: a reviewer that cannot read its target fails, that reviewer is recorded as non-participating in `coverage.failed`, and the reduced coverage is named in the unit's summary — so a 2-of-3 review can never read as a clean one.
 
 ## Guidelines
@@ -227,8 +197,7 @@ Key domain behaviors the workflow implements, worth knowing when reading its out
 - The dispatched sub-agents only review and report — they never edit. Only the orchestrator applies small fixes (whole-`--body` writes) and files large findings as tasks, and only after refutation or under the un-refuted disposition rule.
 - Never guess intent when the target document is ambiguous or missing — report it as a finding instead.
 - `--body` is whole-document-authoritative: always read-modify-write the entire body, never assume a patch/diff mechanism exists. Do that read-modify-write in **Bash**, keeping the body in a shell variable — never route a document through your own output.
-- `--tags` replaces the whole list: never retype a tag list by hand — run the gate's `gateAction.commands`, whose `remainingTags` is the exact sibling-preserved list.
-- A surviving `blocking` finding yields `rework` or `escalated`; concerns and suggestions alone never hold the gate closed.
+- A surviving `blocking` finding yields `rework` or `escalated`; concerns and suggestions alone never do.
 
 ## Review specification
 
@@ -364,11 +333,10 @@ how each of the item's criteria will be confirmed?
   `blocking`; stylistic preferences alone are not.
 
 **Plan target types.** A plan review targets a `roadmap` (its own body,
-plus every phase gated individually), a `phase`, a `task`, or an
+plus every phase reviewed individually), a `phase`, a `task`, or an
 `implementation-plan` — an `rdm-do` plan document handed over in context
 ahead of implementation. `implementation-plan` has **no persisted rdm
-item** behind it, so it is report-only: no body edit, no filed task, and
-no gate (see § Gate).
+item** behind it, so it is report-only: no body edit and no filed task.
 
 The target type selects the reviewers when the caller names none:
 
@@ -551,11 +519,9 @@ a blocker always yields `rework` or `escalated`.
   step, a missing prerequisite, an untestable acceptance criterion).
 - `reviewed` — clean, or clean with recorded concerns/suggestions.
 
-`rework` and `escalated` both leave the gate **closed**, so this is exactly
-the outcome the retired PASS / PASS WITH CONCERNS / REWORK vocabulary
-produced: PASS and PASS WITH CONCERNS both collapse to `reviewed` (they
-cleared the tag), and REWORK splits into `rework` and `escalated` (both
-leave it).
+These are the outcomes the retired PASS / PASS WITH CONCERNS / REWORK
+vocabulary produced: PASS and PASS WITH CONCERNS both collapse to
+`reviewed`, and REWORK splits into `rework` and `escalated`.
 
 **Plan-stage severity calibration.** Each reviewer's prompt carries the
 severity contract of its own document kind.
@@ -618,86 +584,22 @@ In `--implementation-plan` mode the *act* half is skipped entirely — there is
 no persisted rdm item to write to or file against. Findings are still
 reported; folding them back into the plan text is left to the caller.
 
-### Gate — clear or leave `needs-plan-review`
+### Outcome — nothing is written to the item
 
-The plan review owns the reserved `needs-plan-review` tag. It **never**
-persists an rdm status — the item's status is the implementation lane's to
-own — and it never writes a land-time completion directive.
+A plan review **never** persists an rdm status — the item's status is the
+implementation lane's to own — never writes a tag, and never writes a
+land-time completion directive. The verdict is recorded by the persisted
+review on the target.
 
-| Outcome | `needs-plan-review` | rdm status written |
-|---|---|---|
-| **reviewed** | cleared | none |
-| **rework** | left in place | none |
-| **escalated** | left in place | none |
+On **rework** and **escalated**, enumerate exactly what must change before
+the next review pass. On `escalated`, say what human decision is required;
+prefix a recorded reason with `[plan]` so it is attributable to the plan
+review.
 
-On **reviewed**:
-
-1. Read the target's current tags (the `tags` array is present in every JSON
-   summary).
-2. Filter `needs-plan-review` out of that array by **exact string match**.
-   This is idempotent: a target that already lacks the tag is a safe no-op.
-3. Write the **complete remaining list** back. Tags **replace** the whole list
-   — there is no remove-one-tag operation — so always read-filter-write, or a
-   sibling tag (e.g. the reserved `depends-unlanded`) is silently dropped.
-   When `needs-plan-review` was the only tag, write an **empty** list.
-4. Land it with a `chore(plan): clear needs-plan-review on <target>` commit.
-
-On **rework** and **escalated**: do **not** touch the tags. `needs-plan-review`
-is left unchanged in place. State explicitly in the report that the tag was
-left, and enumerate exactly what must change before the next review pass. On
-`escalated`, say what human decision is required; prefix a recorded reason
-with `[plan]` so it is attributable to this gate.
-
-Scope of the gate by target type:
-
-- **`--roadmap <slug>`** — gate each phase **individually**, and the roadmap
-  body separately. One phase's `rework` must not hold the tag on phases that
-  reached `reviewed`, and the roadmap body's own outcome is independent of any
-  phase's.
-- **`--implementation-plan`** — **no gate at all.** There is no persisted rdm
-  item, so there is no tag to clear and nothing to mutate; report the outcome
-  and findings only.
-
-#### The gate carries its own justification
-
-A `reviewed` outcome clearing `needs-plan-review` is **specified gate behavior,
-not self-approval**: the verdict is never authored by the orchestrator running
-this review. Every finding comes from an independently dispatched finder, each
-finding that can gate is sent to a separate refuter, and the gate itself is a
-table lookup (`GATE_POLICY.plan`) over that verdict — the two-party property is
-structural, not procedural. So state the write **with its evidence**: which
-dimension finders ran, how many findings they produced, how many an independent
-refuter graded, how many survived and how many of those reached blocking
-severity, the exact tag list about to be written, and that the write touches one
-reversible metadata tag — no rdm status, no code, no land-time completion
-directive.
-
-That grading claim is **computed, never assumed**. Refutation is deliberately not
-total: a non-gating `suggestion` is never sent to a refuter, a gating finding past
-the per-unit refutation budget passes through un-refuted, and a crashed refuter
-leaves its finding un-refuted — none of which prevents a `reviewed` outcome. The
-gate therefore reports this unit's real graded/un-graded split, itemised by
-severity and reason, and states that an un-graded survivor was **reported, not
-verified**. Do not restate it as blanket per-finding grading when you report.
-
-Two rules follow, whatever mechanism your surface uses to perform the write —
-whether you run the two commands yourself or a driver runs them for you:
-
-- **A gate that was supposed to clear the tag and did not is LOUD.** If the tag
-  write fails, is refused, or is skipped on a unit whose outcome was `reviewed`,
-  say so at the **top** of your report, with the exact command to run — never
-  bury it, and never describe that unit as cleanly reviewed. Its tag is still
-  set, so the item still reads as un-plan-reviewed to every other surface.
-- **You may defer the write.** When the session running the review is the same
-  one that authored the plan, or is otherwise too close to it, do not perform
-  the write at all: report the exact commands the gate would have run, together
-  with the complete sibling-preserved tag list they write, and let a human — or
-  a session that did not author the plan — apply them. That is a deliberate
-  hand-off, not a failure, and must be reported as a deferral rather than as a
-  gate failure.
-
-The decision this rests on, its boundary, and the recorded evidence behind it
-live in `docs/plan-review-gate-policy.md`.
+With **`--roadmap <slug>`**, each phase gets its **own** outcome, and so does
+the roadmap body: one phase's `rework` says nothing about the phases that
+reached `reviewed`, and the roadmap body's outcome is independent of any
+phase's.
 
 ### Guidelines
 

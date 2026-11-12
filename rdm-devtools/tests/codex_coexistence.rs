@@ -372,11 +372,23 @@ fn live_competing_copy_answer_fails() {
     let f = Fixture::new();
     f.scenario(
         "codex",
-        json!({"exec": {"planGate": "needs-plan-review, per USER_COPY_ONLY"}}),
+        json!({"exec": {"planGate": "an independent review, per USER_COPY_ONLY"}}),
     );
     let out = f.run_live(&[]);
     let err = assert_exit(&out, 1);
     assert!(err.contains("quotes a competing copy"), "{err}");
+}
+
+#[test]
+fn live_answer_naming_only_the_retired_tag_names_no_gate() {
+    let f = Fixture::new();
+    f.scenario(
+        "codex",
+        json!({"exec": {"planGate": "needs-plan-review must be cleared first"}}),
+    );
+    let out = f.run_live(&[]);
+    let err = assert_exit(&out, 1);
+    assert!(err.contains("names no plan-review gate"), "{err}");
 }
 
 #[test]

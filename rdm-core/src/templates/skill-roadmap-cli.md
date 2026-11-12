@@ -77,7 +77,3 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
 - Link related existing items in Context/Intent prose using `rdm:roadmap/<slug>`,
   `rdm:phase/<roadmap>/<stem>`, `rdm:task/<slug>` — check with `rdm search` first
   (step 1), never invent a slug.
-- If `plan_review` is enabled, every roadmap and phase created above already
-  carries a `needs-plan-review` tag — leave it in place, don't strip it by
-  hand. It's cleared only by manually running the `rdm-plan-review` skill
-  once the plan passes review — there is no automated reprompt.

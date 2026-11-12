@@ -30,7 +30,7 @@
 //!    …` under a bounded run whose prepare/cleanup hooks copy the login file to
 //!    `config/auth.json` (0600) and remove it on every catchable path
 //!    (including SIGINT/SIGTERM and the exec deadline). The trace must show a
-//!    successful read of the repository skill yielding `needs-plan-review`,
+//!    successful read of the repository skill yielding that skill's text,
 //!    and the answer must select the repository skill, name the plan gate and
 //!    quote neither competing copy. Without consent the live step is NOT RUN
 //!    and `result.json` records `liveInvocation: false`.
@@ -472,14 +472,24 @@ pub fn check_catalog(
 
 const PROMPT_TAIL: &str = ", not the user or plugin copy. This is an inspection-only smoke test: read the selected skill, identify its absolute path and the required plan-review gate, then stop. Do not run rdm, create plans, edit files, invoke agents, or use the network. Do not treat an alternative copy as selected merely because its name matches.";
 
-/// `/needs-plan-review|independent.*review/i` (`.` stops at a newline).
+/// `/independent.*review/i` (`.` stops at a newline).
 fn plan_gate_ok(gate: &str) -> bool {
     gate.to_lowercase().split('\n').any(|line| {
-        line.contains("needs-plan-review")
-            || line
-                .find("independent")
-                .is_some_and(|at| line[at..].contains("review"))
+        line.find("independent")
+            .is_some_and(|at| line[at..].contains("review"))
     })
+}
+
+/// Whether `output` is a read of the whole `skill`: every non-blank line of
+/// the skill appears in it, so a line-numbered read counts and an empty or
+/// unrelated output does not.
+fn yields_skill(output: &str, skill: &str) -> bool {
+    let mut lines = skill
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .peekable();
+    lines.peek().is_some() && lines.all(|line| output.contains(line))
 }
 
 /// The live invocation: `codex exec` with the private login copy, checked
@@ -499,6 +509,8 @@ pub fn live(o: &Options, l: &Layout, env: &ChildEnv, auth: &Path) -> Result<(), 
     )
     .map_err(|e| check(format!("cannot write {}: {e}", schema.display())))?;
     let repository_skill = l.repository_skill();
+    // What a read of the repository skill must print, taken before Codex runs.
+    let skill_text = String::from_utf8_lossy(&read(&repository_skill)?).into_owned();
     let prompt = format!(
         "Use $rdm-roadmap specifically from {}{PROMPT_TAIL}",
         repository_skill.display()
@@ -559,7 +571,7 @@ pub fn live(o: &Options, l: &Layout, env: &ChildEnv, auth: &Path) -> Result<(), 
                 && item
                     .and_then(|i| i.get("aggregated_output"))
                     .and_then(Value::as_str)
-                    .is_some_and(|out| out.contains("needs-plan-review"))
+                    .is_some_and(|out| yields_skill(out, &skill_text))
         });
     if !read_observed {
         return Err(check(

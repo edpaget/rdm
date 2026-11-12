@@ -63,7 +63,8 @@ fn config_list_shows_defaults() {
         .stdout(predicate::str::contains("remote.default"))
         .stdout(predicate::str::contains("root"))
         .stdout(predicate::str::contains("default_branch"))
-        .stdout(predicate::str::contains("plan_review"));
+        .stdout(predicate::str::contains("max_refutations"))
+        .stdout(predicate::str::contains("plan_review").not());
 }
 
 #[test]
@@ -940,109 +941,6 @@ fn config_get_max_refutations_env_reports_the_parsed_number() {
         .stdout("4\n");
 }
 
-// -- plan_review config round-trips --
-
-#[test]
-fn config_set_and_get_plan_review() {
-    let (config_dir, _root_dir) = setup_repo();
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "set", "plan_review", "true"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("repo config"));
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "get", "plan_review"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("true"))
-        .stdout(predicate::str::contains("repo config"));
-}
-
-#[test]
-fn config_set_and_get_global_plan_review() {
-    let (config_dir, _root_dir) = setup_repo();
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "set", "plan_review", "true", "--global"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("global config"));
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "get", "plan_review"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("true"))
-        .stdout(predicate::str::contains("global config"));
-}
-
-#[test]
-fn config_repo_plan_review_overrides_global() {
-    let (config_dir, _root_dir) = setup_repo();
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "set", "plan_review", "true", "--global"])
-        .assert()
-        .success();
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "set", "plan_review", "false"])
-        .assert()
-        .success();
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "get", "plan_review"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("false"))
-        .stdout(predicate::str::contains("repo config"));
-}
-
-#[test]
-fn config_set_plan_review_rejects_invalid() {
-    let (config_dir, _root_dir) = setup_repo();
-
-    rdm()
-        .env("XDG_CONFIG_HOME", config_dir.path())
-        .env_remove("RDM_ROOT")
-        .env_remove("RDM_PROJECT")
-        .env_remove("RDM_FORMAT")
-        .args(["config", "set", "plan_review", "yes"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("true").or(predicate::str::contains("false")));
-}
-
 // -- server.quick_filters config round-trips --
 
 #[test]
@@ -1511,7 +1409,6 @@ fn scoped(config_dir: &TempDir) -> Command {
         "RDM_DISPATCH_VERIFY",
         "RDM_GATES_REVIEWED",
         "RDM_REVIEWED_GATE",
-        "RDM_PLAN_REVIEW",
         "RDM_DEFAULT_BRANCH",
     ] {
         cmd.env_remove(var);
@@ -1614,7 +1511,6 @@ fn config_list_project_lists_exactly_the_scopable_keys() {
         [
             "dispatch.verify",
             "gates.reviewed",
-            "plan_review",
             "default_branch",
             "max_refutations"
         ],
@@ -1654,8 +1550,8 @@ fn config_set_non_scopable_key_with_project_is_refused() {
     for key in [
         "dispatch.verify",
         "gates.reviewed",
-        "plan_review",
         "default_branch",
+        "max_refutations",
     ] {
         assert!(stderr.contains(key), "{key} missing from: {stderr}");
     }
@@ -1677,8 +1573,8 @@ fn config_get_non_scopable_key_with_project_is_refused() {
     for key in [
         "dispatch.verify",
         "gates.reviewed",
-        "plan_review",
         "default_branch",
+        "max_refutations",
     ] {
         assert!(stderr.contains(key), "{key} missing from: {stderr}");
     }
@@ -1695,8 +1591,8 @@ fn config_set_project_with_global_is_refused() {
         .args([
             "config",
             "set",
-            "plan_review",
-            "true",
+            "default_branch",
+            "trunk",
             "--project",
             "a",
             "--global",
@@ -1818,7 +1714,7 @@ fn config_list_reports_a_bad_key_inline_and_lists_the_rest() {
 fn config_set_project_writes_every_scopable_key_to_the_project_table() {
     let (config_dir, root_dir) = setup_repo();
     for (key, value) in [
-        ("plan_review", "true"),
+        ("max_refutations", "3"),
         ("gates.reviewed", "true"),
         ("default_branch", "trunk"),
     ] {
@@ -1831,10 +1727,10 @@ fn config_set_project_writes_every_scopable_key_to_the_project_table() {
 
     let config = read_repo_config(&root_dir);
     let a = &config.projects["a"];
-    assert_eq!(a.plan_review, Some(true));
+    assert_eq!(a.max_refutations, Some(3));
     assert_eq!(a.gates.as_ref().and_then(|g| g.reviewed), Some(true));
     assert_eq!(a.default_branch.as_deref(), Some("trunk"));
-    assert_eq!(config.plan_review, None);
+    assert_eq!(config.max_refutations, None);
     assert!(config.gates.as_ref().and_then(|g| g.reviewed).is_none());
     assert_eq!(config.default_branch, None);
 }
@@ -1846,7 +1742,7 @@ fn config_set_invalid_values_are_refused_and_leave_rdm_toml_unchanged() {
 
     for (key, value, project) in [
         ("dispatch.verify", "  ", Some("a")),
-        ("plan_review", "maybe", Some("a")),
+        ("max_refutations", "lots", Some("a")),
         ("gates.reviewed", "maybe", Some("a")),
         ("dispatch.verify", "  ", None),
         ("dispatch.verify", "", None),

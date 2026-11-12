@@ -13,10 +13,9 @@
 //!   `wont-fix`) and `blocked` ones. This is an inventory of tags in use, not
 //!   an active-work view — a deliberate divergence from
 //!   [`ops::backlog`](crate::ops::backlog), which filters to active tasks.
-//! - **Reserved tags are counted like any other tag.** `needs-plan-review`
-//!   (see [`crate::tags`]) is a real tag in use and is not special-cased or
-//!   filtered; with the plan-review gate enabled it will often top the list,
-//!   which is correct and informative.
+//! - **Every tag is counted alike.** A tag a workflow treats as reserved by
+//!   convention (`depends-unlanded`, say) is a real tag in use and is not
+//!   special-cased or filtered.
 //! - **Tag strings are compared verbatim.** No case folding and no trimming:
 //!   `CLI` and `cli` are two distinct tags. Normalizing here would silently
 //!   misreport the user's data.

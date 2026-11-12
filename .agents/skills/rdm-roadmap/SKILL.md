@@ -17,18 +17,18 @@ Read related work before writing:
 
 Capture the user's intended outcome, boundaries, dependencies, and observable acceptance criteria. Order phases to deliver a usable vertical slice early. Keep unrelated work separate. Discuss material scope decisions before creating them.
 
-Create through the CLI, with meaningful tags and `needs-plan-review` on the roadmap and each phase:
+Create through the CLI, with meaningful tags on the roadmap and each phase:
 
 ```bash
-"${RDM_BIN:-rdm}" roadmap create <slug> --title "Title" --body "Intent and scope" --tags <topic>,needs-plan-review --no-edit --project rdm
-"${RDM_BIN:-rdm}" phase create <bare-slug> --number 1 --roadmap <slug> --title "Title" --body "Work and acceptance criteria" --tags <topic>,needs-plan-review --no-edit --project rdm
+"${RDM_BIN:-rdm}" roadmap create <slug> --title "Title" --body "Intent and scope" --tags <topic> --no-edit --project rdm
+"${RDM_BIN:-rdm}" phase create <bare-slug> --number 1 --roadmap <slug> --title "Title" --body "Work and acceptance criteria" --tags <topic> --no-edit --project rdm
 ```
 
 Use bare phase slugs: rdm adds `phase-N-`. On update, `--body` replaces the whole body and stdin is ignored; `--tags` replaces all tags, so preserve existing ones. Never edit plan files directly. Validate any `rdm:` links with `rdm link check --on <ref>`, using the same binary and project.
 
 Inspect `"${RDM_BIN:-rdm}" status`, then `"${RDM_BIN:-rdm}" commit -m "docs(plan): describe roadmap changes"`. These commands take no project flag and commit only this session's changes. Do not use `--all` to work around a missing session identity.
 
-Hand the plan to an independent human or a working plan-review host. Codex phase-one support does not provide `rdm-plan-review`; author self-checks do not clear `needs-plan-review` or authorize implementation. Report exact roadmap/phase references and remaining decisions.
+Hand the plan to an independent human or a working plan-review host. Codex phase-one support does not provide `rdm-plan-review`; author self-checks are not an independent review and do not authorize implementation. Report exact roadmap/phase references and remaining decisions.
 
 
 ## Principles

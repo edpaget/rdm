@@ -28,19 +28,12 @@ pub fn run(
             tags,
             body,
             no_edit,
-            no_plan_review,
+            // Deprecated and ignored: kept so callers that still pass it run.
+            no_plan_review: _,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            let plan_review = rdm_core::config::resolve_plan_review(
-                Some(&project),
-                raw_repo_config,
-                global_config,
-                |k| std::env::var(k).ok(),
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review && !no_plan_review);
             let doc = commit_mutation(store, "failed to create task", |s| {
                 rdm_core::ops::task::create_task(
                     s,

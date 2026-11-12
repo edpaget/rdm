@@ -222,21 +222,5 @@ Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify 
 
 `"$RDM_BIN" agent-config claude --project rdm` prints rdm's full CLI usage guide (discovering work, reading, searching, updating status, document reviews, linking, creating items, status transitions, session-scoped commits) with `--project rdm` already filled in, instead of the guide's own `--project <PROJECT>` placeholder; the same content lives in `rdm-core/src/templates/instructions-cli.md`. Substitute `"$RDM_BIN"` for the bare `rdm` it shows.
 
-This repo also enables `plan_review` (see "Plan review" below) and `gates.reviewed` on its own plan data — see [`docs/core-enforced-gates.md`](docs/core-enforced-gates.md) for the latter's config and override policy.
-
-### Plan review
-
-A second, earlier gate than the document-review flow described in the generated CLI guide's "Document reviews" section: it reviews a roadmap/phase/task's **plan** before implementation begins, rather than the diff after implementation. Controlled by the `plan_review` config flag (`"$RDM_BIN" config set plan_review true`, `RDM_PLAN_REVIEW` env override, default `false`) — enabled for this repo's own plan data. While the flag is on, `roadmap create` / `phase create` / `task create` automatically stamp a reserved `needs-plan-review` tag onto every new item, alongside any user-supplied `--tags`.
-
-List pending items with:
-
-```bash
-"$RDM_BIN" search "" --tag needs-plan-review --project rdm
-```
-
-Run the `rdm-plan-review` skill against a pending item to review it: it dispatches parallel read-only sub-agents, then consolidates a **PASS** / **PASS WITH CONCERNS** / **REWORK** verdict. On PASS or PASS WITH CONCERNS it clears the `needs-plan-review` tag; on REWORK it leaves the tag in place and reports what must change. Both the plan-review Stop hook (`.claude/hooks/rdm-plan-review-on-create.sh`) and the earlier needs-review Stop hook are now retired — nothing reprompts automatically. Clearing `needs-plan-review` on items created via `rdm-roadmap`, ad hoc create commands, or `rdm-do` side-task filing is manual-only: run `rdm-plan-review` against the item, or periodically sweep with `"$RDM_BIN" search "" --tag needs-plan-review`. Active enforcement is tracked as a follow-up task (`wire-active-plan-review-tag-gate`) filed in the plan repo.
-
-The gate's self-review decision (may a session clear the tag on a plan it authored? — yes, because the verdict comes from independent finders/refuters, with a stated boundary), and the three recorded classifier blocks behind it, live in [`docs/plan-review-gate-policy.md`](docs/plan-review-gate-policy.md). `rdm-wf-plan-review` never writes the tag — it always returns `gateAction.commands` and the caller runs them, which is what `gateMode: 'return'` used to opt into. A unit still awaiting that write carries a `[gate pending: …]` clause on its summary and is counted by `gatePendingCount`; one whose current tag list the caller did not supply carries `tagsUnknown: true` and no commands, because `--tags` replaces the whole list.
-
-This gate composes with, and is independent from, the `needs-review` gate described in the generated CLI guide: `plan_review`/`needs-plan-review` gates **before** implementation begins (on the plan document), while `rdm-review`/`needs-review` gates **after** implementation (on the diff). Neither the plan-review Stop hook (`rdm-plan-review-on-create.sh`) nor the needs-review Stop hook (`rdm-review-on-finalize.sh`) is active in this repo any longer.
+This repo also enables `gates.reviewed` on its own plan data — see [`docs/core-enforced-gates.md`](docs/core-enforced-gates.md) for config and override policy.
 

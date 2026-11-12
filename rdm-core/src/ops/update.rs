@@ -131,10 +131,10 @@ pub enum TagsUpdate {
     Clear,
     /// Edit the current tags incrementally: remove every tag named in
     /// `remove`, then append each tag in `add` not already present. Tags named
-    /// in neither list — including reserved ones such as
-    /// [`NEEDS_PLAN_REVIEW_TAG`](crate::tags::NEEDS_PLAN_REVIEW_TAG) — are left
-    /// untouched. Both lists are normalized with [`normalize_tags`]; removing
-    /// the last tag leaves the item with no tags.
+    /// in neither list — including ones a workflow reserves by convention,
+    /// such as `depends-unlanded` — are left untouched. Both lists are
+    /// normalized with [`normalize_tags`]; removing the last tag leaves the
+    /// item with no tags.
     Edit {
         /// Tags to append (if absent).
         add: Vec<String>,
@@ -475,11 +475,8 @@ mod tests {
     #[test]
     fn tags_edit_remove_keeps_others_including_reserved() {
         assert_eq!(
-            applied(
-                edit(&["a"], &["b"]),
-                Some(&["b", "c", crate::tags::NEEDS_PLAN_REVIEW_TAG])
-            ),
-            Some(strs(&["c", crate::tags::NEEDS_PLAN_REVIEW_TAG, "a"]))
+            applied(edit(&["a"], &["b"]), Some(&["b", "c", "depends-unlanded"])),
+            Some(strs(&["c", "depends-unlanded", "a"]))
         );
     }
 

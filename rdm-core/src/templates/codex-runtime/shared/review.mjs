@@ -482,11 +482,10 @@ const DIMENSIONS = {
     },
     //|plan|
     //|plan| **Plan target types.** A plan review targets a `roadmap` (its own body,
-    //|plan| plus every phase gated individually), a `phase`, a `task`, or an
+    //|plan| plus every phase reviewed individually), a `phase`, a `task`, or an
     //|plan| `implementation-plan` — an `rdm-do` plan document handed over in context
     //|plan| ahead of implementation. `implementation-plan` has **no persisted rdm
-    //|plan| item** behind it, so it is report-only: no body edit, no filed task, and
-    //|plan| no gate (see § Gate).
+    //|plan| item** behind it, so it is report-only: no body edit and no filed task.
     //|plan|
     //|plan| The target type selects the reviewers when the caller names none:
     //|plan|
@@ -1143,11 +1142,9 @@ function refutePrompt(mode, dim, finding, context) {
 //|plan|   step, a missing prerequisite, an untestable acceptance criterion).
 //|plan| - `reviewed` — clean, or clean with recorded concerns/suggestions.
 //|plan|
-//|plan| `rework` and `escalated` both leave the gate **closed**, so this is exactly
-//|plan| the outcome the retired PASS / PASS WITH CONCERNS / REWORK vocabulary
-//|plan| produced: PASS and PASS WITH CONCERNS both collapse to `reviewed` (they
-//|plan| cleared the tag), and REWORK splits into `rework` and `escalated` (both
-//|plan| leave it).
+//|plan| These are the outcomes the retired PASS / PASS WITH CONCERNS / REWORK
+//|plan| vocabulary produced: PASS and PASS WITH CONCERNS both collapse to
+//|plan| `reviewed`, and REWORK splits into `rework` and `escalated`.
 //|plan|
 //|plan| **Plan-stage severity calibration.** Each reviewer's prompt carries the
 //|plan| severity contract of its own document kind.
@@ -1181,12 +1178,11 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 //   code — the post-implementation gate: persist an rdm status on the item
 //          (per kind) and, on `reviewed` only, mark the item eligible for the
 //          land-time `done` write `rdm-land` performs directly.
-//          `clearsPlanReviewTag` is always false — the code gate has nothing
-//          to do with the pre-implementation tag.
-//   plan — the pre-implementation gate: a plan review NEVER persists an rdm
+//   plan — the pre-implementation review: a plan review NEVER persists an rdm
 //          status (`status` is an explicit `null`, never `undefined`, so a
-//          caller cannot round-trip it into an empty status), and instead
-//          clears the reserved `needs-plan-review` tag on `reviewed` only.
+//          caller cannot round-trip it into an empty status) and writes
+//          nothing else to the item either. Its verdict is recorded by the
+//          persisted review.
 //
 // The completion policy is expressed ONLY as the boolean `writesCompletion`:
 // `reviewed` means the item is eligible for the land-time `done` write
@@ -1195,27 +1191,25 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // stamped block, or written by any surface that consumes it.
 const GATE_POLICY = {
   code: {
-    reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true, clearsPlanReviewTag: false },
+    reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true },
     rework: {
       phase: 'in-progress',
       task: 'in-progress',
       status: 'in-progress',
       writesCompletion: false,
-      clearsPlanReviewTag: false,
     },
     escalated: {
       phase: 'blocked',
       task: 'blocked',
       status: 'blocked',
       writesCompletion: false,
-      clearsPlanReviewTag: false,
       reasonPrefix: '[code]',
     },
   },
   plan: {
-    reviewed: { status: null, writesCompletion: false, clearsPlanReviewTag: true },
-    rework: { status: null, writesCompletion: false, clearsPlanReviewTag: false },
-    escalated: { status: null, writesCompletion: false, clearsPlanReviewTag: false, reasonPrefix: '[plan]' },
+    reviewed: { status: null, writesCompletion: false },
+    rework: { status: null, writesCompletion: false },
+    escalated: { status: null, writesCompletion: false, reasonPrefix: '[plan]' },
   },
 };
 
@@ -3368,31 +3362,19 @@ function persistDegradationGateLines() {
   ].join('\n');
 }
 
-// --- Plan-standalone consolidation helpers -----------------------------------
-// Two pure, post-pipeline consolidation/gate helpers the standalone plan-review
-// workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
-// CONSOLIDATION, not find/refute logic — they operate on the ranked survivors a
-// `buildReviewPipeline('plan')` run already produced, and add no new review
-// dimension, finder, or refuter. They live inside the stamped block so the
-// workflow consumer picks them up verbatim (the runtime cannot import), and are
+// --- Plan-standalone consolidation helper ------------------------------------
+// The pure, post-pipeline consolidation helper the standalone plan-review
+// workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. It is
+// CONSOLIDATION, not find/refute logic — it operates on the ranked survivors a
+// `buildReviewPipeline('plan')` run already produced, and adds no new review
+// dimension, finder, or refuter. It lives inside the stamped block so the
+// workflow consumer picks it up verbatim (the runtime cannot import), and is
 // exported for the Node verify harness.
 //
-// Scoping a reviewer to a target kind is NOT one of them. Which reviewers run
+// Scoping a reviewer to a target kind is NOT its job. Which reviewers run
 // on which kind of document is decided BEFORE the fan-out, by
 // `resolveReviewers` over `PLAN_TARGET_REVIEWERS`; a post-hoc strip of the
 // survivors would be a second mechanism policing the first.
-
-// filterPlanReviewTag(tags) — the read-filter-write half of the plan gate: return
-// the tag list with the reserved `needs-plan-review` removed by EXACT string
-// match, order and every sibling tag (e.g. `depends-unlanded`) preserved.
-// Idempotent (a list already lacking it is a safe no-op) and returns [] when
-// `needs-plan-review` was the only tag. `--tags` replaces the whole list, so a
-// caller must always write back this COMPLETE remaining list, never a blind
-// single-tag removal.
-function filterPlanReviewTag(tags) {
-  const list = Array.isArray(tags) ? tags : [];
-  return list.filter((t) => t !== 'needs-plan-review');
-}
 
 // classifyPlanOutcome(survivors) — map post-strip plan survivors onto the
 // canonical outcome vocabulary, reusing `hasBlocking` (no new severity logic):
@@ -4141,86 +4123,22 @@ function buildReviewPipeline(mode, deps) {
 //|code| landed tip's own commit. There is no `Done:` trailer to write, here or at
 //|code| landing.
 //|plan|
-//|plan| ### Gate — clear or leave `needs-plan-review`
+//|plan| ### Outcome — nothing is written to the item
 //|plan|
-//|plan| The plan review owns the reserved `needs-plan-review` tag. It **never**
-//|plan| persists an rdm status — the item's status is the implementation lane's to
-//|plan| own — and it never writes a land-time completion directive.
+//|plan| A plan review **never** persists an rdm status — the item's status is the
+//|plan| implementation lane's to own — never writes a tag, and never writes a
+//|plan| land-time completion directive. The verdict is recorded by the persisted
+//|plan| review on the target.
 //|plan|
-//|plan| | Outcome | `needs-plan-review` | rdm status written |
-//|plan| |---|---|---|
-//|plan| | **reviewed** | cleared | none |
-//|plan| | **rework** | left in place | none |
-//|plan| | **escalated** | left in place | none |
+//|plan| On **rework** and **escalated**, enumerate exactly what must change before
+//|plan| the next review pass. On `escalated`, say what human decision is required;
+//|plan| prefix a recorded reason with `[plan]` so it is attributable to the plan
+//|plan| review.
 //|plan|
-//|plan| On **reviewed**:
-//|plan|
-//|plan| 1. Read the target's current tags (the `tags` array is present in every JSON
-//|plan|    summary).
-//|plan| 2. Filter `needs-plan-review` out of that array by **exact string match**.
-//|plan|    This is idempotent: a target that already lacks the tag is a safe no-op.
-//|plan| 3. Write the **complete remaining list** back. Tags **replace** the whole list
-//|plan|    — there is no remove-one-tag operation — so always read-filter-write, or a
-//|plan|    sibling tag (e.g. the reserved `depends-unlanded`) is silently dropped.
-//|plan|    When `needs-plan-review` was the only tag, write an **empty** list.
-//|plan| 4. Land it with a `chore(plan): clear needs-plan-review on <target>` commit.
-//|plan|
-//|plan| On **rework** and **escalated**: do **not** touch the tags. `needs-plan-review`
-//|plan| is left unchanged in place. State explicitly in the report that the tag was
-//|plan| left, and enumerate exactly what must change before the next review pass. On
-//|plan| `escalated`, say what human decision is required; prefix a recorded reason
-//|plan| with `[plan]` so it is attributable to this gate.
-//|plan|
-//|plan| Scope of the gate by target type:
-//|plan|
-//|plan| - **`--roadmap <slug>`** — gate each phase **individually**, and the roadmap
-//|plan|   body separately. One phase's `rework` must not hold the tag on phases that
-//|plan|   reached `reviewed`, and the roadmap body's own outcome is independent of any
-//|plan|   phase's.
-//|plan| - **`--implementation-plan`** — **no gate at all.** There is no persisted rdm
-//|plan|   item, so there is no tag to clear and nothing to mutate; report the outcome
-//|plan|   and findings only.
-//|plan|
-//|plan| #### The gate carries its own justification
-//|plan|
-//|plan| A `reviewed` outcome clearing `needs-plan-review` is **specified gate behavior,
-//|plan| not self-approval**: the verdict is never authored by the orchestrator running
-//|plan| this review. Every finding comes from an independently dispatched finder, each
-//|plan| finding that can gate is sent to a separate refuter, and the gate itself is a
-//|plan| table lookup (`GATE_POLICY.plan`) over that verdict — the two-party property is
-//|plan| structural, not procedural. So state the write **with its evidence**: which
-//|plan| dimension finders ran, how many findings they produced, how many an independent
-//|plan| refuter graded, how many survived and how many of those reached blocking
-//|plan| severity, the exact tag list about to be written, and that the write touches one
-//|plan| reversible metadata tag — no rdm status, no code, no land-time completion
-//|plan| directive.
-//|plan|
-//|plan| That grading claim is **computed, never assumed**. Refutation is deliberately not
-//|plan| total: a non-gating `suggestion` is never sent to a refuter, a gating finding past
-//|plan| the per-unit refutation budget passes through un-refuted, and a crashed refuter
-//|plan| leaves its finding un-refuted — none of which prevents a `reviewed` outcome. The
-//|plan| gate therefore reports this unit's real graded/un-graded split, itemised by
-//|plan| severity and reason, and states that an un-graded survivor was **reported, not
-//|plan| verified**. Do not restate it as blanket per-finding grading when you report.
-//|plan|
-//|plan| Two rules follow, whatever mechanism your surface uses to perform the write —
-//|plan| whether you run the two commands yourself or a driver runs them for you:
-//|plan|
-//|plan| - **A gate that was supposed to clear the tag and did not is LOUD.** If the tag
-//|plan|   write fails, is refused, or is skipped on a unit whose outcome was `reviewed`,
-//|plan|   say so at the **top** of your report, with the exact command to run — never
-//|plan|   bury it, and never describe that unit as cleanly reviewed. Its tag is still
-//|plan|   set, so the item still reads as un-plan-reviewed to every other surface.
-//|plan| - **You may defer the write.** When the session running the review is the same
-//|plan|   one that authored the plan, or is otherwise too close to it, do not perform
-//|plan|   the write at all: report the exact commands the gate would have run, together
-//|plan|   with the complete sibling-preserved tag list they write, and let a human — or
-//|plan|   a session that did not author the plan — apply them. That is a deliberate
-//|plan|   hand-off, not a failure, and must be reported as a deferral rather than as a
-//|plan|   gate failure.
-//|plan|
-//|plan| The decision this rests on, its boundary, and the recorded evidence behind it
-//|plan| live in `docs/plan-review-gate-policy.md`.
+//|plan| With **`--roadmap <slug>`**, each phase gets its **own** outcome, and so does
+//|plan| the roadmap body: one phase's `rework` says nothing about the phases that
+//|plan| reached `reviewed`, and the roadmap body's outcome is independent of any
+//|plan| phase's.
 //|
 //| ### Guidelines
 //|
@@ -4326,6 +4244,5 @@ export {
   FOLLOW_UP_REVIEWERS,
   DEFAULT_MAX_CODE_REWORK,
   buildReviewPipeline,
-  filterPlanReviewTag,
   classifyPlanOutcome,
 };

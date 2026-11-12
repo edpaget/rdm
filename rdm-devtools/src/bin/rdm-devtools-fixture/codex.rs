@@ -249,7 +249,7 @@ fn exec(args: &[String], scenario: &Value) -> ExitCode {
     let gate = knobs
         .get("planGate")
         .and_then(Value::as_str)
-        .unwrap_or("needs-plan-review: an independent plan review gates implementation");
+        .unwrap_or("an independent plan review gates implementation");
     if let Some(answer) = arg_after(args, "--output-last-message") {
         let _ = std::fs::write(
             answer,

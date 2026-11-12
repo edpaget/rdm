@@ -204,14 +204,6 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, false)?;
             let model_update = ModelTierUpdate::from_args(model, false)?;
-            let plan_review = rdm_core::config::resolve_plan_review(
-                Some(&project),
-                raw_repo_config,
-                global_config,
-                |k| std::env::var(k).ok(),
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review);
             let doc = commit_mutation(store, "failed to create phase", |s| {
                 rdm_core::ops::phase::create_phase(
                     s,

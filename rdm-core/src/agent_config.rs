@@ -2850,16 +2850,6 @@ mod tests {
     }
 
     #[test]
-    fn skill_plan_review_explains_tags_replace_semantics() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("`--tags` replaces the whole list"));
-    }
-
-    #[test]
     fn skill_plan_review_spec_confined_to_generated_block() {
         const BEGIN: &str = "<!-- rdm:review-spec:begin";
         const END: &str = "<!-- rdm:review-spec:end -->";
@@ -3640,17 +3630,6 @@ mod tests {
             .expect("missing frontmatter");
         assert!(!frontmatter.contains("Write"));
         assert!(!frontmatter.contains("Edit"));
-    }
-
-    #[test]
-    fn skill_roadmap_notes_plan_review_gate() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[0].content;
-        assert!(content.contains("needs-plan-review"));
-        assert!(content.contains("plan_review"));
     }
 
     #[test]
@@ -4855,7 +4834,12 @@ mod tests {
         // `skill-dispatch-phase-cli.md`'s triage step saying an approving
         // plan review's open comments are not routed through `rdm-revise`
         // there.
-        let expected = 60;
+        // 60 -> 58: `review-submission-smoothing` phase 9 retired the
+        // `needs-plan-review` tag. `skill-roadmap-cli.md`'s bullet about
+        // leaving the tag for `rdm-plan-review` to clear and
+        // `skill-dispatch-phase-cli.md`'s paragraph saying the plan-review
+        // call does not clear it each named `rdm-plan-review` once.
+        let expected = 58;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

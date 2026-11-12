@@ -310,8 +310,9 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "default_format" => config.default_format.clone(),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
-        "default_branch" | "plan_review" | "dispatch.verify" | "gates.reviewed"
-        | "max_refutations" => config.scopable_value(key),
+        "default_branch" | "dispatch.verify" | "gates.reviewed" | "max_refutations" => {
+            config.scopable_value(key)
+        }
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -334,7 +335,6 @@ pub fn get_global_config_field(config: &GlobalConfig, key: &str) -> Option<Strin
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
-        "plan_review" => config.plan_review.map(|b| b.to_string()),
         "max_refutations" => config.max_refutations.map(|n| n.to_string()),
         _ => None,
     }
@@ -362,9 +362,6 @@ pub fn set_config_field(
         "default_branch" => config.default_branch = Some(value.to_string()),
         "hook_timeout_secs" => {
             config.hook_timeout_secs = Some(parse_u64(key, value)?);
-        }
-        "plan_review" => {
-            config.plan_review = Some(parse_bool(value)?);
         }
         "max_refutations" => {
             config.max_refutations = Some(rdm_core::config::parse_max_refutations(key, value)?);
@@ -412,7 +409,6 @@ pub fn set_project_config_field(
 ) -> Result<()> {
     match key {
         "default_branch" => overrides.default_branch = Some(value.to_string()),
-        "plan_review" => overrides.plan_review = Some(parse_bool(value)?),
         "dispatch.verify" => {
             overrides
                 .dispatch
@@ -473,9 +469,6 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "hook_timeout_secs" => {
             config.hook_timeout_secs = Some(parse_u64(key, value)?);
         }
-        "plan_review" => {
-            config.plan_review = Some(parse_bool(value)?);
-        }
         "max_refutations" => {
             config.max_refutations = Some(rdm_core::config::parse_max_refutations(key, value)?);
         }
@@ -490,12 +483,25 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
     Ok(())
 }
 
+/// Config keys rdm once read and no longer does. A config file that still
+/// sets one loads, because unknown keys are ignored; `config get`/`config
+/// set` name it as retired rather than as a typo.
+const RETIRED_KEYS: &[&str] = &["plan_review"];
+
 /// Validates that a key is in `KNOWN_KEYS`.
 ///
 /// # Errors
 ///
-/// Returns an error with a helpful message if the key is unknown.
+/// Returns an error with a helpful message if the key is unknown, and a
+/// distinct one if it is a retired key that no longer has any effect.
 pub fn validate_key(key: &str) -> Result<()> {
+    if RETIRED_KEYS.contains(&key) {
+        bail!(
+            "config key '{key}' is retired: it no longer has any effect, so there \
+             is nothing to get or set. A config file that still sets it loads \
+             normally; the line can be deleted from rdm.toml and the global config."
+        );
+    }
     if !KNOWN_KEYS.contains(&key) {
         bail!(
             "unknown config key: {key} — valid keys: {}",

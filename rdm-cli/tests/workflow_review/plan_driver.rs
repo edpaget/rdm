@@ -9,8 +9,8 @@
 //! - **SHIP** — the shipped `.claude/workflows/rdm-wf-plan-review.js` driver,
 //!   loaded with `Host::load_driver`.
 //!
-//! The commands the driver returns or names — read commands, gate ladders,
-//! persist ladders — are executed with `PATH=/usr/bin:/bin` against
+//! The commands the driver returns or names — read commands and persist
+//! ladders — are executed with `PATH=/usr/bin:/bin` against
 //! `CARGO_BIN_EXE_rdm` in a per-test plan repo whose default project is the
 //! decoy (project `prv`: roadmap `r` with `phase-1-x`/`phase-2-y`, task `t`,
 //! plan `p`), and the resulting state is read back. Ported from
@@ -23,7 +23,7 @@ use std::rc::Rc;
 use rdm_devtools::workflow::{Host, JsError};
 use serde_json::{Value, json};
 
-use crate::plan_fixture::{PlanRepo, Run, rdm_bin, script};
+use crate::plan_fixture::{PlanRepo, Run, rdm_bin, review_id, script};
 use crate::support::{
     Agent, Failure, Js, Lib, Outcome, PLAN_ENGINE, Reply, infra, run_driver, run_real, strings,
 };
@@ -452,101 +452,232 @@ fn terminal_stems_skipped_and_reported() {
     });
 }
 
-#[test]
-fn gate_commands_clear_only_the_plan_review_tag() {
-    run_real(|lib| {
-        let repo = plan_repo()?;
-        let mut js = Js::open(lib)?;
-        let d = drive_lib(
-            &mut js,
-            with(
-                &axes(),
-                json!({ "roadmap": "r", "phase": "phase-1-x", "tags": ["needs-plan-review", "depends-unlanded"] }),
-            ),
-            json!([]),
-        )?;
-        let r = d.ok()?.clone();
-        check!(d.agent.calls().is_empty(), "no gate agent is dispatched");
-        let a = &r["gateAction"];
-        check_eq!(a["clearsPlanReviewTag"], json!(true), "a clean unit clears");
-        check_eq!(
-            a["remainingTags"],
-            json!(["depends-unlanded"]),
-            "the sibling survives"
-        );
-        check_eq!(
-            r["gatePendingCount"],
-            json!(1),
-            "the write is pending, not done"
-        );
+/// What the retired tag gate put on a result and on each of its units.
+const GATE_KEYS: [&str; 3] = ["gateAction", "gatePendingCount", "clearsPlanReviewTag"];
+
+/// `result` and every unit on it carry no gate key and no pending-gate
+/// clause, and every unit passed.
+fn passed_with_no_gate(what: &str, result: &Value) -> Outcome {
+    let units = result["units"].as_array().cloned().unwrap_or_default();
+    check!(!units.is_empty(), "{what}: units were reviewed: {result}");
+    for carrier in std::iter::once(result).chain(units.iter()) {
+        for key in GATE_KEYS {
+            check!(carrier.get(key).is_none(), "{what}: no {key} on {carrier}");
+        }
         check!(
-            r["summary"]
+            !carrier["summary"]
                 .as_str()
-                .is_some_and(|s| s.contains("gate pending")),
-            "the summary says the gate is pending: {}",
-            r["summary"]
+                .unwrap_or_default()
+                .contains("gate pending"),
+            "{what}: no pending-gate clause: {}",
+            carrier["summary"]
+        );
+    }
+    for unit in &units {
+        check_eq!(
+            unit["outcome"],
+            json!("reviewed"),
+            "{what}: {} carries the verdict",
+            unit["ident"]
         );
         check_eq!(
-            phase_tags(&repo, "phase-1-x")?,
-            vec![
-                "needs-plan-review".to_owned(),
-                "depends-unlanded".to_owned()
-            ],
-            "the driver itself wrote nothing"
+            unit.get("status"),
+            Some(&json!(null)),
+            "{what}: {} writes no status",
+            unit["ident"]
         );
-        let before = repo.head();
-        repo.run_ok(&Run::bare(), &script(&a["commands"]))?;
-        check_eq!(
-            phase_tags(&repo, "phase-1-x")?,
-            vec!["depends-unlanded".to_owned()],
-            "the executed gate cleared only the plan-review tag"
-        );
-        let count = crate::git_test_support::git(
-            &repo.root,
-            &["rev-list", "--count", &format!("{before}..HEAD")],
-        );
-        let count = String::from_utf8_lossy(&count.stdout).trim().to_owned();
-        check_eq!(count, "1", "the gate landed exactly one commit");
-        Ok(())
-    });
+    }
+    Ok(())
+}
+
+/// Runs a passing unit's persist ladder. The ladder prints the review id,
+/// and exactly one submitted, approving review with that id is then recorded
+/// on `target`.
+fn lands_one_approving_review(repo: &PlanRepo, unit: &Value, target: &str) -> Outcome {
+    let ladder = unit["persistScript"].as_str().unwrap_or_default();
+    check!(
+        !ladder.is_empty(),
+        "{target}: a passing unit carries a persist ladder: {unit}"
+    );
+    check!(
+        repo.reviews_on(PROJECT, target)?.is_empty(),
+        "{target}: nothing is recorded until the caller runs the ladder"
+    );
+    let printed = repo.run_ok(&Run::bare(), ladder)?;
+    let id = review_id(&printed)
+        .ok_or_else(|| Failure::Check(format!("{target}: no reviewId= line: {printed}")))?;
+    let reviews = repo.reviews_on(PROJECT, target)?;
+    check_eq!(reviews.len(), 1, "{target}: the ladder landed one review");
+    check_eq!(
+        reviews[0]["id"],
+        json!(id),
+        "{target}: it is the review the ladder named"
+    );
+    check_eq!(
+        reviews[0]["state"],
+        json!("submitted"),
+        "{target}: submitted"
+    );
+    check_eq!(
+        reviews[0]["verdict"],
+        json!("approve"),
+        "{target}: approving"
+    );
+    Ok(())
+}
+
+fn roadmap_tags(repo: &PlanRepo) -> Result<Vec<String>, Failure> {
+    Ok(strings(
+        &repo.json(&[
+            "roadmap",
+            "show",
+            "r",
+            "--project",
+            PROJECT,
+            "--format",
+            "json",
+        ])?["tags"],
+    ))
+}
+
+/// The tags `seed_into` gives the roadmap, `phase-1-x` and `phase-2-y`.
+fn seeded_tags() -> [Vec<String>; 3] {
+    [
+        vec!["needs-plan-review".to_owned()],
+        vec![
+            "needs-plan-review".to_owned(),
+            "depends-unlanded".to_owned(),
+        ],
+        vec![],
+    ]
+}
+
+fn current_tags(repo: &PlanRepo) -> Result<[Vec<String>; 3], Failure> {
+    Ok([
+        roadmap_tags(repo)?,
+        phase_tags(repo, "phase-1-x")?,
+        phase_tags(repo, "phase-2-y")?,
+    ])
 }
 
 #[test]
-fn gate_without_tags_refuses_visibly() {
+fn passing_unit_carries_the_verdict_and_a_persist_ladder_and_no_gate() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let d = drive_lib(
-            &mut js,
-            json!({ "roadmap": "r", "phase": "phase-1-x" }),
-            json!([]),
-        )?;
-        let r = d.ok()?;
-        check_eq!(
-            r["gateAction"]["clearsPlanReviewTag"],
-            json!(true),
-            "would clear"
+        let phase = with(
+            &axes(),
+            json!({ "roadmap": "r", "phase": "phase-1-x", "priorReviews": [] }),
         );
-        check_eq!(
-            r["gateAction"]["tagsUnknown"],
-            json!(true),
-            "but the tags are unknown"
+        let phase_tagged = with(
+            &phase,
+            json!({ "tags": ["needs-plan-review", "depends-unlanded"] }),
         );
-        check_eq!(
-            r["gateAction"]["commands"],
-            json!([]),
-            "so no command guesses a tag list"
+        let sweep = with(
+            &axes(),
+            json!({ "roadmap": "r", "priorReviews": [], "phases": [
+                { "stem": "phase-1-x", "priorReviews": [] },
+                { "stem": "phase-2-y", "priorReviews": [] }] }),
         );
-        let summary = r["summary"].as_str().unwrap_or_default();
+        let sweep_tagged = with(
+            &axes(),
+            json!({ "roadmap": "r", "priorReviews": [], "tags": ["needs-plan-review"], "phases": [
+                { "stem": "phase-1-x", "priorReviews": [],
+                  "tags": ["needs-plan-review", "depends-unlanded"] },
+                { "stem": "phase-2-y", "priorReviews": [], "tags": [] }] }),
+        );
+
+        // A single phase, driven through the lib.
+        let repo = plan_repo()?;
+        let tagged = drive_lib(&mut js, phase_tagged.clone(), json!([]))?;
+        let plain = drive_lib(&mut js, phase.clone(), json!([]))?;
         check!(
-            summary.contains("gate pending") && summary.contains("tag list was not supplied"),
-            "the refusal is visible: {summary}"
+            tagged.agent.calls().is_empty() && plain.agent.calls().is_empty(),
+            "the driver dispatches no agent of its own"
         );
+        let result = plain.ok()?.clone();
+        check_eq!(
+            tagged.ok()?,
+            &result,
+            "supplying the item's tags changes nothing on the result"
+        );
+        passed_with_no_gate("phase", &result)?;
+        check_eq!(
+            result["outcome"],
+            json!("reviewed"),
+            "the flattened verdict"
+        );
+        check_eq!(
+            result["persistScript"],
+            result["units"][0]["persistScript"],
+            "the flattened ladder is the unit's"
+        );
+        let document = repo.phase(PROJECT, "r", "phase-1-x")?;
+        lands_one_approving_review(&repo, &result, "phase/r/phase-1-x")?;
+        let after = repo.phase(PROJECT, "r", "phase-1-x")?;
+        for field in ["tags", "body", "status", "title"] {
+            check_eq!(
+                after[field],
+                document[field],
+                "the ladder left the phase's {field} alone"
+            );
+        }
+        check_eq!(current_tags(&repo)?, seeded_tags(), "no tag was written");
+
+        // A roadmap sweep: every unit, each with its own ladder.
+        let repo = plan_repo()?;
+        let tagged = drive_lib(&mut js, sweep_tagged.clone(), json!([]))?;
+        let plain = drive_lib(&mut js, sweep.clone(), json!([]))?;
+        let result = plain.ok()?.clone();
+        check_eq!(
+            tagged.ok()?,
+            &result,
+            "supplying every unit's tags changes nothing on the sweep"
+        );
+        passed_with_no_gate("sweep", &result)?;
+        let units = result["units"].as_array().cloned().unwrap_or_default();
+        check_eq!(units.len(), 3, "the roadmap body and both phases");
+        for (unit, target) in
+            units
+                .iter()
+                .zip(["roadmap/r", "phase/r/phase-1-x", "phase/r/phase-2-y"])
+        {
+            lands_one_approving_review(&repo, unit, target)?;
+        }
+        check_eq!(current_tags(&repo)?, seeded_tags(), "no tag was written");
+
+        // The shipped engine, single phase and sweep.
+        let repo = plan_repo()?;
+        let (shipped_tagged, _) = drive_ship(lib, phase_tagged)?;
+        let (shipped, _) = drive_ship(lib, phase)?;
+        check_eq!(
+            shipped_tagged,
+            shipped,
+            "the shipped engine ignores the tags too"
+        );
+        passed_with_no_gate("shipped phase", &shipped)?;
+        lands_one_approving_review(&repo, &shipped, "phase/r/phase-1-x")?;
+        check_eq!(current_tags(&repo)?, seeded_tags(), "no tag was written");
+        let repo = plan_repo()?;
+        let (swept_tagged, _) = drive_ship(lib, sweep_tagged)?;
+        let (swept, _) = drive_ship(lib, sweep)?;
+        check_eq!(swept_tagged, swept, "and on a sweep");
+        passed_with_no_gate("shipped sweep", &swept)?;
+        let units = swept["units"].as_array().cloned().unwrap_or_default();
+        check_eq!(units.len(), 3, "the roadmap body and both phases");
+        for (unit, target) in
+            units
+                .iter()
+                .zip(["roadmap/r", "phase/r/phase-1-x", "phase/r/phase-2-y"])
+        {
+            lands_one_approving_review(&repo, unit, target)?;
+        }
+        check_eq!(current_tags(&repo)?, seeded_tags(), "no tag was written");
         Ok(())
     });
 }
 
 #[test]
-fn rework_keeps_tag_and_renders_round_note() {
+fn rework_renders_round_note() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let d = drive_lib(
@@ -556,21 +687,9 @@ fn rework_keeps_tag_and_renders_round_note() {
         )?;
         let r = d.ok()?;
         check_eq!(r["outcome"], json!("rework"), "a live blocker");
-        check_eq!(
-            r["gateAction"]["clearsPlanReviewTag"],
-            json!(false),
-            "keeps the tag"
-        );
-        check_eq!(r["gateAction"]["commands"], json!([]), "no gate command");
-        check_eq!(r["gatePendingCount"], json!(0), "nothing pending");
-        check!(
-            !r["summary"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("gate pending"),
-            "no pending clause: {}",
-            r["summary"]
-        );
+        for key in GATE_KEYS {
+            check!(r.get(key).is_none(), "no {key} on a rework either: {r}");
+        }
         let note = r["roundNote"].as_str().unwrap_or_default();
         check!(
             note.starts_with("## Plan Review Round 1 — rework")
@@ -829,13 +948,13 @@ fn build_review_units_is_pure() {
         let units = built["units"].as_array().cloned().unwrap_or_default();
         check_eq!(units.len(), 2, "the roadmap and its phase");
         check_eq!(units[0]["kind"], json!("roadmap"), "roadmap first");
-        check_eq!(units[0]["tags"], json!(["y"]), "roadmap tags");
         check_eq!(units[1]["ident"], json!("phase-1-a"), "then the phase");
-        check_eq!(units[1]["tags"], json!(["x"]), "its own tags");
         check_eq!(built["skippedPhases"], json!([]), "nothing skipped");
         check!(
-            units.iter().all(|u| u.get("body").is_none()),
-            "no unit carries a document body"
+            units
+                .iter()
+                .all(|u| u.get("body").is_none() && u.get("tags").is_none()),
+            "no unit carries a document body or a tag list: {units:?}"
         );
         Ok(())
     });
@@ -1095,9 +1214,16 @@ fn shipped_engine_string_payload_equivalent() {
             json!({ "roadmap": "r", "phase": "phase-1-x", "tags": ["needs-plan-review"] });
         let (obj, _) = drive_ship(lib, payload.clone())?;
         let (s, agent) = drive_ship(lib, json!(payload.to_string()))?;
+        check_eq!(obj["outcome"], json!("reviewed"), "the object payload");
+        check!(
+            obj["persistCommands"]
+                .as_array()
+                .is_some_and(|c| !c.is_empty()),
+            "it carries a persist ladder: {obj}"
+        );
         check_eq!(
-            s["gateAction"]["commands"],
-            obj["gateAction"]["commands"],
+            (&s["outcome"], &s["persistCommands"]),
+            (&obj["outcome"], &obj["persistCommands"]),
             "a JSON-string payload behaves identically"
         );
         check!(judgment_only(&agent.labels()), "judgment agents only");
@@ -1530,9 +1656,10 @@ fn retired_transport_keys_not_parsed() {
         let parsed = js.plan_call(
             "parsePlanArgs",
             vec![json!({ "implementationPlan": true, "planSlug": "p", "planText": "a body that must not be graded",
-                         "fetched": { "body": "x", "tags": [] }, "mechanicalModel": "m", "gateMode": "apply" })],
+                         "fetched": { "body": "x", "tags": [] }, "mechanicalModel": "m", "gateMode": "apply",
+                         "tags": ["needs-plan-review"] })],
         )?;
-        for gone in ["planText", "fetched", "mechanicalModel", "gateMode"] {
+        for gone in ["planText", "fetched", "mechanicalModel", "gateMode", "tags"] {
             check!(
                 parsed.get(gone).is_none(),
                 "{gone} is not carried: {parsed}"
@@ -2223,7 +2350,7 @@ fn failed_unit_named_not_dropped() {
 // --- E: the environment axes, executed ---------------------------------------------
 
 /// Every command a LIB run built or named: the reviewers' read commands, the
-/// gate and persist ladders, and the implementation-plan read command.
+/// persist ladders, and the implementation-plan read command.
 fn commands_from(d: &Driven) -> Result<Vec<(String, String)>, Failure> {
     let r = d.ok()?;
     let mut out = Vec::new();
@@ -2235,10 +2362,6 @@ fn commands_from(d: &Driven) -> Result<Vec<(String, String)>, Failure> {
         }
     }
     for u in r["units"].as_array().into_iter().flatten() {
-        let gate = script(&u["gateAction"]["commands"]);
-        if !gate.is_empty() {
-            out.push((format!("{} gate", u["ident"]), gate));
-        }
         let persist = script(&u["persistCommands"]);
         if !persist.is_empty() {
             out.push((format!("{} persist", u["ident"]), persist));
@@ -2286,19 +2409,25 @@ fn injected_axes_reach_executed_commands() {
                 executed += 1;
             }
         }
-        check!(executed >= 12, "every target's commands ran ({executed})");
-        check!(
-            !phase_tags(&repo, "phase-1-x")?.contains(&"needs-plan-review".to_owned()),
-            "the executed gates wrote the target project"
-        );
-        check!(
-            !strings(&repo.task(PROJECT, "t")?["tags"]).contains(&"needs-plan-review".to_owned()),
-            "including the task's"
-        );
-        check!(
-            !repo.reviews_on(PROJECT, "plan/p")?.is_empty(),
-            "and the plan's persist ladder landed"
-        );
+        // A single-unit target carries its ladder twice, on the unit and
+        // flattened on the result, and `commands_from` runs both copies.
+        // task: 1 read + 2 persists; phase: 2 reads + 2 persists; sweep:
+        // 3 reads + 2 persists; implementation plan: 3 reads + 1 persist.
+        check_eq!(executed, 16, "every target's commands ran");
+        // Every executed persist ladder landed a review in the target
+        // project (the phase: two from its own run, one from the sweep).
+        for (target, want) in [
+            ("task/t", 2),
+            ("phase/r/phase-1-x", 3),
+            ("roadmap/r", 1),
+            ("plan/p", 1),
+        ] {
+            check_eq!(
+                repo.reviews_on(PROJECT, target)?.len(),
+                want,
+                "the executed persist ladders wrote {target} in the target project"
+            );
+        }
         Ok(())
     });
 }
@@ -2312,7 +2441,9 @@ fn omitted_axes_use_plain_rdm_and_default_project() {
         let mut js = Js::open(lib)?;
         let d = drive_lib(&mut js, e_targets()[2].clone(), json!([]))?;
         let cmds = commands_from(&d)?;
-        check!(cmds.len() >= 3, "commands were built: {cmds:?}");
+        // Three reads (the roadmap, the phase, the phase's parent) and the
+        // two units' persist ladders.
+        check_eq!(cmds.len(), 5, "commands were built: {cmds:?}");
         // Without `rdm` on PATH the plain-`rdm` commands cannot resolve…
         let (what, first) = &cmds[0];
         check!(
@@ -2329,77 +2460,11 @@ fn omitted_axes_use_plain_rdm_and_default_project() {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
-        check!(
-            !phase_tags(&repo, "phase-1-x")?.contains(&"needs-plan-review".to_owned()),
-            "the gate reached the default project"
-        );
-        Ok(())
-    });
-}
-
-#[test]
-fn gate_ladder_executes_for_every_item_kind() {
-    run_real(|lib| {
-        let repo = plan_repo()?;
-        let mut js = Js::open(lib)?;
-        let cfg = axes();
-        let tags_of = |kind: &str| -> Result<Vec<String>, Failure> {
-            Ok(strings(
-                &match kind {
-                    "task" => repo.task(PROJECT, "t")?,
-                    "phase" => repo.phase(PROJECT, "r", "phase-1-x")?,
-                    _ => repo.json(&[
-                        "roadmap",
-                        "show",
-                        "r",
-                        "--project",
-                        PROJECT,
-                        "--format",
-                        "json",
-                    ])?,
-                }["tags"],
-            ))
-        };
-        for (kind, ident) in [("task", "t"), ("phase", "phase-1-x"), ("roadmap", "r")] {
-            let action = js.plan_call(
-                "buildGateAction",
-                vec![
-                    json!({ "kind": kind, "ident": ident, "roadmap": "r", "tags": ["needs-plan-review", "keep"] }),
-                    json!({ "clearsPlanReviewTag": true }),
-                    cfg.clone(),
-                ],
-            )?;
+        for target in ["roadmap/r", "phase/r/phase-1-x"] {
             check_eq!(
-                action["commands"].as_array().map(Vec::len),
-                Some(2),
-                "{kind}: update + commit"
-            );
-            repo.run_ok(&Run::bare(), &script(&action["commands"]))?;
-            check_eq!(
-                tags_of(kind)?,
-                vec!["keep".to_owned()],
-                "{kind}: the declarative gate landed"
-            );
-            let cmds = js.plan_call(
-                "planGateCommands",
-                vec![
-                    json!(kind),
-                    json!("r"),
-                    json!(ident),
-                    json!(["kept-again"]),
-                    cfg.clone(),
-                ],
-            )?;
-            let ladder = format!(
-                "{}\n{}",
-                cmds["updateCmd"].as_str().unwrap_or_default(),
-                cmds["commitCmd"].as_str().unwrap_or_default()
-            );
-            repo.run_ok(&Run::bare(), &ladder)?;
-            check_eq!(
-                tags_of(kind)?,
-                vec!["kept-again".to_owned()],
-                "{kind}: the raw ladder landed"
+                repo.reviews_on(PROJECT, target)?.len(),
+                1,
+                "the persist ladder reached {target} in the default project"
             );
         }
         Ok(())

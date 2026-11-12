@@ -289,8 +289,8 @@ Resolution, for the project being written to: `RDM_REVIEWED_GATE` env →
 `RDM_GATES_REVIEWED` env → `[projects.<p>] gates.reviewed` in `rdm.toml` → the
 plan-repo-wide `gates.reviewed` → `false`. Both env vars are loud overrides,
 not fuzzy booleans: `"1"`, `"yes"`, `"True"` and `""` all error rather than
-silently resolving to `false` and quietly disabling the gate — mirroring
-`RDM_PLAN_REVIEW`. `RDM_REVIEWED_GATE` wins when both are set.
+silently resolving to `false` and quietly disabling the gate.
+`RDM_REVIEWED_GATE` wins when both are set.
 `RDM_GATES_REVIEWED` (the generic `RDM_<KEY>` form `rdm config get` reports)
 is enforced by the gate itself since per-project resolution landed; before
 that only `RDM_REVIEWED_GATE` was.
@@ -537,6 +537,6 @@ green. It asserts the refusal an HTTP caller actually receives.
 - [`docs/verify-gate.md`](verify-gate.md) — the `dispatch.verify` command and
   the `rdm verify run` / `rdm verify resolve` CLI surface over it.
 - [`docs/plan-review-gate-policy.md`](plan-review-gate-policy.md) — the
-  plan-review gate, and the recorded `planned`-status decision.
+  recorded `planned`-status decision.
 - [`docs/lost-update-evaluation.md`](lost-update-evaluation.md) — the
   content-digest precondition the single-write requirement above protects.

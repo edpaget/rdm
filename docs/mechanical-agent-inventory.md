@@ -88,7 +88,7 @@ prompt. **Deleted** means the thing it did stopped being done at all.
 | `persist:review` | review-refute-fix | **moved to the orchestrator** — the engine returns `persistCommands` / `persistScript`, built by the same pure `persistReviewCommands` the agent used to wrap |
 | `persist:review:*` | plan-review | same, per unit |
 | `gate:persist` | review-refute-fix | **moved to the orchestrator** — returned as `gateCommands` / `gateScript` |
-| `gate:clear-tag:*` | plan-review | **moved to the orchestrator** — returned as `gateAction.commands` |
+| `gate:clear-tag:*` | plan-review | **moved to the orchestrator**, then **retired** with the `needs-plan-review` tag gate — the engine returns no gate commands at all; a plan-mode unit carries its outcome and the persist ladder |
 | `act:*` | plan-review | **moved to the orchestrator** — applying a small plan fix and filing a large finding as a task is judgment plus a write, which is what the orchestrator is |
 | `act:round-note:*` | plan-review | **moved to the orchestrator** — the engine renders the note and returns it as `roundNote`, which the orchestrator appends with a read-modify-write in Bash. That read-modify-write costs nothing there: the body never leaves the shell, so it is neither transcribed nor at risk of a dropped line. Turning `roundNote` into a returned command ladder like the estimate writeback's is an open follow-up, not a claim made here |
 
@@ -130,7 +130,8 @@ classifier-persuasion prose (`buildGateEvidence`, `renderGateEvidence`,
 authorize.
 
 The caller-hoist arguments that existed to route *around* those agents went too:
-`fetched`, `roadmapBody`, `planText`, `mechanicalModel`, `gateMode`.
+`fetched`, `roadmapBody`, `planText`, `mechanicalModel`, `gateMode`. `tags` and
+`phases[].tags` followed when the tag gate was retired: they fed nothing else.
 `wontFixedTexts` stayed — it is a list of short titles, the orchestrator's to
 supply, and it is now the only path.
 

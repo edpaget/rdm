@@ -417,11 +417,10 @@ const DIMENSIONS = {
     },
     //|plan|
     //|plan| **Plan target types.** A plan review targets a `roadmap` (its own body,
-    //|plan| plus every phase gated individually), a `phase`, a `task`, or an
+    //|plan| plus every phase reviewed individually), a `phase`, a `task`, or an
     //|plan| `implementation-plan` — an `rdm-do` plan document handed over in context
     //|plan| ahead of implementation. `implementation-plan` has **no persisted rdm
-    //|plan| item** behind it, so it is report-only: no body edit, no filed task, and
-    //|plan| no gate (see § Gate).
+    //|plan| item** behind it, so it is report-only: no body edit and no filed task.
     //|plan|
     //|plan| The target type selects the reviewers when the caller names none:
     //|plan|
@@ -1078,11 +1077,9 @@ function refutePrompt(mode, dim, finding, context) {
 //|plan|   step, a missing prerequisite, an untestable acceptance criterion).
 //|plan| - `reviewed` — clean, or clean with recorded concerns/suggestions.
 //|plan|
-//|plan| `rework` and `escalated` both leave the gate **closed**, so this is exactly
-//|plan| the outcome the retired PASS / PASS WITH CONCERNS / REWORK vocabulary
-//|plan| produced: PASS and PASS WITH CONCERNS both collapse to `reviewed` (they
-//|plan| cleared the tag), and REWORK splits into `rework` and `escalated` (both
-//|plan| leave it).
+//|plan| These are the outcomes the retired PASS / PASS WITH CONCERNS / REWORK
+//|plan| vocabulary produced: PASS and PASS WITH CONCERNS both collapse to
+//|plan| `reviewed`, and REWORK splits into `rework` and `escalated`.
 //|plan|
 //|plan| **Plan-stage severity calibration.** Each reviewer's prompt carries the
 //|plan| severity contract of its own document kind.
@@ -1116,12 +1113,11 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 //   code — the post-implementation gate: persist an rdm status on the item
 //          (per kind) and, on `reviewed` only, mark the item eligible for the
 //          land-time `done` write `rdm-land` performs directly.
-//          `clearsPlanReviewTag` is always false — the code gate has nothing
-//          to do with the pre-implementation tag.
-//   plan — the pre-implementation gate: a plan review NEVER persists an rdm
+//   plan — the pre-implementation review: a plan review NEVER persists an rdm
 //          status (`status` is an explicit `null`, never `undefined`, so a
-//          caller cannot round-trip it into an empty status), and instead
-//          clears the reserved `needs-plan-review` tag on `reviewed` only.
+//          caller cannot round-trip it into an empty status) and writes
+//          nothing else to the item either. Its verdict is recorded by the
+//          persisted review.
 //
 // The completion policy is expressed ONLY as the boolean `writesCompletion`:
 // `reviewed` means the item is eligible for the land-time `done` write
@@ -1130,27 +1126,25 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // stamped block, or written by any surface that consumes it.
 const GATE_POLICY = {
   code: {
-    reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true, clearsPlanReviewTag: false },
+    reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true },
     rework: {
       phase: 'in-progress',
       task: 'in-progress',
       status: 'in-progress',
       writesCompletion: false,
-      clearsPlanReviewTag: false,
     },
     escalated: {
       phase: 'blocked',
       task: 'blocked',
       status: 'blocked',
       writesCompletion: false,
-      clearsPlanReviewTag: false,
       reasonPrefix: '[code]',
     },
   },
   plan: {
-    reviewed: { status: null, writesCompletion: false, clearsPlanReviewTag: true },
-    rework: { status: null, writesCompletion: false, clearsPlanReviewTag: false },
-    escalated: { status: null, writesCompletion: false, clearsPlanReviewTag: false, reasonPrefix: '[plan]' },
+    reviewed: { status: null, writesCompletion: false },
+    rework: { status: null, writesCompletion: false },
+    escalated: { status: null, writesCompletion: false, reasonPrefix: '[plan]' },
   },
 };
 
@@ -3303,31 +3297,19 @@ function persistDegradationGateLines() {
   ].join('\n');
 }
 
-// --- Plan-standalone consolidation helpers -----------------------------------
-// Two pure, post-pipeline consolidation/gate helpers the standalone plan-review
-// workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
-// CONSOLIDATION, not find/refute logic — they operate on the ranked survivors a
-// `buildReviewPipeline('plan')` run already produced, and add no new review
-// dimension, finder, or refuter. They live inside the stamped block so the
-// workflow consumer picks them up verbatim (the runtime cannot import), and are
+// --- Plan-standalone consolidation helper ------------------------------------
+// The pure, post-pipeline consolidation helper the standalone plan-review
+// workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. It is
+// CONSOLIDATION, not find/refute logic — it operates on the ranked survivors a
+// `buildReviewPipeline('plan')` run already produced, and adds no new review
+// dimension, finder, or refuter. It lives inside the stamped block so the
+// workflow consumer picks it up verbatim (the runtime cannot import), and is
 // exported for the Node verify harness.
 //
-// Scoping a reviewer to a target kind is NOT one of them. Which reviewers run
+// Scoping a reviewer to a target kind is NOT its job. Which reviewers run
 // on which kind of document is decided BEFORE the fan-out, by
 // `resolveReviewers` over `PLAN_TARGET_REVIEWERS`; a post-hoc strip of the
 // survivors would be a second mechanism policing the first.
-
-// filterPlanReviewTag(tags) — the read-filter-write half of the plan gate: return
-// the tag list with the reserved `needs-plan-review` removed by EXACT string
-// match, order and every sibling tag (e.g. `depends-unlanded`) preserved.
-// Idempotent (a list already lacking it is a safe no-op) and returns [] when
-// `needs-plan-review` was the only tag. `--tags` replaces the whole list, so a
-// caller must always write back this COMPLETE remaining list, never a blind
-// single-tag removal.
-function filterPlanReviewTag(tags) {
-  const list = Array.isArray(tags) ? tags : [];
-  return list.filter((t) => t !== 'needs-plan-review');
-}
 
 // classifyPlanOutcome(survivors) — map post-strip plan survivors onto the
 // canonical outcome vocabulary, reusing `hasBlocking` (no new severity logic):

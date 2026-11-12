@@ -1,4 +1,4 @@
-//! Plan-review consolidation helpers, per-unit gating and round notes.
+//! Plan-review consolidation helpers, per-unit outcomes and round notes.
 
 use serde_json::{Value, json};
 
@@ -15,49 +15,6 @@ fn specification_blocker() -> Value {
 
 fn nit() -> Value {
     json!({ "id": "n", "concern": "specification", "severity": "concern", "confidence": 80, "what_fails": "minor" })
-}
-
-#[test]
-fn filter_plan_review_tag_preserves_siblings() {
-    run_real(|lib| {
-        let mut js = Js::open(lib)?;
-        let cases = [
-            (
-                json!(["needs-plan-review", "depends-unlanded"]),
-                json!(["depends-unlanded"]),
-                "a sibling is preserved",
-            ),
-            (
-                json!(["depends-unlanded", "needs-plan-review"]),
-                json!(["depends-unlanded"]),
-                "order is preserved",
-            ),
-            (
-                json!(["needs-plan-review"]),
-                json!([]),
-                "the only tag leaves an empty list",
-            ),
-            (
-                json!(["a", "b"]),
-                json!(["a", "b"]),
-                "a no-op when the tag is absent",
-            ),
-            (json!([]), json!([]), "an empty list stays empty"),
-        ];
-        for (tags, want, why) in cases {
-            check_eq!(js.call("filterPlanReviewTag", vec![tags])?, want, "{why}");
-        }
-        let once = js.call(
-            "filterPlanReviewTag",
-            vec![json!(["needs-plan-review", "x"])],
-        )?;
-        check_eq!(
-            js.call("filterPlanReviewTag", vec![once])?,
-            json!(["x"]),
-            "idempotent under re-application"
-        );
-        Ok(())
-    });
 }
 
 #[test]
@@ -194,49 +151,31 @@ fn each_plan_reviewer_carries_its_own_rubric_contract() {
 }
 
 #[test]
-fn per_unit_independent_gates() {
+fn per_unit_independent_outcomes() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let units = [
-            ("roadmap-body", json!(["needs-plan-review"]), json!([])),
-            (
-                "phase-A",
-                json!(["needs-plan-review", "depends-unlanded"]),
-                json!([specification_blocker()]),
-            ),
-            ("phase-B", json!(["needs-plan-review"]), json!([])),
-            ("phase-C", json!(["needs-plan-review"]), json!([nit()])),
+            ("roadmap-body", json!([]), "reviewed"),
+            ("phase-A", json!([specification_blocker()]), "rework"),
+            ("phase-B", json!([]), "reviewed"),
+            ("phase-C", json!([nit()]), "reviewed"),
         ];
-        for (id, tags, survivors) in units {
+        for (id, survivors, want) in units {
             let outcome = js.call("classifyPlanOutcome", vec![survivors])?;
-            let gate = js.call("gateFor", vec![json!("plan"), outcome.clone()])?;
+            check_eq!(outcome, json!(want), "{id} gets its own outcome");
+            let gate = js.call("gateFor", vec![json!("plan"), outcome])?;
             check_eq!(
                 gate.get("status"),
                 Some(&json!(null)),
-                "{id}: the plan gate persists no status"
+                "{id}: a plan outcome persists no status"
             );
-            let clears = gate["clearsPlanReviewTag"] == json!(true);
-            let remaining = if clears {
-                js.call("filterPlanReviewTag", vec![tags.clone()])?
-            } else {
-                tags.clone()
-            };
-            if id == "phase-A" {
-                check_eq!(outcome, json!("rework"), "phase-A reworks");
-                check!(!clears, "phase-A keeps needs-plan-review");
-                check_eq!(remaining, tags, "phase-A's tags are untouched");
-            } else {
-                check_eq!(outcome, json!("reviewed"), "{id} is reviewed");
-                check!(clears, "{id} clears needs-plan-review");
-                check_eq!(remaining, json!([]), "{id}'s tag list is emptied");
-            }
         }
         Ok(())
     });
 }
 
 #[test]
-fn implementation_plan_skips_gate() {
+fn implementation_plan_outcome_writes_nothing() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let outcome = js.call(

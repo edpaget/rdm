@@ -1,645 +1,466 @@
+//! Back-compat for what the plan-review tag gate left behind: a config file
+//! that still sets the retired `plan_review` key, an environment that still
+//! exports `RDM_PLAN_REVIEW`, a caller that still passes `task create
+//! --no-plan-review`, and items that still carry a `needs-plan-review` tag.
+
 use assert_cmd::Command;
-use predicates::prelude::*;
+use serde_json::Value;
 use tempfile::TempDir;
 
-fn rdm() -> Command {
-    let mut cmd = Command::cargo_bin("rdm").unwrap();
-    // Isolate from host global config (e.g. default_format = "json").
-    cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
-    cmd
+/// Where a fixture still sets the retired `plan_review` key.
+#[derive(Clone, Copy, Debug, Default)]
+struct Legacy {
+    /// `plan_review = true` at the top level of `rdm.toml`.
+    repo: bool,
+    /// `plan_review = true` under `[projects.acme]` in `rdm.toml`.
+    project: bool,
+    /// `plan_review = true` in the global config file.
+    global: bool,
+    /// The value of `RDM_PLAN_REVIEW` every command runs with.
+    env: Option<&'static str>,
 }
 
-fn init_with_project(dir: &TempDir) {
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("init")
-        .assert()
-        .success();
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["project", "create", "acme"])
-        .assert()
-        .success();
+const REPO_KEY: Legacy = Legacy {
+    repo: true,
+    project: false,
+    global: false,
+    env: None,
+};
+
+/// Every way a setup that enabled the tag gate can still look.
+const LEGACY_SETUPS: [Legacy; 6] = [
+    REPO_KEY,
+    Legacy {
+        repo: false,
+        project: true,
+        global: false,
+        env: None,
+    },
+    Legacy {
+        repo: false,
+        project: false,
+        global: true,
+        env: None,
+    },
+    Legacy {
+        repo: false,
+        project: false,
+        global: false,
+        env: Some("true"),
+    },
+    // A value the variable used to reject, on top of a file that sets the key.
+    Legacy {
+        repo: true,
+        project: false,
+        global: false,
+        env: Some("yes"),
+    },
+    // The empty value was rejected too.
+    Legacy {
+        repo: true,
+        project: true,
+        global: true,
+        env: Some(""),
+    },
+];
+
+/// A plan repo with project `acme` and its own global config directory.
+struct Fixture {
+    root: TempDir,
+    config: TempDir,
+    env: Option<&'static str>,
 }
 
-/// Enables `plan_review` in the repo `rdm.toml` via `rdm config set`.
-fn enable_plan_review(dir: &TempDir) {
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["config", "set", "plan_review", "true"])
-        .assert()
-        .success();
-}
+impl Fixture {
+    fn new(legacy: Legacy) -> Self {
+        let fixture = Fixture {
+            root: TempDir::new().unwrap(),
+            config: TempDir::new().unwrap(),
+            env: legacy.env,
+        };
+        fixture.run(&["init"]);
+        fixture.run(&["project", "create", "acme"]);
 
-fn create_phase(dir: &TempDir, roadmap: &str, slug: &str, title: &str, number: &str) {
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
+        // The key is written into the files by hand: `rdm config set` refuses it.
+        let mut repo_toml = String::new();
+        if legacy.repo {
+            repo_toml.push_str("plan_review = true\n");
+        }
+        if legacy.project {
+            repo_toml.push_str("\n[projects.acme]\nplan_review = true\n");
+        }
+        std::fs::write(fixture.repo_config_path(), repo_toml).unwrap();
+        if legacy.global {
+            std::fs::create_dir_all(fixture.config.path().join("rdm")).unwrap();
+            std::fs::write(fixture.global_config_path(), "plan_review = true\n").unwrap();
+        }
+        fixture
+    }
+
+    fn repo_config_path(&self) -> std::path::PathBuf {
+        self.root.path().join("rdm.toml")
+    }
+
+    fn global_config_path(&self) -> std::path::PathBuf {
+        self.config.path().join("rdm").join("config.toml")
+    }
+
+    /// The bytes of both config files, `None` for one that does not exist.
+    fn config_bytes(&self) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        (
+            std::fs::read(self.repo_config_path()).ok(),
+            std::fs::read(self.global_config_path()).ok(),
+        )
+    }
+
+    fn rdm(&self) -> Command {
+        let mut cmd = Command::cargo_bin("rdm").unwrap();
+        cmd.env("XDG_CONFIG_HOME", self.config.path());
+        for var in ["RDM_ROOT", "RDM_PROJECT", "RDM_FORMAT", "RDM_PLAN_REVIEW"] {
+            cmd.env_remove(var);
+        }
+        if let Some(value) = self.env {
+            cmd.env("RDM_PLAN_REVIEW", value);
+        }
+        cmd.arg("--root").arg(self.root.path());
+        cmd
+    }
+
+    /// Runs a command that must succeed without mentioning the retired key
+    /// or variable on stderr, and returns its stdout.
+    fn run(&self, args: &[&str]) -> String {
+        let output = self.rdm().args(args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "`rdm {}` failed under {:?}: {stderr}",
+            args.join(" "),
+            self.env
+        );
+        assert!(
+            !stderr.contains("plan_review") && !stderr.contains("PLAN_REVIEW"),
+            "`rdm {}` mentioned the retired key on stderr: {stderr}",
+            args.join(" ")
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// Runs a command that must fail, and returns its stderr.
+    fn refused(&self, args: &[&str]) -> String {
+        let output = self.rdm().args(args).output().unwrap();
+        assert!(
+            !output.status.success(),
+            "`rdm {}` unexpectedly succeeded",
+            args.join(" ")
+        );
+        String::from_utf8(output.stderr).unwrap()
+    }
+
+    /// The `tags` of the item `show_args` shows, empty when it has none.
+    fn tags(&self, show_args: &[&str]) -> Vec<String> {
+        let mut args = show_args.to_vec();
+        args.extend(["--project", "acme", "--format", "json"]);
+        let shown: Value = serde_json::from_str(&self.run(&args)).unwrap();
+        shown["tags"]
+            .as_array()
+            .map(|tags| {
+                tags.iter()
+                    .map(|tag| tag.as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Creates roadmap `<slug>`, its phase 1 and task `<slug>`, each with
+    /// `extra` appended to the create command.
+    fn create_each_kind(&self, slug: &str, extra: &[&str]) {
+        let with_extra = |base: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend(["--project", "acme", "--no-edit"]);
+            args.extend(extra);
+            self.run(&args);
+        };
+        with_extra(&["roadmap", "create", slug, "--title", "A roadmap"]);
+        with_extra(&[
             "phase",
             "create",
-            slug,
+            "build",
             "--title",
-            title,
-            "--roadmap",
-            roadmap,
-            "--project",
-            "acme",
+            "A phase",
             "--number",
-            number,
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-}
-
-#[test]
-fn roadmap_create_stamps_tag_when_plan_review_enabled() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    enable_plan_review(&dir);
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "roadmap",
-            "create",
-            "widget-launch",
-            "--title",
-            "Widget Launch",
-            "--project",
-            "acme",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["roadmap", "show", "widget-launch", "--project", "acme"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("needs-plan-review"));
-}
-
-#[test]
-fn phase_create_stamps_tag_when_plan_review_enabled() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    enable_plan_review(&dir);
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "roadmap",
-            "create",
-            "widget-launch",
-            "--title",
-            "Widget Launch",
-            "--project",
-            "acme",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-    create_phase(&dir, "widget-launch", "design", "Design the Widget", "1");
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "phase",
-            "show",
             "1",
             "--roadmap",
-            "widget-launch",
+            slug,
+        ]);
+        with_extra(&["task", "create", slug, "--title", "A task"]);
+    }
+
+    /// The tags of roadmap `<slug>`, its phase 1 and task `<slug>`.
+    fn tags_of_each_kind(&self, slug: &str) -> [Vec<String>; 3] {
+        [
+            self.tags(&["roadmap", "show", slug]),
+            self.tags(&["phase", "show", "1", "--roadmap", slug]),
+            self.tags(&["task", "show", slug]),
+        ]
+    }
+
+    /// The identifiers `rdm search "" --tag <tag>` returns, sorted.
+    fn tagged(&self, tag: &str) -> Vec<String> {
+        let found: Value = serde_json::from_str(&self.run(&[
+            "search",
+            "",
+            "--tag",
+            tag,
             "--project",
             "acme",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("needs-plan-review"));
+            "--format",
+            "json",
+        ]))
+        .unwrap();
+        let mut identifiers: Vec<String> = found
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| {
+                format!(
+                    "{}:{}",
+                    hit["kind"].as_str().unwrap(),
+                    hit["identifier"].as_str().unwrap()
+                )
+            })
+            .collect();
+        identifiers.sort();
+        identifiers
+    }
+}
+
+fn strs(tags: &[&str]) -> Vec<String> {
+    tags.iter().map(|tag| tag.to_string()).collect()
 }
 
 #[test]
-fn task_create_stamps_tag_when_plan_review_enabled() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    enable_plan_review(&dir);
+fn create_writes_exactly_the_tags_passed_wherever_plan_review_is_still_set() {
+    for legacy in LEGACY_SETUPS {
+        let fixture = Fixture::new(legacy);
+        fixture.create_each_kind("tagged", &["--tags", "a,b"]);
+        fixture.create_each_kind("bare", &[]);
 
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "task",
-            "create",
-            "fix-login-bug",
-            "--title",
-            "Fix Login Bug",
-            "--project",
-            "acme",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["task", "show", "fix-login-bug", "--project", "acme"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("needs-plan-review"));
+        for tags in fixture.tags_of_each_kind("tagged") {
+            assert_eq!(tags, strs(&["a", "b"]), "{legacy:?}");
+        }
+        for tags in fixture.tags_of_each_kind("bare") {
+            assert_eq!(tags, strs(&[]), "{legacy:?}");
+        }
+    }
 }
 
 #[test]
-fn create_does_not_stamp_tag_when_plan_review_disabled() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    // plan_review left at its default (false).
+fn every_command_family_runs_against_a_config_that_still_sets_plan_review() {
+    for legacy in LEGACY_SETUPS {
+        let fixture = Fixture::new(legacy);
+        fixture.create_each_kind("work", &["--tags", "a"]);
 
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "task",
-            "create",
-            "fix-login-bug",
-            "--title",
-            "Fix Login Bug",
+        fixture.run(&["roadmap", "list", "--project", "acme"]);
+        fixture.run(&["roadmap", "show", "work", "--project", "acme"]);
+        fixture.run(&["phase", "list", "--roadmap", "work", "--project", "acme"]);
+        fixture.run(&["task", "list", "--project", "acme"]);
+        fixture.run(&["task", "show", "work", "--project", "acme"]);
+        fixture.run(&[
+            "phase",
+            "update",
+            "1",
+            "--status",
+            "in-progress",
+            "--roadmap",
+            "work",
             "--project",
             "acme",
             "--no-edit",
-        ])
-        .assert()
-        .success();
+        ]);
+        fixture.run(&[
+            "task",
+            "update",
+            "work",
+            "--status",
+            "in-progress",
+            "--project",
+            "acme",
+            "--no-edit",
+        ]);
+        fixture.run(&["search", "roadmap", "--project", "acme"]);
+        fixture.run(&["status"]);
 
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["task", "show", "fix-login-bug", "--project", "acme"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("needs-plan-review").not());
+        let listed = fixture.run(&["config", "list"]);
+        assert!(
+            !listed.contains("plan_review"),
+            "config list still has a plan_review row under {legacy:?}: {listed}"
+        );
+        let scoped = fixture.run(&["config", "list", "--project", "acme"]);
+        assert_eq!(scoped.lines().count(), 4, "{legacy:?}: {scoped}");
+
+        fixture.run(&["config", "get", "default_branch"]);
+        fixture.run(&["config", "set", "default_branch", "trunk"]);
+        let branch = fixture.run(&["config", "get", "default_branch", "--raw"]);
+        assert_eq!(branch.trim(), "trunk", "{legacy:?}");
+        fixture.run(&["roadmap", "list", "--project", "acme"]);
+        fixture.run(&["commit", "-m", "plan: land the fixture"]);
+    }
 }
 
 #[test]
-fn task_create_no_plan_review_skips_stamp_even_when_config_enabled() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    enable_plan_review(&dir);
+fn config_get_and_set_refuse_the_retired_plan_review_key_and_write_nothing() {
+    let sets_the_key = Legacy {
+        repo: true,
+        project: true,
+        global: true,
+        env: None,
+    };
+    for legacy in [sets_the_key, Legacy::default()] {
+        let fixture = Fixture::new(legacy);
+        let before = fixture.config_bytes();
 
-    // With the flag: no stamp, even though plan_review is on.
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "task",
-            "create",
-            "finding-followup",
-            "--title",
-            "Finding follow-up",
-            "--project",
-            "acme",
-            "--no-edit",
-            "--no-plan-review",
-        ])
-        .assert()
-        .success();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["task", "show", "finding-followup", "--project", "acme"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("needs-plan-review").not());
-
-    // Without the flag, an otherwise-identical create still stamps it.
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "task",
-            "create",
-            "regular-task",
-            "--title",
-            "Regular task",
-            "--project",
-            "acme",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["task", "show", "regular-task", "--project", "acme"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("needs-plan-review"));
+        for args in [
+            &["config", "get", "plan_review"][..],
+            &["config", "get", "plan_review", "--project", "acme"],
+            &["config", "set", "plan_review", "true"],
+            &["config", "set", "plan_review", "true", "--global"],
+            &["config", "set", "plan_review", "true", "--project", "acme"],
+        ] {
+            let stderr = fixture.refused(args);
+            assert!(
+                stderr.contains("plan_review") && stderr.contains("retired"),
+                "`rdm {}` under {legacy:?}: {stderr}",
+                args.join(" ")
+            );
+            assert_eq!(fixture.config_bytes(), before, "`rdm {}`", args.join(" "));
+        }
+    }
 }
 
 #[test]
-fn create_with_plan_review_enabled_preserves_user_supplied_tags() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    enable_plan_review(&dir);
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
+fn task_create_no_plan_review_is_accepted_and_changes_nothing() {
+    for legacy in [REPO_KEY, Legacy::default()] {
+        let fixture = Fixture::new(legacy);
+        fixture.run(&[
             "task",
             "create",
-            "fix-login-bug",
+            "finding",
             "--title",
-            "Fix Login Bug",
-            "--project",
-            "acme",
+            "A finding",
             "--tags",
-            "bug,urgent",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["task", "show", "fix-login-bug", "--project", "acme"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("bug"))
-        .stdout(predicate::str::contains("urgent"))
-        .stdout(predicate::str::contains("needs-plan-review"));
-}
-
-#[test]
-fn create_stamps_tag_via_rdm_plan_review_env_var() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    // No rdm.toml `plan_review` key set — env var alone drives it.
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .env("RDM_PLAN_REVIEW", "true")
-        .args([
-            "task",
-            "create",
-            "fix-login-bug",
-            "--title",
-            "Fix Login Bug",
+            "x",
+            "--no-plan-review",
             "--project",
             "acme",
             "--no-edit",
-        ])
-        .assert()
-        .success();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["task", "show", "fix-login-bug", "--project", "acme"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("needs-plan-review"));
-}
-
-#[test]
-fn search_tag_needs_plan_review_lists_pending_phase_and_task() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    enable_plan_review(&dir);
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "roadmap",
-            "create",
-            "widget-launch",
-            "--title",
-            "Widget Launch",
-            "--project",
-            "acme",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-    create_phase(&dir, "widget-launch", "design", "Design the Widget", "1");
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "task",
-            "create",
-            "fix-login-bug",
-            "--title",
-            "Fix Login Bug",
-            "--project",
-            "acme",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-
-    // --type phase returns only the phase.
-    let output = rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "search",
-            "",
-            "--tag",
-            "needs-plan-review",
-            "--type",
-            "phase",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let stdout = String::from_utf8(output).unwrap();
-    assert!(
-        stdout.contains("design"),
-        "expected phase in output: {stdout}"
-    );
-    assert!(
-        !stdout.contains("fix-login-bug"),
-        "task should not appear when filtering --type phase: {stdout}"
-    );
-
-    // --type task returns only the task.
-    let output = rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "search",
-            "",
-            "--tag",
-            "needs-plan-review",
-            "--type",
-            "task",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let stdout = String::from_utf8(output).unwrap();
-    assert!(
-        stdout.contains("fix-login-bug"),
-        "expected task in output: {stdout}"
-    );
-    assert!(
-        !stdout.contains("\"design\""),
-        "phase should not appear when filtering --type task: {stdout}"
-    );
-}
-
-#[test]
-fn search_tag_needs_plan_review_empty_when_plan_review_disabled() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-    // plan_review left disabled — nothing should ever get tagged.
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "task",
-            "create",
-            "fix-login-bug",
-            "--title",
-            "Fix Login Bug",
-            "--project",
-            "acme",
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-
-    let output = rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "search",
-            "",
-            "--tag",
-            "needs-plan-review",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let stdout = String::from_utf8(output).unwrap();
-    assert_eq!(stdout.trim(), "[]");
-}
-
-// ---------------------------------------------------------------------------
-// `plan_review` resolves per project: `[projects.<p>] plan_review` overrides
-// the plan-repo-wide value, and `RDM_PLAN_REVIEW` overrides both.
-// ---------------------------------------------------------------------------
-
-/// A plan repo with projects `a` and `b`.
-fn init_two_projects() -> TempDir {
-    let dir = TempDir::new().unwrap();
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("init")
-        .assert()
-        .success();
-    for project in ["a", "b"] {
-        rdm()
-            .arg("--root")
-            .arg(dir.path())
-            .args(["project", "create", project])
-            .assert()
-            .success();
+        ]);
+        assert_eq!(
+            fixture.tags(&["task", "show", "finding"]),
+            strs(&["x"]),
+            "{legacy:?}"
+        );
     }
-    dir
 }
 
-fn set_project_plan_review(dir: &TempDir, project: &str, value: &str) {
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["config", "set", "plan_review", value, "--project", project])
-        .assert()
-        .success();
-}
+#[test]
+fn an_item_already_tagged_needs_plan_review_shows_keeps_and_loses_it_like_any_tag() {
+    let fixture = Fixture::new(REPO_KEY);
+    fixture.create_each_kind("old", &["--tags", "needs-plan-review,keep"]);
+    let every_kind = strs(&["phase:old/phase-1-build", "roadmap:old", "task:old"]);
 
-/// Creates task `slug` in `project` (with `env` applied) and reports whether
-/// it was stamped with `needs-plan-review`.
-fn task_create_stamps(dir: &TempDir, project: &str, slug: &str, env: Option<&str>) -> bool {
-    let mut cmd = rdm();
-    cmd.env_remove("RDM_PLAN_REVIEW");
-    if let Some(v) = env {
-        cmd.env("RDM_PLAN_REVIEW", v);
+    // It shows.
+    for tags in fixture.tags_of_each_kind("old") {
+        assert_eq!(tags, strs(&["needs-plan-review", "keep"]));
     }
-    cmd.arg("--root")
-        .arg(dir.path())
-        .args([
-            "task",
-            "create",
-            slug,
-            "--title",
-            "A task",
-            "--project",
-            project,
-            "--no-edit",
-        ])
-        .assert()
-        .success();
-    let out = rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["task", "show", slug, "--project", project, "--no-body"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    String::from_utf8_lossy(&out).contains("needs-plan-review")
-}
+    assert_eq!(fixture.tagged("needs-plan-review"), every_kind);
 
-#[test]
-fn task_create_honors_a_project_scoped_plan_review() {
-    let dir = init_two_projects();
-    enable_plan_review(&dir);
-    set_project_plan_review(&dir, "b", "false");
+    // An update that does not touch tags keeps it.
+    fixture.run(&[
+        "roadmap",
+        "update",
+        "old",
+        "--body",
+        "Reworded.",
+        "--project",
+        "acme",
+        "--no-edit",
+    ]);
+    fixture.run(&[
+        "phase",
+        "update",
+        "1",
+        "--status",
+        "in-progress",
+        "--body",
+        "Reworded.",
+        "--roadmap",
+        "old",
+        "--project",
+        "acme",
+        "--no-edit",
+    ]);
+    fixture.run(&[
+        "task",
+        "update",
+        "old",
+        "--status",
+        "in-progress",
+        "--body",
+        "Reworded.",
+        "--project",
+        "acme",
+        "--no-edit",
+    ]);
+    for tags in fixture.tags_of_each_kind("old") {
+        assert_eq!(tags, strs(&["needs-plan-review", "keep"]));
+    }
 
-    assert!(
-        task_create_stamps(&dir, "a", "in-a", None),
-        "project a inherits the plan-repo-wide plan_review = true"
-    );
-    assert!(
-        !task_create_stamps(&dir, "b", "in-b", None),
-        "project b's override turns the stamp off"
-    );
-}
-
-/// Runs `rdm --root <dir> <args>` with `RDM_PLAN_REVIEW` unset and returns
-/// its stdout.
-fn run_in(dir: &TempDir, args: &[&str]) -> String {
-    let out = rdm()
-        .env_remove("RDM_PLAN_REVIEW")
-        .arg("--root")
-        .arg(dir.path())
-        .args(args)
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Creates roadmap `r` with phase 1 in `project` and reports whether the
-/// roadmap and the phase were each stamped with `needs-plan-review`.
-fn roadmap_and_phase_create_stamp(dir: &TempDir, project: &str) -> (bool, bool) {
-    run_in(
-        dir,
-        &[
+    // So does adding another tag.
+    let update_each = |flag: &str, value: &str| {
+        fixture.run(&[
             "roadmap",
-            "create",
-            "r",
-            "--title",
-            "R",
+            "update",
+            "old",
+            flag,
+            value,
             "--project",
-            project,
+            "acme",
             "--no-edit",
-        ],
-    );
-    run_in(
-        dir,
-        &[
+        ]);
+        fixture.run(&[
             "phase",
-            "create",
-            "p",
-            "--title",
-            "P",
-            "--number",
+            "update",
             "1",
+            flag,
+            value,
             "--roadmap",
-            "r",
+            "old",
             "--project",
-            project,
+            "acme",
             "--no-edit",
-        ],
-    );
-    let roadmap = run_in(
-        dir,
-        &["roadmap", "show", "r", "--project", project, "--no-body"],
-    );
-    let phase = run_in(
-        dir,
-        &[
-            "phase",
-            "show",
-            "1",
-            "--roadmap",
-            "r",
+        ]);
+        fixture.run(&[
+            "task",
+            "update",
+            "old",
+            flag,
+            value,
             "--project",
-            project,
-            "--no-body",
-        ],
-    );
-    (
-        roadmap.contains("needs-plan-review"),
-        phase.contains("needs-plan-review"),
-    )
-}
+            "acme",
+            "--no-edit",
+        ]);
+    };
+    update_each("--add-tag", "other");
+    for tags in fixture.tags_of_each_kind("old") {
+        assert_eq!(tags, strs(&["needs-plan-review", "keep", "other"]));
+    }
+    assert_eq!(fixture.tagged("needs-plan-review"), every_kind);
 
-#[test]
-fn roadmap_and_phase_create_honor_a_project_scoped_plan_review() {
-    let dir = init_two_projects();
-    enable_plan_review(&dir);
-    set_project_plan_review(&dir, "b", "false");
-
-    assert_eq!(
-        roadmap_and_phase_create_stamp(&dir, "a"),
-        (true, true),
-        "project a's roadmap and phase inherit the plan-repo-wide plan_review = true"
-    );
-    assert_eq!(
-        roadmap_and_phase_create_stamp(&dir, "b"),
-        (false, false),
-        "project b's override turns the roadmap and phase stamps off"
-    );
-}
-
-#[test]
-fn rdm_plan_review_env_overrides_a_project_scoped_value_in_both_directions() {
-    let dir = init_two_projects();
-    set_project_plan_review(&dir, "a", "true");
-    set_project_plan_review(&dir, "b", "false");
-
-    assert!(
-        task_create_stamps(&dir, "b", "env-on", Some("true")),
-        "RDM_PLAN_REVIEW=true must beat [projects.b] plan_review = false"
-    );
-    assert!(
-        !task_create_stamps(&dir, "a", "env-off", Some("false")),
-        "RDM_PLAN_REVIEW=false must beat [projects.a] plan_review = true"
-    );
+    // An ordinary `--tags` write that omits it removes it.
+    update_each("--tags", "keep");
+    for tags in fixture.tags_of_each_kind("old") {
+        assert_eq!(tags, strs(&["keep"]));
+    }
+    assert_eq!(fixture.tagged("needs-plan-review"), strs(&[]));
+    assert_eq!(fixture.tagged("keep"), every_kind);
 }

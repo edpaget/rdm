@@ -70,7 +70,7 @@ capability — not per feature or per change:
 
 ```markdown
 ---
-title: Plan review gate
+title: Reviewed gate
 status: active            # draft | active | deprecated | superseded
 superseded_by: null
 ---
@@ -80,9 +80,9 @@ Why this capability exists; the problem it solves.
 
 ## Requirements
 
-### R1 — Stamp new items
-WHEN plan_review resolves to true
-THEN roadmap/phase/task create SHALL add the needs-plan-review tag.
+### R1 — Refuse an unplanned item
+WHEN gates.reviewed resolves to true and the item has no approved implementation plan
+THEN phase/task update --status reviewed SHALL refuse.
 
 ### R2 — …
 

@@ -460,10 +460,6 @@ as the code ladder records the change review. Its comments are line-anchored (`r
 <start>-<end>`, spans the finders read off the numbered plan), and a refused line anchor lands
 whole-document mechanically, counted in `anchorsDegraded=`.
 
-Because the engine does not review the item document, this call does **not** clear a
-`needs-plan-review` tag on the phase. That tag asserts the *item* was plan-reviewed and is cleared
-by the standalone `rdm-plan-review` surface or a manual sweep, not here.
-
 ### 7. Wait for the plan approval — ONE origin-blind read
 
 ```bash

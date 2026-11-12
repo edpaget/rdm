@@ -102,9 +102,8 @@ roadmap. Use `autopilot` for that, or re-run this skill by hand to take another 
 
 If a plan-review finding cannot be resolved by revising the plan — a genuine ambiguity, or an
 architectural decision with no clear default — the orchestrator escalates it rather than dropping
-it. If you are the one recording it, file it via the Side-work convention below with `--no-plan-review`:
-`rdm task create <slug> --title "..." --tags plan-review --no-plan-review`. That flag keeps the
-filed finding from being stamped `needs-plan-review` itself.
+it. If you are the one recording it, file it via the Side-work convention below with `--tags plan-review`:
+`rdm task create <slug> --title "..." --tags plan-review`.
 
 If you discover bugs or unrelated improvements while working, do not fix them inline — create a tagged
 task instead so the work is findable later:

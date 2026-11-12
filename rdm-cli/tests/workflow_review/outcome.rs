@@ -185,9 +185,9 @@ fn gate_policy_table() {
         for outcome in ["reviewed", "rework", "escalated"] {
             let row = gate(&mut js, "code", outcome)?;
             check_eq!(
-                row["clearsPlanReviewTag"],
-                json!(false),
-                "the code gate never clears the plan tag ({outcome})"
+                row.get("clearsPlanReviewTag"),
+                None,
+                "a code row says nothing about a tag ({outcome})"
             );
         }
         check_eq!(
@@ -196,27 +196,17 @@ fn gate_policy_table() {
             "code escalation prefix"
         );
         check_eq!(
-            gate(&mut js, "plan", "reviewed")?["clearsPlanReviewTag"],
-            json!(true),
-            "plan reviewed clears the tag"
-        );
-        check_eq!(
-            gate(&mut js, "plan", "rework")?["clearsPlanReviewTag"],
-            json!(false),
-            "plan rework leaves the tag"
-        );
-        check_eq!(
-            gate(&mut js, "plan", "escalated")?["clearsPlanReviewTag"],
-            json!(false),
-            "plan escalated leaves the tag"
-        );
-        check_eq!(
             gate(&mut js, "plan", "escalated")?["reasonPrefix"],
             json!("[plan]"),
             "plan escalation prefix"
         );
         for outcome in ["reviewed", "rework", "escalated"] {
             let row = gate(&mut js, "plan", outcome)?;
+            check_eq!(
+                row.get("clearsPlanReviewTag"),
+                None,
+                "a plan row says nothing about a tag ({outcome})"
+            );
             check_eq!(
                 row.get("status"),
                 Some(&json!(null)),

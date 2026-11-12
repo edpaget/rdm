@@ -1232,10 +1232,8 @@ pub(crate) enum TaskCommand {
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
-        /// Skip the automatic `needs-plan-review` stamp even when the
-        /// `plan_review` config flag is enabled. Intended for tasks filed
-        /// from a plan-review finding itself, so the gate's own output does
-        /// not become new input to the gate.
+        /// Deprecated: no longer has any effect — creation never stamps a
+        /// tag, so there is nothing to skip.
         #[arg(long)]
         no_plan_review: bool,
     },
@@ -2020,8 +2018,8 @@ pub(crate) enum ConfigCommand {
         raw: bool,
         /// Resolve the key for this project, reporting a `[projects.<name>]`
         /// override when one is set. Only the project-scopable keys
-        /// (dispatch.verify, gates.reviewed, plan_review, default_branch,
-        /// max_refutations) are accepted. Never taken from RDM_PROJECT or default_project.
+        /// (dispatch.verify, gates.reviewed, default_branch, max_refutations)
+        /// are accepted. Never taken from RDM_PROJECT or default_project.
         #[arg(long)]
         project: Option<String>,
     },
@@ -2040,7 +2038,7 @@ pub(crate) enum ConfigCommand {
         /// Write a per-project override to `[projects.<name>]` in the repo
         /// config instead of the plan-repo-wide value. Only the
         /// project-scopable keys (dispatch.verify, gates.reviewed,
-        /// plan_review, default_branch, max_refutations) are accepted. Never taken from
+        /// default_branch, max_refutations) are accepted. Never taken from
         /// RDM_PROJECT or default_project.
         #[arg(long, conflicts_with = "global")]
         project: Option<String>,
@@ -2048,8 +2046,8 @@ pub(crate) enum ConfigCommand {
     /// List all config keys with their resolved values and sources.
     List {
         /// List only the project-scopable keys (dispatch.verify,
-        /// gates.reviewed, plan_review, default_branch, max_refutations),
-        /// each resolved for this project. Never taken from RDM_PROJECT or default_project.
+        /// gates.reviewed, default_branch, max_refutations), each resolved
+        /// for this project. Never taken from RDM_PROJECT or default_project.
         #[arg(long)]
         project: Option<String>,
     },

@@ -30,7 +30,7 @@ export async function runReviewExperiment({agent, target, planFile, model, paral
   const plan = await runPlanReviewDriver({
     implementationPlan: true,
     planFile,
-    findModel: model, verifyModel: model, gateMode: 'return',
+    findModel: model, verifyModel: model,
   }, {...deps, runPlanReview: buildReviewPipeline('plan', deps)});
   requireCompleteReview(plan);
   return {code, codeOutcome, plan};

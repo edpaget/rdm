@@ -16,8 +16,8 @@
 ;;   A roadmap has no status.
 ;; - Edit: add and remove tags, and edit the body.  The tag write is one
 ;;   `update --add-tag/--remove-tag' call; rdm applies it to the current
-;;   list, so tags the user did not touch (e.g. `needs-plan-review',
-;;   `depends-unlanded') are kept by rdm, and rdm normalizes the text.
+;;   list, so tags the user did not touch (e.g. `depends-unlanded')
+;;   are kept by rdm, and rdm normalizes the text.
 ;;   The body opens in a compose buffer (rdm-compose.el) holding the
 ;;   current body; submitting writes it with `--body', or `--clear-body'
 ;;   when the buffer was emptied.

@@ -89,8 +89,8 @@ replaces the whole list on update:
 4. B flushes. The file now reads `[needs-plan-review, perf]`.
 
 A's `ui` tag is gone. Both commands exited 0. Nothing was reported. Substitute
-a reserved tag — `needs-plan-review` itself, or `depends-unlanded` — and a gate
-silently stops gating.
+a reserved tag such as `depends-unlanded` and a check that reads it silently
+stops seeing it.
 
 ## Options considered
 
