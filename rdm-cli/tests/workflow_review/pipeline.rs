@@ -220,18 +220,20 @@ fn rank_total_order() {
 
 fn plan_findings() -> serde_json::Value {
     plant(&[
+        ("scope", json!([])),
         (
-            "coherence",
+            "specification",
             json!([
-                { "id": "vague-step", "concern": "coherence", "severity": "blocking", "confidence": 88, "what_fails": "step 3 is ambiguous" },
-                { "id": "nonissue", "concern": "coherence", "severity": "concern", "confidence": 80, "what_fails": "reads odd but is fine" },
-                { "id": "weak-plan", "concern": "coherence", "severity": "suggestion", "confidence": 50, "what_fails": "minor plan nit" }
+                { "id": "vague-step", "concern": "specification", "severity": "blocking", "confidence": 88, "what_fails": "step 3 is ambiguous" },
+                { "id": "nonissue", "concern": "specification", "severity": "concern", "confidence": 80, "what_fails": "reads odd but is fine" },
+                { "id": "weak-plan", "concern": "specification", "severity": "suggestion", "confidence": 50, "what_fails": "minor plan nit" }
             ]),
         ),
-        ("architectural-fit", json!([])),
-        ("unit-of-work", json!([])),
+        ("acceptance-criteria", json!([])),
         ("intent-alignment", json!([])),
-        ("restraint", json!([])),
+        ("code-change", json!([])),
+        ("confirmation", json!([])),
+        ("architectural-fit", json!([])),
     ])
 }
 
@@ -267,13 +269,15 @@ fn plan_mode_battery() {
         check_eq!(
             finders,
             vec![
-                "find:plan:coherence",
-                "find:plan:architectural-fit",
-                "find:plan:unit-of-work",
+                "find:plan:scope",
+                "find:plan:specification",
+                "find:plan:acceptance-criteria",
                 "find:plan:intent-alignment",
-                "find:plan:restraint"
+                "find:plan:code-change",
+                "find:plan:confirmation",
+                "find:plan:architectural-fit"
             ],
-            "one finder per plan dimension, in dimension order"
+            "with no target kind stated, one finder per plan dimension, in dimension order"
         );
         check_eq!(
             agent.calls_with("refute:").len(),
@@ -539,16 +543,15 @@ fn architectural_blocker_ranked_ahead_of_nit() {
         let mut js = Js::open(lib)?;
         let agent = Agent::planted(
             plant(&[
-                ("coherence", json!([])),
-                ("intent-alignment", json!([])),
+                ("confirmation", json!([])),
                 (
                     "architectural-fit",
                     json!([{ "id": "tier-downgrade", "concern": "architectural-fit", "severity": "blocking", "confidence": 92,
                               "what_fails": "The plan silently downgrades the review tier on failure." }]),
                 ),
                 (
-                    "unit-of-work",
-                    json!([{ "id": "impl-nit", "concern": "unit-of-work", "severity": "concern", "confidence": 85,
+                    "code-change",
+                    json!([{ "id": "impl-nit", "concern": "code-change", "severity": "concern", "confidence": 85,
                               "what_fails": "Off-by-one in the proposed pseudo-code." }]),
                 ),
             ]),
@@ -581,29 +584,33 @@ fn architectural_blocker_ranked_ahead_of_nit() {
 }
 
 #[test]
-fn restraint_finding_survives() {
+fn confirmation_finding_survives_on_an_implementation_plan() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let agent = Agent::planted(
             plant(&[(
-                "restraint",
-                json!([{ "id": "over-specified", "concern": "restraint", "severity": "blocking", "confidence": 90,
-                          "what_fails": "the plan prescribes a threshold the implementer should choose" }]),
+                "confirmation",
+                json!([{ "id": "unconfirmed", "concern": "confirmation", "severity": "blocking", "confidence": 90,
+                          "what_fails": "the second acceptance criterion has no stated means of confirmation" }]),
             )]),
-            plant(&[(
-                "over-specified",
-                json!({ "refuted": false, "confidence": 92 }),
-            )]),
+            plant(&[("unconfirmed", json!({ "refuted": false, "confidence": 92 }))]),
         );
-        let out = js.review_ok("plan", &agent, ctx())?;
+        let mut context = ctx();
+        context["targetKind"] = json!("implementation-plan");
+        let out = js.review_ok("plan", &agent, context)?;
         check!(
-            agent.calls_with("find:plan:restraint").len() == 1,
-            "restraint runs by default in plan mode"
+            agent.calls_with("find:plan:confirmation").len() == 1,
+            "confirmation runs by default on an implementation plan"
+        );
+        check!(
+            agent.calls_with("find:plan:acceptance-criteria").is_empty()
+                && agent.calls_with("find:plan:scope").is_empty(),
+            "and the item-document reviewers do not"
         );
         check_eq!(
             ids(&out, "survivors"),
-            vec!["over-specified"],
-            "a seeded restraint finding survives"
+            vec!["unconfirmed"],
+            "a seeded confirmation finding survives"
         );
         Ok(())
     });

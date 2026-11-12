@@ -4,12 +4,17 @@ use serde_json::{Value, json};
 
 use crate::support::{Failure, Js, Lib, Outcome, PLAN_LIB, run_mutant, run_real};
 
-fn coherence_blocker() -> Value {
-    json!({ "id": "c", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "ambiguous step" })
+/// A blocking survivor raised by reviewer `concern`.
+fn blocker(concern: &str) -> Value {
+    json!({ "id": "c", "concern": concern, "severity": "blocking", "confidence": 90, "what_fails": "ambiguous step" })
+}
+
+fn specification_blocker() -> Value {
+    blocker("specification")
 }
 
 fn nit() -> Value {
-    json!({ "id": "n", "concern": "coherence", "severity": "concern", "confidence": 80, "what_fails": "minor" })
+    json!({ "id": "n", "concern": "specification", "severity": "concern", "confidence": 80, "what_fails": "minor" })
 }
 
 #[test]
@@ -60,19 +65,39 @@ fn classify_plan_outcome() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let arch = json!({ "id": "a", "concern": "architectural-fit", "severity": "blocking", "confidence": 92, "what_fails": "violates constraint" });
-        let empty = json!({ "id": "empty", "concern": "coherence", "severity": "blocking", "confidence": 95, "what_fails": "plan is empty" });
+        let empty = json!({ "id": "empty", "concern": "code-change", "severity": "blocking", "confidence": 95, "what_fails": "plan is empty" });
         let cases = [
             (json!([]), "reviewed", "no findings"),
             (json!([nit()]), "reviewed", "concern-only"),
             (
-                json!([coherence_blocker()]),
+                json!([specification_blocker()]),
                 "rework",
-                "a blocking coherence finding is a fixable rewrite",
+                "a blocking specification finding is a fixable rewrite",
             ),
             (
-                json!([arch]),
+                json!([blocker("acceptance-criteria")]),
+                "rework",
+                "an unverifiable criterion is a fixable rewrite of the item",
+            ),
+            (
+                json!([blocker("scope")]),
+                "rework",
+                "an item that is not one deliverable unit is a fixable rewrite",
+            ),
+            (
+                json!([blocker("confirmation")]),
+                "rework",
+                "a criterion with no stated means of confirmation is a fixable rewrite of the plan",
+            ),
+            (
+                json!([arch.clone()]),
                 "escalated",
                 "a blocking architectural-fit finding needs a human decision",
+            ),
+            (
+                json!([blocker("confirmation"), arch]),
+                "escalated",
+                "a constraint violation escalates whatever else blocks beside it",
             ),
             (
                 json!([empty]),
@@ -91,6 +116,83 @@ fn classify_plan_outcome() {
     });
 }
 
+/// A string export of the review core.
+fn text(js: &mut Js, name: &str) -> Result<String, Failure> {
+    let v = js.get(name)?;
+    v.as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| Failure::Check(format!("{name} is not a string: {v}")))
+}
+
+#[test]
+fn each_plan_reviewer_carries_its_own_rubric_contract() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let item = text(&mut js, "ITEM_DOCUMENT_SEVERITY_CONTRACT")?;
+        let plan = text(&mut js, "IMPLEMENTATION_PLAN_SEVERITY_CONTRACT")?;
+        check!(!item.is_empty() && !plan.is_empty(), "both contracts exist");
+        check!(item != plan, "the two rubrics have different contracts");
+        // The implementation-plan rubric is the set an implementation-plan
+        // target selects; every other plan reviewer judges an item document.
+        let selected = js.call(
+            "resolveReviewers",
+            vec![
+                json!("plan"),
+                Value::Null,
+                json!({ "kind": "implementation-plan" }),
+            ],
+        )?;
+        let plan_rubric: Vec<Value> = selected
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|d| d["key"].clone())
+            .collect();
+        let dims = js.get("DIMENSIONS")?;
+        let entries = dims["plan"].as_array().cloned().unwrap_or_default();
+        check!(!entries.is_empty(), "plan mode has reviewers");
+        let mut seen = (0, 0);
+        for entry in entries {
+            let key = entry["key"].clone();
+            let prompt = js.call(
+                "findPrompt",
+                vec![json!("plan"), entry, json!({ "target": "T" })],
+            )?;
+            let prompt = prompt.as_str().unwrap_or_default();
+            let (own, other) = if plan_rubric.contains(&key) {
+                seen.1 += 1;
+                (&plan, &item)
+            } else {
+                seen.0 += 1;
+                (&item, &plan)
+            };
+            check!(
+                prompt.contains(own.as_str()),
+                "{key}: the prompt carries the contract of its own rubric"
+            );
+            check!(
+                !prompt.contains(other.as_str()),
+                "{key}: and not the other rubric's"
+            );
+        }
+        check!(
+            seen.0 > 0 && seen.1 > 0,
+            "both rubrics have reviewers: {seen:?}"
+        );
+        let code = js.get("DIMENSIONS")?["code"][1].clone();
+        let code_prompt = js.call(
+            "findPrompt",
+            vec![json!("code"), code, json!({ "target": "T" })],
+        )?;
+        let code_prompt = code_prompt.as_str().unwrap_or_default();
+        check!(
+            !code_prompt.contains(item.as_str()) && !code_prompt.contains(plan.as_str()),
+            "a code-mode prompt carries neither"
+        );
+        Ok(())
+    });
+}
+
 #[test]
 fn per_unit_independent_gates() {
     run_real(|lib| {
@@ -100,7 +202,7 @@ fn per_unit_independent_gates() {
             (
                 "phase-A",
                 json!(["needs-plan-review", "depends-unlanded"]),
-                json!([coherence_blocker()]),
+                json!([specification_blocker()]),
             ),
             ("phase-B", json!(["needs-plan-review"]), json!([])),
             ("phase-C", json!(["needs-plan-review"]), json!([nit()])),
@@ -137,7 +239,10 @@ fn per_unit_independent_gates() {
 fn implementation_plan_skips_gate() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let outcome = js.call("classifyPlanOutcome", vec![json!([coherence_blocker()])])?;
+        let outcome = js.call(
+            "classifyPlanOutcome",
+            vec![json!([specification_blocker()])],
+        )?;
         let gate = js.call("gateFor", vec![json!("plan"), outcome])?;
         check_eq!(
             gate.get("status"),

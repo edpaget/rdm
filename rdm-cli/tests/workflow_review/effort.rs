@@ -28,11 +28,13 @@ const CODE_DIMS: &[&str] = &[
     "security",
 ];
 const PLAN_DIMS: &[&str] = &[
-    "coherence",
-    "architectural-fit",
-    "unit-of-work",
+    "scope",
+    "specification",
+    "acceptance-criteria",
     "intent-alignment",
-    "restraint",
+    "code-change",
+    "confirmation",
+    "architectural-fit",
 ];
 
 fn dims(mode: &str) -> &'static [&'static str] {

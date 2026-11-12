@@ -622,8 +622,8 @@ fn mutant_c_ignored_reviewer_selection_is_caught() {
         &[ENGINE],
         &[(
             ENGINE,
-            "  if (reviewers === null || reviewers === undefined) return dims.slice();",
-            "  return dims.slice();",
+            "  if (reviewers === null || reviewers === undefined) {",
+            "  if (true) {",
         )],
     );
     run_mutant(lib, resolvers);

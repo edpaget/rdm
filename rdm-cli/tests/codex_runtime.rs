@@ -916,7 +916,7 @@ fn plan_review_phase_context_pins_source_range_and_checkout() {
     fs::write(&plan, "Implement a = 2.").unwrap();
     let branch = git(&fixture.root, &["symbolic-ref", "--short", "HEAD"]);
     let mut prompts = Vec::new();
-    let result=bridge::invoke(RUNTIME,"reviewPlan",json!([fixture.ctx(),{"planFile":plan,"item":{"type":"phase","roadmap":"example","phase":"phase-3-runtime"},"base":fixture.base,"head":fixture.head,"reviewers":["coherence"]},deps(),{}]),|name,args|{
+    let result=bridge::invoke(RUNTIME,"reviewPlan",json!([fixture.ctx(),{"planFile":plan,"item":{"type":"phase","roadmap":"example","phase":"phase-3-runtime"},"base":fixture.base,"head":fixture.head,"reviewers":["code-change"]},deps(),{}]),|name,args|{
         if name=="rdm" {return Ok(if args[0][0]=="phase" {phase_item()}else{json!([{"item":"example","path":fixture.root,"branch":branch}])});}
         prompts.push(args[0].as_str().unwrap().to_owned());reply(name,args)
     }).unwrap();

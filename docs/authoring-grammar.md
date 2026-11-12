@@ -147,6 +147,10 @@ The code-mode `ac` review dimension (`.claude/workflows/lib/review.mjs`) honors 
 - At review: agent marks this as an unmet criterion, blocks the phase
 - The deferral was declared, but in the wrong place — inside the criterion rather than as separate follow-up work in the phase body
 
+### Who Applies the Rubric
+
+Plan review applies this rubric to an item document (a roadmap body, a phase, a task) through its `acceptance-criteria` reviewer, for which a criterion that cannot be verified is `blocking`. The same review's `specification` reviewer treats implementation detail below the level of an Approach — file-by-file edits, code, decisions an implementer could safely make — as a finding: that detail belongs in the implementation plan, which is reviewed against its own rubric.
+
 ## Example: A Complete Phase Body
 
 ```markdown

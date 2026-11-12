@@ -161,7 +161,7 @@ fn non_gating_suggestion_passes_through_code() {
 
 #[test]
 fn non_gating_suggestion_passes_through_plan() {
-    run_real(|lib| non_gating_pass_through(lib, "plan", "coherence"));
+    run_real(|lib| non_gating_pass_through(lib, "plan", "specification"));
 }
 
 #[test]

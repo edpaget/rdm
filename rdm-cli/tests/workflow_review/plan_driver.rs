@@ -150,7 +150,7 @@ fn probe() -> Agent {
     Agent::scripted(|call| {
         if call.label.starts_with("find:") {
             Reply::Value(
-                json!({ "findings": [{ "id": "f1", "concern": "coherence", "severity": "blocking",
+                json!({ "findings": [{ "id": "f1", "concern": "specification", "severity": "blocking",
                 "confidence": 90, "what_fails": "x", "why": "y", "recommendation": "z" }] }),
             )
         } else {
@@ -234,7 +234,7 @@ fn judgment_only(labels: &[String]) -> bool {
 }
 
 fn blocking(what: &str) -> Value {
-    json!({ "id": "c1", "concern": "coherence", "severity": "blocking", "confidence": 95, "what_fails": what })
+    json!({ "id": "c1", "concern": "specification", "severity": "blocking", "confidence": 95, "what_fails": what })
 }
 
 fn rejects_with(r: &Result<Value, JsError>, needle: &str) -> bool {
@@ -574,7 +574,7 @@ fn rework_keeps_tag_and_renders_round_note() {
         let note = r["roundNote"].as_str().unwrap_or_default();
         check!(
             note.starts_with("## Plan Review Round 1 — rework")
-                && note.contains("[blocking] coherence: ambiguous step"),
+                && note.contains("[blocking] specification: ambiguous step"),
             "the round note is rendered from the finding and returned: {note}"
         );
         Ok(())
@@ -908,7 +908,7 @@ fn sweep_phase_unit_span_snippet_comes_from_the_phase() {
     run_real(|lib| {
         let repo = plan_repo()?;
         let mut js = Js::open(lib)?;
-        let spanned = json!([{ "id": "s1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+        let spanned = json!([{ "id": "s1", "concern": "specification", "severity": "blocking", "confidence": 90,
                                "what_fails": "line one is wrong", "start_line": 1, "end_line": 1 }]);
         let d = drive_lib(
             &mut js,
@@ -969,12 +969,12 @@ fn plan_review_persists_line_range_anchors_end_to_end() {
         ]])?;
         let agent = Agent::scripted(|call| {
             if call.label.starts_with("find:") {
-                let findings = if call.label.contains(":coherence") {
-                    json!([{ "id": "backoff", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                let findings = if call.label.contains(":specification") {
+                    json!([{ "id": "backoff", "concern": "specification", "severity": "blocking", "confidence": 90,
                              "what_fails": "the backoff is unspecified", "start_line": 4, "end_line": 5 }])
-                } else if call.label.contains(":restraint") {
-                    json!([{ "id": "retry", "concern": "restraint", "severity": "concern", "confidence": 85,
-                             "what_fails": "the loop is over-specified", "start_line": 3 }])
+                } else if call.label.contains(":scope") {
+                    json!([{ "id": "retry", "concern": "scope", "severity": "concern", "confidence": 85,
+                             "what_fails": "the loop is a separable outcome", "start_line": 3 }])
                 } else {
                     json!([])
                 };
@@ -1133,6 +1133,125 @@ fn implementation_plan_grades_plan_by_slug() {
             "the item command prints the plan, numbered"
         );
         check!(d.agent.calls().is_empty(), "no agent of the driver's own");
+        Ok(())
+    });
+}
+
+#[test]
+fn implementation_plan_names_the_item_it_implements() {
+    run_real(|lib| {
+        let repo = plan_repo()?;
+        let mut js = Js::open(lib)?;
+        let run = Run::bare();
+        let plan = json!({ "implementationPlan": true, "planSlug": "p" });
+
+        let phase = drive_lib(
+            &mut js,
+            with(
+                &with(&axes(), plan.clone()),
+                json!({ "roadmap": "r", "phase": "phase-1-x" }),
+            ),
+            json!([]),
+        )?;
+        phase.ok()?;
+        check_eq!(
+            phase.contexts[0]["targetKind"],
+            json!("implementation-plan"),
+            "the driver states the document kind under review"
+        );
+        check_eq!(
+            read(&repo, &run, &phase.contexts[0]["implementsCommand"])?,
+            repo.phase(PROJECT, "r", "phase-1-x")?,
+            "the item command prints the phase the plan implements"
+        );
+        check_eq!(
+            read(&repo, &run, &phase.contexts[0]["roadmapCommand"])?["slug"],
+            json!("r"),
+            "and the parent roadmap is still named beside it"
+        );
+
+        let task = drive_lib(
+            &mut js,
+            with(&with(&axes(), plan.clone()), json!({ "task": "t" })),
+            json!([]),
+        )?;
+        task.ok()?;
+        check_eq!(
+            read(&repo, &run, &task.contexts[0]["implementsCommand"])?,
+            repo.task(PROJECT, "t")?,
+            "the task form prints the task"
+        );
+
+        let unnamed = drive_lib(&mut js, with(&axes(), plan), json!([]))?;
+        unnamed.ok()?;
+        check_eq!(
+            unnamed.contexts[0]["implementsCommand"],
+            Value::Null,
+            "with no item named there is no item command"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn item_command_reaches_finders_only_when_an_item_is_named() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let plan = json!({ "implementationPlan": true, "planSlug": "p" });
+        let finder_prompts = |agent: &Agent| -> Vec<(String, String)> {
+            agent
+                .calls_with("find:")
+                .into_iter()
+                .map(|c| (c.label, c.prompt))
+                .collect()
+        };
+
+        // With an item named, every finder is handed the command that reads it.
+        let named = with(&plan, json!({ "task": "t" }));
+        let lib_run = drive_lib(&mut js, named.clone(), json!([]))?;
+        let command = lib_run.contexts[0]["implementsCommand"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        check!(!command.is_empty(), "the driver built an item command");
+        let (_, agent) = drive_real(&mut js, named, inert())?;
+        let with_item = finder_prompts(&agent);
+        check!(!with_item.is_empty(), "finders ran");
+        for (label, prompt) in &with_item {
+            check!(
+                prompt.contains(&command),
+                "{label} is handed the item command:\n{prompt}"
+            );
+        }
+
+        // With none, each finder's prompt is exactly the prompt of a context
+        // that has no such key at all.
+        let bare = drive_lib(&mut js, plan.clone(), json!([]))?;
+        let ctx = json!({ "target": bare.contexts[0]["target"],
+                          "itemCommand": bare.contexts[0]["itemCommand"] });
+        let (_, agent) = drive_real(&mut js, plan, inert())?;
+        let without_item = finder_prompts(&agent);
+        check_eq!(
+            without_item.len(),
+            with_item.len(),
+            "the same finders run either way"
+        );
+        let dims = js.get("DIMENSIONS")?;
+        for (label, prompt) in &without_item {
+            let key = label.rsplit(':').next().unwrap_or_default();
+            let dim = dims["plan"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|d| d["key"] == json!(key))
+                .cloned()
+                .ok_or_else(|| Failure::Check(format!("{label}: not a plan reviewer")))?;
+            check_eq!(
+                json!(prompt),
+                js.call("findPrompt", vec![json!("plan"), dim, ctx.clone()])?,
+                "{label}: no item named leaves the prompt untouched"
+            );
+        }
         Ok(())
     });
 }
@@ -1423,7 +1542,363 @@ fn retired_transport_keys_not_parsed() {
     });
 }
 
-// --- D: the caller-selected reviewer set ---------------------------------------------
+// --- D: the reviewer set — by target type, or the caller's list ----------------------
+
+/// The item-document reviewers a phase or a task gets by default.
+const ITEM_SET: [&str; 3] = ["scope", "specification", "acceptance-criteria"];
+/// The implementation-plan reviewers.
+const PLAN_SET: [&str; 3] = ["code-change", "confirmation", "architectural-fit"];
+
+/// `resolveReviewers('plan', set, target)`, as reviewer keys.
+fn resolved_for(
+    js: &mut Js,
+    set: Value,
+    target: Value,
+) -> Result<Result<Vec<String>, JsError>, Failure> {
+    Ok(js
+        .try_call("resolveReviewers", vec![json!("plan"), set, target])?
+        .map(|v| {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| d["key"].as_str().map(str::to_owned))
+                .collect()
+        }))
+}
+
+/// The default set for `target`.
+fn default_for(js: &mut Js, target: Value) -> Result<Vec<String>, Failure> {
+    resolved_for(js, Value::Null, target)?.map_err(Failure::Js)
+}
+
+/// `coverage.selected` of each reported unit, by `kind/ident`.
+fn selected_by_unit(result: &Value) -> Vec<(String, Vec<String>)> {
+    result["units"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|u| {
+            (
+                format!(
+                    "{}/{}",
+                    u["kind"].as_str().unwrap_or_default(),
+                    u["ident"].as_str().unwrap_or_default()
+                ),
+                strings(&u["coverage"]["selected"]),
+            )
+        })
+        .collect()
+}
+
+fn owned(keys: &[&str]) -> Vec<String> {
+    keys.iter().map(|k| (*k).to_owned()).collect()
+}
+
+#[test]
+fn item_targets_select_scope_specification_and_criteria() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let with_intent: Vec<String> = ITEM_SET
+            .iter()
+            .chain(["intent-alignment"].iter())
+            .map(|k| (*k).to_owned())
+            .collect();
+        for kind in ["phase", "task"] {
+            check_eq!(
+                default_for(&mut js, json!({ "kind": kind }))?,
+                owned(&ITEM_SET),
+                "{kind}: the item-document set"
+            );
+        }
+        check_eq!(
+            default_for(&mut js, json!({ "kind": "phase", "intentRecorded": true }))?,
+            with_intent,
+            "a phase whose roadmap records an Intent adds intent alignment"
+        );
+        check_eq!(
+            default_for(&mut js, json!({ "kind": "task", "intentRecorded": true }))?,
+            owned(&ITEM_SET),
+            "a task has no parent roadmap, so the flag adds nothing"
+        );
+        for not_true in [json!(false), json!("true"), json!(1), Value::Null] {
+            check_eq!(
+                default_for(
+                    &mut js,
+                    json!({ "kind": "phase", "intentRecorded": not_true })
+                )?,
+                owned(&ITEM_SET),
+                "only a literal true states a recorded Intent ({not_true})"
+            );
+        }
+
+        // Through the driver: a single phase and a task each run that set.
+        let (phase, agent) = drive_real(
+            &mut js,
+            json!({ "roadmap": "r", "phase": "phase-1-x", "tags": [], "intentRecorded": true }),
+            inert(),
+        )?;
+        check_eq!(
+            strings(&phase["coverage"]["selected"]),
+            with_intent,
+            "a phase target with a recorded Intent"
+        );
+        check_eq!(
+            agent.calls_with("find:").len(),
+            with_intent.len(),
+            "one finder per selected reviewer"
+        );
+        let (task, _) = drive_real(
+            &mut js,
+            json!({ "task": "t", "tags": [], "intentRecorded": true }),
+            inert(),
+        )?;
+        check_eq!(
+            strings(&task["coverage"]["selected"]),
+            owned(&ITEM_SET),
+            "a task target"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn roadmap_target_reviews_body_and_phases_with_their_own_sets() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        check_eq!(
+            default_for(&mut js, json!({ "kind": "roadmap" }))?,
+            owned(&["specification"]),
+            "the roadmap body gets the specification reviewer alone"
+        );
+        check_eq!(
+            default_for(
+                &mut js,
+                json!({ "kind": "roadmap", "intentRecorded": true })
+            )?,
+            owned(&["specification"]),
+            "whatever the caller says about its Intent"
+        );
+
+        let sweep = json!({ "roadmap": "r", "phases": [{ "stem": "phase-1-x" }, { "stem": "phase-2-y" }], "tags": [] });
+        let (r, _) = drive_real(&mut js, sweep.clone(), inert())?;
+        check_eq!(
+            selected_by_unit(&r),
+            vec![
+                ("roadmap/r".to_owned(), owned(&["specification"])),
+                ("phase/phase-1-x".to_owned(), owned(&ITEM_SET)),
+                ("phase/phase-2-y".to_owned(), owned(&ITEM_SET)),
+            ],
+            "the body gets specification; each phase gets the item-document set"
+        );
+
+        let (r, _) = drive_real(
+            &mut js,
+            with(&sweep, json!({ "intentRecorded": true })),
+            inert(),
+        )?;
+        let with_intent: Vec<String> = ITEM_SET
+            .iter()
+            .chain(["intent-alignment"].iter())
+            .map(|k| (*k).to_owned())
+            .collect();
+        check_eq!(
+            selected_by_unit(&r),
+            vec![
+                ("roadmap/r".to_owned(), owned(&["specification"])),
+                ("phase/phase-1-x".to_owned(), with_intent.clone()),
+                ("phase/phase-2-y".to_owned(), with_intent),
+            ],
+            "a recorded Intent adds intent alignment to each phase, not to the body"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn implementation_plan_target_selects_its_own_rubric() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let plan_set = default_for(&mut js, json!({ "kind": "implementation-plan" }))?;
+        check_eq!(
+            plan_set,
+            owned(&PLAN_SET),
+            "code change, confirmation, architectural fit"
+        );
+        let item_set = default_for(&mut js, json!({ "kind": "phase", "intentRecorded": true }))?;
+        for key in &plan_set {
+            check!(
+                !item_set.contains(key),
+                "{key} is not an item-document reviewer"
+            );
+        }
+        check_eq!(
+            default_for(
+                &mut js,
+                json!({ "kind": "implementation-plan", "intentRecorded": true })
+            )?,
+            owned(&PLAN_SET),
+            "a recorded Intent adds nothing to an implementation plan"
+        );
+
+        let (r, agent) = drive_real(
+            &mut js,
+            json!({ "implementationPlan": true, "planSlug": "p", "roadmap": "r", "phase": "phase-1-x",
+                    "intentRecorded": true }),
+            inert(),
+        )?;
+        let finders: Vec<String> = agent
+            .calls_with("find:")
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        check_eq!(
+            finders,
+            PLAN_SET
+                .iter()
+                .map(|k| format!("find:plan:{k}"))
+                .collect::<Vec<_>>(),
+            "exactly the three implementation-plan finders"
+        );
+        check_eq!(
+            strings(&r["coverage"]["selected"]),
+            owned(&PLAN_SET),
+            "and the result says so"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn explicit_list_is_exact_whatever_the_target() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        check_eq!(
+            resolved_for(
+                &mut js,
+                json!(["scope"]),
+                json!({ "kind": "implementation-plan" })
+            )?
+            .map_err(Failure::Js)?,
+            owned(&["scope"]),
+            "a named reviewer runs even outside the target's rubric"
+        );
+        check_eq!(
+            resolved_for(
+                &mut js,
+                json!(["architectural-fit", "scope"]),
+                json!({ "kind": "roadmap" })
+            )?
+            .map_err(Failure::Js)?,
+            owned(&["scope", "architectural-fit"]),
+            "out of the whole catalogue, in declaration order"
+        );
+        for set in [Value::Null, json!(["scope"])] {
+            let r = resolved_for(&mut js, set.clone(), json!({ "kind": "plan" }))?;
+            check!(
+                r.as_ref()
+                    .is_err_and(|e| e.message.contains("unknown plan review target kind")),
+                "{set}: an unrecognised kind is refused: {r:?}"
+            );
+        }
+        let all = keys(&mut js, "plan")?;
+        for target in [Host::undefined(), Value::Null, json!({})] {
+            check_eq!(
+                resolved_for(&mut js, Value::Null, target.clone())?.map_err(Failure::Js)?,
+                all,
+                "{target}: no kind stated runs the whole catalogue"
+            );
+        }
+        let code = keys(&mut js, "code")?;
+        let r = js.call(
+            "resolveReviewers",
+            vec![json!("code"), Value::Null, json!({ "kind": "nonsense" })],
+        )?;
+        check_eq!(
+            r.as_array().map(Vec::len),
+            Some(code.len()),
+            "code mode ignores the target"
+        );
+
+        // Through the driver, one list still applies to every unit of a sweep.
+        let (r, _) = drive_real(
+            &mut js,
+            json!({ "roadmap": "r", "phases": [{ "stem": "phase-1-x" }], "tags": [],
+                    "reviewers": ["scope"], "intentRecorded": true }),
+            inert(),
+        )?;
+        check_eq!(
+            selected_by_unit(&r),
+            vec![
+                ("roadmap/r".to_owned(), owned(&["scope"])),
+                ("phase/phase-1-x".to_owned(), owned(&["scope"])),
+            ],
+            "the caller's list overrides the selection on the body and the phase alike"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn driver_states_each_units_kind_and_intent() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let stated = |d: &Driven| -> Vec<(Value, Value, Value)> {
+            d.contexts
+                .iter()
+                .map(|c| {
+                    (
+                        c["target"].clone(),
+                        c["targetKind"].clone(),
+                        c["intentRecorded"].clone(),
+                    )
+                })
+                .collect()
+        };
+        let sweep = drive_lib(
+            &mut js,
+            json!({ "roadmap": "r", "phases": [{ "stem": "phase-1-x" }], "tags": [], "intentRecorded": true }),
+            json!([]),
+        )?;
+        check_eq!(
+            stated(&sweep),
+            vec![
+                (json!("roadmap/r"), json!("roadmap"), json!(false)),
+                (json!("phase/r/phase-1-x"), json!("phase"), json!(true)),
+            ],
+            "the body is a roadmap with no parent; the phase has one"
+        );
+        let task = drive_lib(
+            &mut js,
+            json!({ "task": "t", "tags": [], "intentRecorded": true }),
+            json!([]),
+        )?;
+        check_eq!(
+            stated(&task),
+            vec![(json!("task/t"), json!("task"), json!(false))],
+            "a task has no parent roadmap"
+        );
+        let unstated = drive_lib(
+            &mut js,
+            json!({ "roadmap": "r", "phase": "phase-1-x", "tags": [] }),
+            json!([]),
+        )?;
+        check_eq!(
+            stated(&unstated),
+            vec![(json!("phase/r/phase-1-x"), json!("phase"), json!(false))],
+            "an omitted flag states no Intent"
+        );
+        let positional = js.plan_call(
+            "parsePlanArgs",
+            vec![json!("r phase-1-x --intentRecorded true")],
+        )?;
+        check_eq!(
+            positional["intentRecorded"],
+            json!(false),
+            "the flag is read from the structured key only"
+        );
+        Ok(())
+    });
+}
 
 fn keys(js: &mut Js, mode: &str) -> Result<Vec<String>, Failure> {
     let dims = js.get("DIMENSIONS")?;
@@ -1610,11 +2085,14 @@ fn caller_set_narrows_real_finders() {
         )?;
         check_eq!(
             all.labels()
-                .iter()
+                .into_iter()
                 .filter(|l| l.starts_with("find:"))
-                .count(),
-            plan.len(),
-            "every finder when omitted"
+                .collect::<Vec<_>>(),
+            ITEM_SET
+                .iter()
+                .map(|k| format!("find:plan:{k}"))
+                .collect::<Vec<_>>(),
+            "the phase's own set when omitted"
         );
         Ok(())
     });
@@ -1750,7 +2228,7 @@ fn commands_from(d: &Driven) -> Result<Vec<(String, String)>, Failure> {
     let r = d.ok()?;
     let mut out = Vec::new();
     for ctx in &d.contexts {
-        for key in ["itemCommand", "roadmapCommand"] {
+        for key in ["itemCommand", "roadmapCommand", "implementsCommand"] {
             if let Some(c) = ctx[key].as_str() {
                 out.push((format!("{} {key}", ctx["target"]), c.to_owned()));
             }
@@ -1782,7 +2260,7 @@ fn e_targets() -> [Value; 4] {
         json!({ "roadmap": "r", "phase": "phase-1-x", "tags": ["needs-plan-review"], "persist": true }),
         json!({ "roadmap": "r", "phases": [{ "stem": "phase-1-x", "tags": ["needs-plan-review"] }],
                 "tags": ["needs-plan-review"], "persist": true }),
-        json!({ "implementationPlan": true, "planSlug": "p", "roadmap": "r", "persist": true }),
+        json!({ "implementationPlan": true, "planSlug": "p", "roadmap": "r", "phase": "phase-1-x", "persist": true }),
     ]
 }
 
@@ -2014,7 +2492,7 @@ const PIN_BRANCH: &str = "roadmap/sentinel-branch";
 
 fn pinned(extra: Value) -> Value {
     with(
-        &json!({ "reviewers": ["coherence"], "source": PIN_PATH, "base": BASE,
+        &json!({ "reviewers": ["specification"], "source": PIN_PATH, "base": BASE,
                  "expectedHead": HEAD, "expectedBranch": PIN_BRANCH }),
         extra,
     )
@@ -2163,7 +2641,7 @@ fn source_pin_single_target_binds_itself() {
 fn unpinned_prompts_deterministic() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let args = json!({ "task": "t3", "tags": [], "reviewers": ["coherence"] });
+        let args = json!({ "task": "t3", "tags": [], "reviewers": ["specification"] });
         let (_, a) = drive_real(&mut js, args.clone(), probe())?;
         let (_, b) = drive_real(&mut js, args, probe())?;
         let pa: Vec<String> = a.calls().into_iter().map(|c| c.prompt).collect();

@@ -19,11 +19,17 @@ export const meta = {
 // generator; scripts/verify-workflow-review.sh fails the build on drift.
 // >>> review-refute-fix:begin (generated into workflow consumers by scripts/gen-workflow-review.sh — edit the lib, not the copy) <<<
 // >>> review-spec:begin (the `//|` lines below are rendered into the shipped review skills by scripts/gen-skill-review.sh) <<<
-//| ### Reviewers — the CALLER selects the fleet
+//|code| ### Reviewers — the CALLER selects the fleet
+//|plan| ### Reviewers — selected by the target's document kind
 //|
-//| Pass the reviewer keys you want as `reviewers`. **Naming none runs every
-//| reviewer for the mode** — a maximal default encodes no policy, where a
-//| selective one would. Each reviewer is its own **read-only** agent: it reviews
+//|code| Pass the reviewer keys you want as `reviewers`. **Naming none runs every
+//|code| reviewer for the mode** — a maximal default encodes no policy, where a
+//|code| selective one would. Each reviewer is its own **read-only** agent: it reviews
+//|plan| **Naming no reviewers runs the set for the target's document kind** — an
+//|plan| item document and an implementation plan are judged against different
+//|plan| rubrics (see "Plan target types" below). Passing reviewer keys as
+//|plan| `reviewers` runs exactly those instead, whatever the target is. Each
+//|plan| reviewer is its own **read-only** agent: it reviews
 //| and reports, it never edits, and it runs the `rdm … show --format json` (or
 //| `rdm review source`) command its prompt names to fetch the document or diff
 //| it needs. No document is ever handed to it as an argument.
@@ -34,9 +40,12 @@ export const meta = {
 //| visible, not enforced. The one refusal is a set that resolves to NO reviewer
 //| at all, which throws rather than reporting a clean review over nothing.
 //|
-//| When in doubt, include the reviewer: a spurious agent that finds nothing is
-//| cheaper than a missed defect. State which reviewers you ran, and why, in the
-//| report.
+//|code| When in doubt, include the reviewer: a spurious agent that finds nothing is
+//|code| cheaper than a missed defect. State which reviewers you ran, and why, in the
+//|code| report.
+//|plan| State which reviewers ran in the report — each unit's `coverage.selected`
+//|plan| names them — and, when you passed `reviewers`, why you overrode the
+//|plan| selection.
 
 // Findings scoring below this confidence are dropped even if not refuted.
 //|
@@ -107,12 +116,17 @@ const UNREFUTED_DISPOSITION = [
 // exactly one reviewer's dimension; a fresh refuter then grades each finding it
 // produced.
 //   code — reviews an implementation diff (dispatch-phase's code-review stage).
-//   plan — reviews a plan document (dispatch-phase's plan-review stage).
+//   plan — reviews an item document (a roadmap body, a phase, a task) or an
+//          implementation plan. The two are judged against SEPARATE rubrics:
+//          each plan entry belongs to exactly one, recorded by
+//          `PLAN_TARGET_REVIEWERS` below the table.
 //
-// NO ENTRY CARRIES A PREDICATE. Which reviewers run is the CALLER's decision,
-// resolved by `resolveReviewers` below from a caller-supplied key list; an
-// absent list runs them all. The engine branches on nothing it has to read, so
-// it needs no signals, no diff shape, and no target type.
+// NO ENTRY CARRIES A PREDICATE. Which reviewers run is resolved by
+// `resolveReviewers` below: a caller-supplied key list runs exactly those, and
+// an absent list runs the set for the plan target's document kind (every
+// reviewer of the mode when no kind is stated, and always in code mode). The
+// engine still branches on nothing it has to READ: the target kind and whether
+// the parent roadmap records an Intent are both stated by the caller.
 const DIMENSIONS = {
   code: [
     //|code|
@@ -267,32 +281,128 @@ const DIMENSIONS = {
   ],
   plan: [
     //|plan|
-    //|plan| **Plan reviewers** (`mode: 'plan'`):
+    //|plan| **Plan reviewers** (`mode: 'plan'`). Two rubrics, one per kind of
+    //|plan| document. An **item document** (a roadmap body, a phase, a task) is
+    //|plan| abstract: it says what the change will accomplish. An **implementation
+    //|plan| plan** is concrete: it says what will change in the code and how the
+    //|plan| result will be confirmed. Each reviewer belongs to exactly one rubric.
     //|plan|
-    //|plan| - **coherence** — include it on every plan review; a plan that
-    //|plan|   contradicts itself is worth catching whatever the target is.
-    //|plan|   Internal consistency and completeness: are
-    //|plan|   the steps and acceptance criteria concrete and actionable? An empty or
-    //|plan|   ambiguous plan is itself a `blocking` finding — never guess intent. A
-    //|plan|   plan step citing a file or behavior as existing, where it was actually
-    //|plan|   introduced by another in-flight (not-yet-landed) roadmap or task, is
-    //|plan|   only `blocking` when the target item does **not** carry the
-    //|plan|   `depends-unlanded` tag and does not state the dependency explicitly;
-    //|plan|   when already annotated, downgrade it to a `concern` (or omit it). A
-    //|plan|   plan may delegate implementation decisions to whoever carries it out —
-    //|plan|   an undecided point is a `concern`, not `blocking`, unless the undecided
-    //|plan|   branches would lead to different goals or outcomes. Coherence is
-    //|plan|   `blocking` only when an implementer following the plan as written would
-    //|plan|   build the wrong thing, never merely because they would have to make a
-    //|plan|   decision themselves.
+    //|plan| *Item-document reviewers* — is this the right unit, fully specified, with
+    //|plan| criteria that can be checked?
+    //|plan|
+    //|plan| - **scope** — is the item ONE independently deliverable and testable
+    //|plan|   unit: neither several separable outcomes bundled together nor too
+    //|plan|   small to warrant its own item? It does not raise how the item is
+    //|plan|   implemented or how its criteria are worded. `blocking` when the item
+    //|plan|   cannot be delivered or confirmed independently; a preference for a
+    //|plan|   different split is a `concern`.
     {
-      key: 'coherence',
-      title: 'Coherence',
+      key: 'scope',
+      title: 'Scope',
       focus:
-        'Internal consistency and completeness: are the steps and acceptance criteria concrete and actionable? An empty or ambiguous plan is itself a blocking finding — never guess intent. A plan step citing a file or behavior as existing, where it was actually introduced by another in-flight (not-yet-landed) roadmap or task, is only blocking if the target item does NOT carry the `depends-unlanded` tag and does not state the dependency explicitly; when already annotated, downgrade to a concern (or omit) instead of blocking on it. A plan may delegate implementation decisions to whoever carries it out — an undecided point is a concern, not blocking, unless the undecided branches would lead to different goals or outcomes. Coherence is blocking only when an implementer following the plan as written would build the wrong thing, never merely because they would have to make a decision themselves.',
+        'Judge whether this item is ONE independently deliverable and testable unit of work. Two failures are both findings: the item bundles several separable outcomes that could each be delivered and confirmed on their own, or it is too small to warrant an item of its own. Do not raise how the item should be implemented, and do not raise the wording or verifiability of its acceptance criteria — other reviewers own those. A finding is blocking only when the item as written cannot be delivered or confirmed independently of work it does not include; a preference for a different split is a concern.',
     },
-    //|plan| - **architectural-fit** — include it on every plan review; it is the one
-    //|plan|   reviewer that judges the plan against the project's stated constraints.
+    //|plan| - **specification** — is the outcome stated (what is true when this is
+    //|plan|   done), and is anything an implementer needs to know about *what* is
+    //|plan|   being built missing — affected surfaces, constraints on the outcome,
+    //|plan|   dependencies? Do the sections contradict each other? A premise stated
+    //|plan|   as existing that was actually introduced by another in-flight
+    //|plan|   (not-yet-landed) roadmap or task must be declared, by the
+    //|plan|   `depends-unlanded` tag or an explicit statement. On a roadmap body it
+    //|plan|   also asks whether the phase list as a whole accounts for the outcome
+    //|plan|   the roadmap states. Implementation detail in the document —
+    //|plan|   file-by-file edits, code, decisions an implementer could safely make —
+    //|plan|   is a finding; an Approach that states strategy and constraints is
+    //|plan|   expected and is not one. It does not raise a missing implementation
+    //|plan|   step, criterion verifiability, or sizing. `blocking` when the document
+    //|plan|   is empty, the outcome is missing, ambiguous or contradictory so that
+    //|plan|   the wrong thing would be built, or an unlanded dependency is
+    //|plan|   undeclared — never guess intent. Implementation detail is at most a
+    //|plan|   `concern`.
+    {
+      key: 'specification',
+      title: 'Specification',
+      focus:
+        'Judge whether the document states WHAT is to be true when the item is done, completely enough that the right thing gets built. Is the outcome stated? Is anything an implementer needs to know about WHAT is being built missing — the affected surfaces, constraints on the outcome, dependencies? Do the document\'s sections contradict each other? A premise the document states as existing, where it was actually introduced by another in-flight (not-yet-landed) roadmap or task, must be declared — by the `depends-unlanded` tag on the item or by an explicit statement of the dependency; when it is already declared, do not raise it. If the document under review is a roadmap body, also ask whether its phase list as a whole accounts for the outcome the roadmap states. Implementation detail in the document is itself a finding: file-by-file edits, code, or decisions that whoever carries the work out could safely make. An Approach section that states strategy and constraints is expected and is not one. Do not raise a missing implementation step or design decision, the verifiability of the acceptance criteria, or the sizing of the item — other reviewers own those, and how to build it is the implementation plan\'s job. A finding is blocking when the document is empty, when the outcome is missing, ambiguous or contradictory so that an implementer following it would build the wrong thing, or when an unlanded dependency is undeclared — never guess intent. Implementation detail is at most a concern.',
+    },
+    //|plan| - **acceptance-criteria** — judges each criterion against three
+    //|plan|   properties: it states **one observable outcome in positive form**; any
+    //|plan|   **bound on its scope is carried by the criterion itself**; and a
+    //|plan|   **known gap is declared outside the criterion** (in an Approach or
+    //|plan|   out-of-scope note), never as a caveat inside it. It does not raise
+    //|plan|   whether these are the right criteria for the goal, implementation, or
+    //|plan|   sizing. `blocking` when a criterion cannot be verified, or the document
+    //|plan|   has no criteria.
+    {
+      key: 'acceptance-criteria',
+      title: 'Acceptance criteria',
+      focus:
+        'Judge each acceptance criterion in the document against three properties. FIRST, it states ONE observable outcome in positive form: something that can be seen to be true when the work is done — not a prohibition, not an activity, and not several outcomes joined together. SECOND, any bound on its scope is carried by the criterion\'s own wording, so it can be judged done without outside context or later clarification. THIRD, a gap the author already knows about is declared OUTSIDE the criterion — in an Approach or out-of-scope note that names the deferred work — never as a caveat or exception written inside the criterion itself. Flag each criterion that fails a property and say which one. Do not raise whether these are the right criteria for the goal, how the item will be implemented, or the sizing of the item — other reviewers own those. A finding is blocking when a criterion cannot be verified as written, or when the document states no acceptance criteria at all.',
+    },
+    //|plan| - **intent-alignment** — runs on a phase whose parent roadmap records a
+    //|plan|   `## Intent` section (the caller says so with `intentRecorded: true`;
+    //|plan|   without it the reviewer would have no input and is not selected). (It
+    //|plan|   reads that section itself — the prompt names the roadmap slug and the
+    //|plan|   `roadmap show` command; nothing transcribes the body for it.)
+    //|plan|   Checks the item document against the operator-recorded intent — a
+    //|plan|   `## Intent` section on the parent roadmap, stating a Goal, optional
+    //|plan|   Non-goals, and Done-looks-like signals. It asks exactly two questions.
+    //|plan|   **Divergence:** could every acceptance criterion pass while the
+    //|plan|   recorded "Done looks like" remains false? Flag any criterion that can.
+    //|plan|   **Scope creep:** does the item pursue something recorded as a non-goal?
+    //|plan|   An acceptance criterion may be well formed and still leave the stated
+    //|plan|   goal unmet — that is precisely what this dimension exists to catch, and
+    //|plan|   the reason the other dimensions cannot: they judge the document against
+    //|plan|   itself, never against what the operator actually asked for. It READS
+    //|plan|   that section itself, out of the parent roadmap, and if there is none it
+    //|plan|   returns an empty findings array and reports nothing — it has no input
+    //|plan|   and must never manufacture one. Missing intent is never blocking.
+    {
+      key: 'intent-alignment',
+      title: 'Intent alignment',
+      focus:
+        'Check this item document against the operator-recorded intent — a `## Intent` section on the PARENT ROADMAP of the target under review, stating a Goal, optional Non-goals, and Done-looks-like signals. READ IT YOURSELF: run the roadmap-show command named above (or, if the target is itself a roadmap, the target\'s own document) and locate its `## Intent` section; nothing has transcribed it for you. Ask exactly two questions. DIVERGENCE: could every acceptance criterion in this document pass while the recorded "Done looks like" remains false? Flag any criterion that can, and say which recorded signal it leaves unmet. SCOPE CREEP: does the item pursue something the intent records as a non-goal? An acceptance criterion may be well formed and still leave the stated goal unmet — that is precisely what this dimension exists to catch, and the reason the other dimensions cannot: they judge the document against itself, never against what the operator actually asked for. Judge only against the recorded intent as written; never infer intent from the document itself, and never restate a scope, specification or acceptance-criteria finding here. If the roadmap records no `## Intent` section, return an empty findings array and report nothing — this dimension has no input and must never manufacture one.',
+    },
+    //|plan|
+    //|plan| *Implementation-plan reviewers* — does the plan say what will change, and
+    //|plan| how each of the item's criteria will be confirmed?
+    //|plan|
+    //|plan| - **code-change** — does the plan name what will change in the code
+    //|plan|   (files, modules, interfaces, behaviours added, altered or removed)
+    //|plan|   concretely enough to start from? Is it grounded in the tree as it
+    //|plan|   stands: what it cites as existing exists in the pinned checkout, and
+    //|plan|   what it proposes to add is not already there? Are its steps consistent
+    //|plan|   with each other? It does not raise the item's scope or criteria, nor
+    //|plan|   over-detail — a concrete plan is the point of this document. `blocking`
+    //|plan|   when the plan is empty or ambiguous, does not say what changes, or
+    //|plan|   contradicts the tree so that following it builds the wrong thing. An
+    //|plan|   undecided point is a `concern` unless its branches lead to different
+    //|plan|   outcomes; a defect in one proposed line of code or shell is a
+    //|plan|   `concern`.
+    {
+      key: 'code-change',
+      title: 'Code change',
+      focus:
+        'Judge whether the plan names WHAT WILL CHANGE IN THE CODE — the files, modules, interfaces and behaviours it adds, alters or removes — concretely enough to start work from. Is it grounded in the tree as it stands: does what it cites as existing actually exist in the checkout you were told to read, and is what it proposes to add not already there? Are its steps consistent with each other? Do not raise the scope or the acceptance criteria of the item the plan implements — the item is not under review — and do not raise over-detail: a concrete plan is the point of this document. A finding is blocking when the plan is empty or ambiguous, when it does not say what changes, or when it contradicts the tree so that an implementer following it as written would build the wrong thing — never guess intent. A point the plan leaves undecided is a concern, not blocking, unless its branches would lead to different outcomes. A defect in one proposed line of code or shell is a concern.',
+    },
+    //|plan| - **confirmation** — for each acceptance criterion of the item the plan
+    //|plan|   implements, does the plan state the means that will confirm it (a test,
+    //|plan|   a command and its expected result, an artifact to inspect), and can
+    //|plan|   that means confirm that criterion? Does the plan lay out the
+    //|plan|   confirmation process as a whole? When the caller names the item, the
+    //|plan|   reviewer reads its criteria itself; otherwise it works from the
+    //|plan|   criteria the plan restates. It does not raise the wording,
+    //|plan|   verifiability or scope of the item's criteria — the item is not under
+    //|plan|   review. `blocking` when an item acceptance criterion has no stated
+    //|plan|   means of confirmation; a weak means is a `concern`.
+    {
+      key: 'confirmation',
+      title: 'Confirmation',
+      focus:
+        'Judge whether the plan lays out HOW THE RESULT WILL BE CONFIRMED. Take the acceptance criteria of the item this plan implements — read that item yourself with the command named above when one is given; otherwise work from the criteria the plan itself restates. For EACH criterion, does the plan state the means that will confirm it — a test, a command and its expected result, an artifact to inspect — and can that means actually confirm that criterion? Does the plan lay out the confirmation process as a whole: what is run, in what order, and what a pass looks like? Do not raise the wording, verifiability or scope of the item\'s criteria: the item is not under review, and a plan revision cannot change it. A finding is blocking when an acceptance criterion of the item has no stated means of confirmation in the plan. A means that is stated but weak is a concern.',
+    },
+    //|plan| - **architectural-fit** — the one reviewer that judges the plan against
+    //|plan|   the project's stated constraints.
     //|plan|   Read the project's principles
     //|plan|   (falling back to `CLAUDE.md` / `AGENTS.md` in the project root when no
     //|plan|   principles note is configured — architectural fit must never go
@@ -305,16 +415,6 @@ const DIMENSIONS = {
       focus:
         "Read the project's principles (CLAUDE.md / AGENTS.md if no principles note is configured). Flag any plan step that would violate a stated convention or constraint — a violated constraint is what makes a finding blocking; stylistic preferences alone are not.",
     },
-    //|plan| - **unit-of-work** — this reviewer is about INDEPENDENT DELIVERABILITY, so
-    //|plan|   include it **only on a phase**. Omit it on a task, on a standalone
-    //|plan|   roadmap body, and on an `--implementation-plan` — none of those has a
-    //|plan|   unit-of-work contract to judge, and an implementation plan's sizing was
-    //|plan|   settled when the phase was created. Under `--roadmap <slug>` include it
-    //|plan|   and it runs once per phase unit (this can fan out to many parallel
-    //|plan|   agents on a large roadmap — no hard cap is required, but be mindful of
-    //|plan|   the cost). Is the phase independently deliverable and testable —
-    //|plan|   neither too large to land safely nor too trivial to warrant its own
-    //|plan|   phase?
     //|plan|
     //|plan| **Plan target types.** A plan review targets a `roadmap` (its own body,
     //|plan| plus every phase gated individually), a `phase`, a `task`, or an
@@ -322,53 +422,35 @@ const DIMENSIONS = {
     //|plan| ahead of implementation. `implementation-plan` has **no persisted rdm
     //|plan| item** behind it, so it is report-only: no body edit, no filed task, and
     //|plan| no gate (see § Gate).
-    {
-      key: 'unit-of-work',
-      title: 'Unit of work',
-      focus:
-        'Is the phase independently deliverable and testable — neither too large to land safely nor too trivial to warrant its own phase?',
-    },
-    //|plan| - **intent-alignment** — include it when the target's parent roadmap
-    //|plan|   records a `## Intent` section; omit it when it does not, since the
-    //|plan|   reviewer would have no input. (It reads that section itself — the prompt
-    //|plan|   names the roadmap slug and the `roadmap show` command; nothing
-    //|plan|   transcribes the body for it.)
-    //|plan|   Checks the plan against the operator-recorded intent — a `## Intent`
-    //|plan|   section on the parent roadmap, stating a Goal, optional Non-goals, and
-    //|plan|   Done-looks-like signals. It asks exactly two questions. **Divergence:**
-    //|plan|   could every acceptance criterion pass while the recorded "Done looks
-    //|plan|   like" remains false? Flag any criterion that can. **Scope creep:** does
-    //|plan|   any step pursue something recorded as a non-goal? An acceptance
-    //|plan|   criterion may be internally coherent and still leave the stated goal
-    //|plan|   unmet — that is precisely what this dimension exists to catch, and the
-    //|plan|   reason the other dimensions cannot: they judge the plan against itself
-    //|plan|   and against the project's conventions, never against what the operator
-    //|plan|   actually asked for. It READS that section itself, out of the parent
-    //|plan|   roadmap, and if there is none it returns an empty findings array and
-    //|plan|   reports nothing — it has no input and must never manufacture one.
-    //|plan|   Missing intent is never blocking.
-    {
-      key: 'intent-alignment',
-      title: 'Intent alignment',
-      focus:
-        'Check this plan against the operator-recorded intent — a `## Intent` section on the PARENT ROADMAP of the target under review, stating a Goal, optional Non-goals, and Done-looks-like signals. READ IT YOURSELF: run the roadmap-show command named above (or, if the target is itself a roadmap, the target\'s own document) and locate its `## Intent` section; nothing has transcribed it for you. Ask exactly two questions. DIVERGENCE: could every acceptance criterion in this plan pass while the recorded "Done looks like" remains false? Flag any criterion that can, and say which recorded signal it leaves unmet. SCOPE CREEP: does any step pursue something the intent records as a non-goal? An acceptance criterion may be internally coherent and still leave the stated goal unmet — that is precisely what this dimension exists to catch, and the reason the other dimensions cannot: they judge the plan against itself and against the project\'s stated conventions, never against what the operator actually asked for. Judge only against the recorded intent as written; never infer intent from the plan itself, and never restate a coherence or restraint finding here. If the roadmap records no `## Intent` section, return an empty findings array and report nothing — this dimension has no input and must never manufacture one.',
-    },
-    //|plan| - **restraint** — include it on every plan review; over-specification is
-    //|plan|   as likely on a small plan as a large one. The counterweight to unit-of-work: flags a
-    //|plan|   plan that has over-specified rather than under-specified. Two shapes
-    //|plan|   are both findings — (1) the plan spells out a decision that could
-    //|plan|   safely be left to whoever carries it out, and (2) the level of detail
-    //|plan|   has grown past the point where adding more of it reduces risk rather
-    //|plan|   than adding new surface for its own review. Symmetric with
-    //|plan|   unit-of-work's two-sided framing: neither too little specification nor
-    //|plan|   too much is the goal.
-    {
-      key: 'restraint',
-      title: 'Restraint',
-      focus:
-        'The counterweight to unit-of-work: flags a plan that has over-specified rather than under-specified. Two shapes are both findings — (1) the plan spells out an implementation decision that could safely be left to whoever carries it out, and (2) the level of detail has grown past the point where adding more of it reduces risk rather than adding new surface for its own review. Symmetric with unit-of-work: neither too little specification nor too much is the goal.',
-    },
+    //|plan|
+    //|plan| The target type selects the reviewers when the caller names none:
+    //|plan|
+    //|plan| | Target | Reviewers |
+    //|plan| |---|---|
+    //|plan| | `phase` | `scope`, `specification`, `acceptance-criteria`, plus `intent-alignment` when `intentRecorded` is true |
+    //|plan| | `task` | `scope`, `specification`, `acceptance-criteria` (a task has no parent roadmap) |
+    //|plan| | `roadmap` | `specification` on the roadmap body; each phase unit of the sweep gets the `phase` set |
+    //|plan| | `implementation-plan` | `code-change`, `confirmation`, `architectural-fit` |
+    //|plan|
+    //|plan| A `reviewers` list overrides the table: exactly the named reviewers run,
+    //|plan| on every unit of the run.
   ],
+};
+
+// PLAN_TARGET_REVIEWERS — the plan-mode selection table: target document kind →
+// the reviewer keys that run when the caller names none. It is ALSO the record
+// of which rubric each `DIMENSIONS.plan` entry belongs to: the keys listed under
+// `implementation-plan` are the implementation-plan rubric, and every other
+// plan entry is the item-document rubric (see `planSeverityContract`).
+//
+// `intent-alignment` is in no row: it joins the `phase` set only when the caller
+// states that the parent roadmap records an Intent (see `resolveReviewers`),
+// because the engine reads no document and so cannot see the section itself.
+const PLAN_TARGET_REVIEWERS = {
+  phase: ['scope', 'specification', 'acceptance-criteria'],
+  task: ['scope', 'specification', 'acceptance-criteria'],
+  roadmap: ['specification'],
+  'implementation-plan': ['code-change', 'confirmation', 'architectural-fit'],
 };
 
 // FOLLOW_UP_REVIEWERS — the fleet of a FOLLOW-UP code review: a review of only
@@ -407,17 +489,42 @@ const FOLLOW_UP_REVIEWERS = [
   },
 ];
 
-// Plan-stage severity contract: what makes a plan-stage finding `blocking`
-// versus a `concern` that rides along as an implementation note. Of the six
-// findings that drove an observed three-round plan-review escalation, five
-// were implementation-level defects in proposed pseudo-code/shell that should
-// have been notes under correct calibration, while the sixth was a genuine
-// architectural violation that must still block. This line is injected into
-// every plan-mode finder prompt only — code-mode prompts are unaffected.
-const PLAN_SEVERITY_CALIBRATION =
-  'Plan-stage severity contract: `blocking` means the goal, approach, or scope is wrong, or the plan violates a stated architectural constraint. A defect in a specific proposed line of code or shell (e.g. an off-by-one in proposed pseudo-code) is a `concern` that rides along as an implementation note for the implementing agent — not a gate. An empty or ambiguous plan is still `blocking` (see the coherence dimension).';
+// The two plan-stage severity contracts — what makes a finding `blocking`
+// versus a `concern` that rides along — one per rubric, because the two kinds
+// of document fail in different ways. An item document says WHAT the change
+// accomplishes, so it blocks on an unverifiable criterion, a missing or
+// contradictory outcome, or an item that is not one deliverable unit. An
+// implementation plan says what changes in the code and how the result is
+// confirmed, so it blocks on an unconfirmed criterion, an unstated or
+// tree-contradicting change, or a violated constraint.
+//
+// The implementation-plan contract keeps the calibration the single contract
+// it replaces was written for: of the six findings that drove an observed
+// three-round plan-review escalation, five were implementation-level defects in
+// proposed pseudo-code/shell that should have been notes, while the sixth was a
+// genuine architectural violation that must still block.
+//
+// Exactly one of the two is injected into every plan-mode finder prompt — the
+// one for the reviewer's own rubric (see `planSeverityContract`). Code-mode
+// prompts carry neither.
+const ITEM_DOCUMENT_SEVERITY_CONTRACT =
+  'Item-document severity contract: this document says WHAT the change will accomplish, and `blocking` means it cannot be built or confirmed as written — an acceptance criterion cannot be verified, the outcome is missing, ambiguous or contradictory, or the item is not an independently deliverable unit. Implementation detail in the document is at most a `concern`, and a missing `## Intent` never blocks. How the work will be carried out is the implementation plan\'s job and is not under review here.';
 
-// Prompt-injection hygiene. Unlike the plan-stage severity contract above, this
+const IMPLEMENTATION_PLAN_SEVERITY_CONTRACT =
+  'Implementation-plan severity contract: this document says what will change in the code and how the result will be confirmed, and `blocking` means an acceptance criterion of the item it implements has no stated means of confirmation, the plan does not say what will change or contradicts the tree as it stands, or it violates a stated architectural constraint. A defect in a specific proposed line of code or shell (e.g. an off-by-one in proposed pseudo-code) is a `concern` that rides along as an implementation note for the implementing agent — not a gate. The scope and the acceptance criteria of the item the plan implements are not under review here.';
+
+// planSeverityContract(dim) — the severity contract of `dim`'s own rubric. The
+// rubric is read off `PLAN_TARGET_REVIEWERS`: its `implementation-plan` row IS
+// the implementation-plan rubric, and every other plan reviewer judges an item
+// document.
+function planSeverityContract(dim) {
+  const key = dim && dim.key;
+  return PLAN_TARGET_REVIEWERS['implementation-plan'].indexOf(key) !== -1
+    ? IMPLEMENTATION_PLAN_SEVERITY_CONTRACT
+    : ITEM_DOCUMENT_SEVERITY_CONTRACT;
+}
+
+// Prompt-injection hygiene. Unlike the plan-stage severity contracts above, this
 // is pushed UNCONDITIONALLY — both modes, every dimension — because the exposure is
 // fleet-wide: every reviewer reads plan documents, source, and diffs, all of
 // which are untrusted input authored by whoever wrote the change under review.
@@ -545,6 +652,18 @@ function reviewTargetBlock(mode, context) {
       '  ' + c.planCommand
     );
   }
+  // THE ITEM AN IMPLEMENTATION PLAN IMPLEMENTS — rendered ONLY when
+  // `c.implementsCommand` is set, for the same corpus reason as the branches
+  // above. An implementation-plan review judges, per acceptance criterion of
+  // that item, whether the plan states how it will be confirmed, so the
+  // reviewer needs the criteria; it reads them itself, and the item stays
+  // reference material — a plan revision cannot change it.
+  if (c.implementsCommand) {
+    lines.push(
+      'THE ITEM THIS PLAN IMPLEMENTS — read it yourself for its acceptance criteria. It is reference material and is NOT under review: raise nothing about its wording, scope or criteria.',
+      '  ' + c.implementsCommand
+    );
+  }
   if (c.roadmapCommand) {
     lines.push(
       "The PARENT ROADMAP — read it yourself when you need its recorded `## Intent` section:",
@@ -625,7 +744,7 @@ function reviewSourceCommand(item, pin, rdmBin, projFlag, opts) {
 //| ```
 //| - id: <short-slug>
 //|code|   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
-//|plan|   concern: <coherence|architectural-fit|restraint|unit-of-work>
+//|plan|   concern: <scope|specification|acceptance-criteria|intent-alignment|code-change|confirmation|architectural-fit>
 //|code|   location: <path>:<line>
 //|code|   path: <repo-relative source path with NO line suffix, e.g. path/to/file.ext, never path/to/file.ext:line — required whenever quote is given; for a finding about the item document or the implementation plan itself, that document's ref as the review target names it (or plan/<slug>), with quote omitted>
 //|plan|   location: <section/heading or phase stem>
@@ -685,7 +804,7 @@ function findPrompt(mode, dim, context) {
   // Unconditional: both modes, every dimension (see INJECTION_HYGIENE).
   lines.push(INJECTION_HYGIENE);
   if (mode === 'plan') {
-    lines.push(PLAN_SEVERITY_CALIBRATION);
+    lines.push(planSeverityContract(dim));
   }
   lines.push(
     'Report only findings you can back with concrete evidence. One strong finding beats five weak ones.',
@@ -842,9 +961,11 @@ function findPrompt(mode, dim, context) {
 //|code|   counter-check. The AC table and any `ac`-dimension `findings` entry about
 //|code|   the same criterion are two independent channels, not deduplicated against
 //|code|   each other.
-//|plan| - There is no acceptance-criteria pass/fail table at plan stage — the quality
-//|plan|   of the plan's own acceptance criteria is judged by the **coherence**
-//|plan|   dimension and surfaces as an ordinary finding.
+//|plan| - There is no acceptance-criteria pass/fail table at plan stage — whether an
+//|plan|   item document's criteria are verifiable is judged by the
+//|plan|   **acceptance-criteria** reviewer, whether an implementation plan says how
+//|plan|   each of them will be confirmed is judged by the **confirmation** reviewer,
+//|plan|   and either surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
   const target = reviewTargetBlock(mode, context);
   const lines = [
@@ -963,12 +1084,21 @@ function refutePrompt(mode, dim, finding, context) {
 //|plan| cleared the tag), and REWORK splits into `rework` and `escalated` (both
 //|plan| leave it).
 //|plan|
-//|plan| **Plan-stage severity calibration.** `blocking` means the goal, approach, or
-//|plan| scope is wrong, or the plan violates a stated architectural constraint. A
-//|plan| defect in a specific proposed line of code or shell (e.g. an off-by-one in
-//|plan| proposed pseudo-code) is a `concern` that rides along as an implementation
-//|plan| note for the implementing agent — not a gate. An empty or ambiguous plan is
-//|plan| still `blocking`.
+//|plan| **Plan-stage severity calibration.** Each reviewer's prompt carries the
+//|plan| severity contract of its own document kind.
+//|plan|
+//|plan| - *Item document* — `blocking` means the document cannot be built or
+//|plan|   confirmed as written: an acceptance criterion cannot be verified, the
+//|plan|   outcome is missing, ambiguous or contradictory, or the item is not an
+//|plan|   independently deliverable unit. Implementation detail in the document is
+//|plan|   at most a `concern`, and a missing `## Intent` never blocks.
+//|plan| - *Implementation plan* — `blocking` means an acceptance criterion of the
+//|plan|   item it implements has no stated means of confirmation, the plan does not
+//|plan|   say what will change or contradicts the tree as it stands, or it violates
+//|plan|   a stated architectural constraint. A defect in a specific proposed line
+//|plan|   of code or shell (e.g. an off-by-one in proposed pseudo-code) is a
+//|plan|   `concern` that rides along as an implementation note for the implementing
+//|plan|   agent — not a gate. The item's scope and criteria are not under review.
 // The canonical outcome vocabulary. Every surface — the standalone review
 // workflow, dispatch-phase, autopilot, and the interactive rdm-review skill —
 // speaks exactly these three words. This retired the skill's older
@@ -1862,22 +1992,36 @@ function coverageSummaryClause(reviewCoverage) {
   );
 }
 
-// resolveReviewers(mode, reviewers) — the deterministic pre-step that decides
-// which reviewers actually run. The CALLER decides; this function only resolves
-// the names it was handed against the mode's catalogue.
+// resolveReviewers(mode, reviewers, target) — the deterministic pre-step that
+// decides which reviewers actually run. It resolves the names it was handed
+// against the mode's catalogue, or — handed none — picks the set for the plan
+// target's document kind.
+//
+// `target` is optional: `{ kind, intentRecorded }`, where `kind` is the plan
+// target type the caller already resolved ('phase' | 'task' | 'roadmap' |
+// 'implementation-plan') and `intentRecorded === true` states that the parent
+// roadmap records an Intent. Both are STATED by the caller; nothing is read.
+// Code mode ignores `target` entirely.
 //
 // THE CONTRACT, in full:
-//   * `reviewers == null` (omitted) → every reviewer for the mode, in
-//     declaration order. A maximal default encodes no policy, where a selective
-//     one would.
-//   * a list of keys → exactly those, filtered out of `DIMENSIONS[mode]` in
-//     DECLARATION order (never the caller's order, so the fan-out and the
-//     candidate `order` tiebreak stay stable whatever order a caller writes).
+//   * `reviewers == null` (omitted), plan mode, a target kind given → the
+//     `PLAN_TARGET_REVIEWERS` row for that kind, plus `intent-alignment` on a
+//     `phase` whose `intentRecorded` is true (a task has no parent roadmap, and
+//     a roadmap body is itself where the Intent lives).
+//   * `reviewers == null` and no target kind (code mode, a parse-time call, a
+//     plan-mode caller that states no kind) → every reviewer for the mode.
+//   * a list of keys → exactly those, filtered out of `DIMENSIONS[mode]` — the
+//     mode's WHOLE catalogue, whatever the target kind — so an explicit list is
+//     exact rather than narrowed to the target's rubric.
+//   * every result is in DECLARATION order (never the caller's order, so the
+//     fan-out and the candidate `order` tiebreak stay stable whatever order a
+//     caller writes).
 //   * an UNRECOGNISED name selects nothing and is NOT rejected. There is no
 //     unknown-name guard: the mistake is visible in `coverage.selected` /
 //     `coverage.ran`, which is where under-coverage is meant to show up, and a
 //     rejection would be a check whose only job is to police a caller.
-//   * an unknown mode → throw.
+//   * an unknown mode → throw. A plan target kind that is given but is not one
+//     of the four → throw, for the same reason: there is no set to pick.
 //
 // NOTHING ELSE REFUSES. There is no floor on the set's size, no check of its
 // composition, and no judgment about its fitness for the target. Coverage is
@@ -1887,10 +2031,25 @@ function coverageSummaryClause(reviewCoverage) {
 // The ONE refusal kept is a resolution that yields ZERO reviewers. That is not
 // a thinness floor: it is the pre-existing "refusing to report a clean review"
 // invariant, and it reads only the list it was handed.
-function resolveReviewers(mode, reviewers) {
+function resolveReviewers(mode, reviewers, target) {
   const dims = DIMENSIONS[mode];
   if (!dims) throw new Error('unknown review mode: ' + mode + ' (expected "code" or "plan")');
-  if (reviewers === null || reviewers === undefined) return dims.slice();
+  const kind = mode === 'plan' && target && target.kind !== null && target.kind !== undefined ? target.kind : null;
+  if (kind !== null && !Object.prototype.hasOwnProperty.call(PLAN_TARGET_REVIEWERS, kind)) {
+    throw new Error(
+      'unknown plan review target kind: ' +
+        String(kind) +
+        ' (expected one of ' +
+        Object.keys(PLAN_TARGET_REVIEWERS).join(', ') +
+        ')'
+    );
+  }
+  if (reviewers === null || reviewers === undefined) {
+    if (kind === null) return dims.slice();
+    const set = PLAN_TARGET_REVIEWERS[kind].slice();
+    if (kind === 'phase' && target.intentRecorded === true) set.push('intent-alignment');
+    return dims.filter((d) => set.indexOf(d.key) !== -1);
+  }
   const wanted = Array.isArray(reviewers) ? reviewers : [reviewers];
   const keys = wanted.filter((k) => typeof k === 'string' && k !== '');
   const sel = dims.filter((d) => keys.indexOf(d.key) !== -1);
@@ -1902,7 +2061,7 @@ function resolveReviewers(mode, reviewers) {
         JSON.stringify(wanted) +
         '; available: ' +
         dims.map((d) => d.key).join(', ') +
-        ') — refusing to report a clean review over an empty fleet. Omit `reviewers` entirely to run them all.'
+        ') — refusing to report a clean review over an empty fleet. Omit `reviewers` entirely to run the default set.'
     );
   }
   return sel;
@@ -3153,11 +3312,10 @@ function persistDegradationGateLines() {
 // workflow consumer picks them up verbatim (the runtime cannot import), and are
 // exported for the Node verify harness.
 //
-// `unit-of-work` scoping is NOT one of them any more. It used to be filtered out
-// here for a non-phase unit; now a caller that is not reviewing a phase simply
-// does not name the reviewer (see `resolveReviewers` and the reviewer
-// catalogue's own guidance). A post-hoc strip would be a second mechanism
-// policing the first.
+// Scoping a reviewer to a target kind is NOT one of them. Which reviewers run
+// on which kind of document is decided BEFORE the fan-out, by
+// `resolveReviewers` over `PLAN_TARGET_REVIEWERS`; a post-hoc strip of the
+// survivors would be a second mechanism policing the first.
 
 // filterPlanReviewTag(tags) — the read-filter-write half of the plan gate: return
 // the tag list with the reserved `needs-plan-review` removed by EXACT string
@@ -3178,8 +3336,10 @@ function filterPlanReviewTag(tags) {
 //     survivor                          violation needs a human decision, per the
 //                                       plan-stage reading)
 //   * any other blocking survivor     → 'rework' (a fixable rewrite — e.g. an
-//                                       empty/ambiguous plan surfaces as a
-//                                       blocking `coherence` finding)
+//                                       unverifiable criterion surfaces as a
+//                                       blocking `acceptance-criteria` finding,
+//                                       an empty plan as a blocking
+//                                       `code-change` one)
 function classifyPlanOutcome(survivors) {
   const list = Array.isArray(survivors) ? survivors : [];
   if (!hasBlocking(list)) return 'reviewed';
@@ -3305,7 +3465,7 @@ function classifyOutcome(input) {
   if (i.evidence && !reviewEvidenceComplete(i.evidence)) return 'escalated';
   const planFindings = i.planFindings || [];
   // 1. Plan gate: a blocking plan finding escalates before any implementation.
-  //    An empty/ambiguous plan is surfaced as a blocking coherence finding by
+  //    An empty/ambiguous plan is surfaced as a blocking code-change finding by
   //    the plan-review stage, so that case lands here too.
   if (hasBlocking(planFindings, tier)) return 'escalated';
   // 2. AC-table gate: a surviving FAIL/PARTIAL criterion mechanically forces
@@ -3322,8 +3482,10 @@ function classifyOutcome(input) {
 // Build the review pipeline for `mode` ("code" | "plan").
 //
 // Returns an async `runReview(context)` that:
-//   1. resolves the reviewers to run from `context.reviewers` (see
-//      resolveReviewers — omitted means all of them),
+//   1. resolves the reviewers to run from `context.reviewers` and, in plan
+//      mode, `context.targetKind` / `context.intentRecorded` (see
+//      resolveReviewers — an omitted list means the set for the target kind,
+//      or all of them when no kind is stated),
 //   2. runs one finder agent per selected reviewer IN PARALLEL (stage 1),
 //      RETRYING a finder that resolves null exactly once — in `code` mode the
 //      `ac` dimension's finder returns the AC_REVIEW_SCHEMA shape instead of a
@@ -3362,7 +3524,10 @@ function classifyOutcome(input) {
 // CONTEXT CHANNELS. `context.target` — an IDENTIFIER for what is under review
 // (an item ref, a plan slug, a `rdm … show` command the finder runs itself),
 // never a document body — and `context.reviewers`, the caller-selected reviewer
-// keys (see resolveReviewers; omitted runs them all). Nothing transcribes a
+// keys (see resolveReviewers). In plan mode `context.targetKind` (the target
+// type the caller resolved) and `context.intentRecorded` (whether the parent
+// roadmap records an Intent) pick the default set when `reviewers` is omitted;
+// with neither, omitting it runs them all. Nothing transcribes a
 // document into this object: a finder that needs one fetches it. The optional
 // per-step model/effort pairs — `findModel`/`findEffort`,
 // `consolidateModel`/`consolidateEffort` and `verifyModel`/`verifyEffort` — are
@@ -3396,9 +3561,12 @@ function buildReviewPipeline(mode, deps) {
     // read. Everything after the finder fan-out — consolidation, the budget,
     // refuters, filtering — is the one code path below.
     const followUp = mode === 'code' && ctx.followUp ? ctx.followUp : null;
-    // Deterministic pre-step: which reviewers actually run. The CALLER decides;
-    // omitting `reviewers` runs every one for the mode.
-    const dims = followUp ? FOLLOW_UP_REVIEWERS.slice() : resolveReviewers(mode, ctx.reviewers);
+    // Deterministic pre-step: which reviewers actually run. A caller-supplied
+    // `reviewers` list is exact; omitting it runs the set for the plan target's
+    // document kind, or every reviewer of the mode when no kind is stated.
+    const dims = followUp
+      ? FOLLOW_UP_REVIEWERS.slice()
+      : resolveReviewers(mode, ctx.reviewers, { kind: ctx.targetKind, intentRecorded: ctx.intentRecorded });
     // Optional explicit models for the two review steps. Callers that have no
     // tier context (the standalone review-refute-fix consumer) simply omit them
     // and the agents inherit the session model exactly as before. Passing

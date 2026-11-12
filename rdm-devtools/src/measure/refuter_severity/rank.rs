@@ -34,42 +34,75 @@ pub const RANK_UNRECOVERABLE_REASONS: [&str; 5] = [
     "ambiguous-finding-join",
 ];
 
-/// The dimensions whose ABSENCE from a unit's own finder set is local evidence
-/// that its candidate list is incomplete: a corpus-stable subset of the
-/// always-on dimensions (`restraint` shipped part-way through the measured
-/// window, so requiring it would mark every earlier plan unit incomplete).
-/// [`coverage_dimensions`] checks it stays a subset of the real always-on set.
-pub const COVERAGE_REQUIRED_DIMENSIONS: [(&str, &[&str]); 2] = [
-    ("code", &["ac", "correctness"]),
-    ("plan", &["coherence", "architectural-fit"]),
+/// The coverage rule in use: per mode, the ALTERNATIVE required dimension
+/// sets. A unit's finder set covers its mode when at least one alternative is
+/// wholly present in it.
+pub type CoverageRule = Vec<(String, Vec<Vec<String>>)>;
+
+/// The dimension sets whose ABSENCE from a unit's own finder set is local
+/// evidence that its candidate list is incomplete, as the canonical catalogue
+/// stands today: per mode, alternative sets, one of which a complete unit
+/// carries in full. Plan mode has two because its reviewers are selected by
+/// the kind of document under review — `specification` runs on every item
+/// document (a roadmap body, a phase, a task), and the other set is the whole
+/// implementation-plan rubric. [`coverage_dimensions`] checks every key here
+/// is still an always-on dimension of the canonical catalogue.
+pub const COVERAGE_REQUIRED_DIMENSIONS: [(&str, &[&[&str]]); 2] = [
+    ("code", &[&["ac", "correctness"]]),
+    (
+        "plan",
+        &[
+            &["specification"],
+            &["code-change", "confirmation", "architectural-fit"],
+        ],
+    ),
 ];
+
+/// Required sets that held during the RECORDED window and name reviewers the
+/// catalogue has since retired: before plan review was split by document kind,
+/// every plan unit ran `coherence` and `architectural-fit` (`restraint`
+/// shipped part-way through the measured window, so requiring it would mark
+/// every earlier plan unit incomplete). They stay alternatives, so a recorded
+/// unit is judged by the rule it ran under, and they are deliberately NOT
+/// checked against the live catalogue, which no longer holds their keys.
+pub const COVERAGE_RECORDED_DIMENSIONS: [(&str, &[&[&str]]); 1] =
+    [("plan", &[&["coherence", "architectural-fit"]])];
 
 /// The N values the within-top-N figures report, in fixed order.
 pub const WITHIN_TOP_N: [usize; 2] = [3, 5];
 
 /// Validates [`COVERAGE_REQUIRED_DIMENSIONS`] against the always-on keys of
-/// the canonical `DIMENSIONS` and returns it.
+/// the canonical `DIMENSIONS` and returns the rule in use: per mode, the
+/// [`COVERAGE_RECORDED_DIMENSIONS`] alternatives followed by the live ones.
 ///
 /// # Errors
 ///
-/// When a required key is not always-on in `review.mjs`.
+/// When a live required key is not always-on in `review.mjs`.
 pub fn check_coverage_dimensions(
     always_on: &dyn Fn(&str) -> Vec<String>,
-) -> Result<Vec<(String, Vec<String>)>, String> {
+) -> Result<CoverageRule, String> {
+    let owned = |sets: &[&[&str]]| -> Vec<Vec<String>> {
+        sets.iter()
+            .map(|set| set.iter().map(|k| (*k).to_owned()).collect())
+            .collect()
+    };
     let mut out = Vec::new();
-    for (mode, keys) in COVERAGE_REQUIRED_DIMENSIONS {
+    for (mode, sets) in COVERAGE_REQUIRED_DIMENSIONS {
         let on = always_on(mode);
-        for k in keys {
+        for k in sets.iter().flat_map(|set| set.iter()) {
             if !on.iter().any(|o| o == k) {
                 return Err(format!(
                     "COVERAGE_REQUIRED_DIMENSIONS.{mode} names \"{k}\", which is not an always-on dimension in .claude/workflows/lib/review.mjs — the coverage check must stay a subset of the real always-on set"
                 ));
             }
         }
-        out.push((
-            mode.to_owned(),
-            keys.iter().map(|k| (*k).to_owned()).collect(),
-        ));
+        let mut alternatives: Vec<Vec<String>> = COVERAGE_RECORDED_DIMENSIONS
+            .iter()
+            .filter(|(recorded_mode, _)| *recorded_mode == mode)
+            .flat_map(|(_, recorded)| owned(recorded))
+            .collect();
+        alternatives.extend(owned(sets));
+        out.push((mode.to_owned(), alternatives));
     }
     Ok(out)
 }
@@ -78,10 +111,8 @@ pub fn check_coverage_dimensions(
 ///
 /// # Errors
 ///
-/// When the table cannot be read or a required key is not always-on.
-pub fn coverage_dimensions(
-    rules: &mut dyn ReviewRules,
-) -> Result<Vec<(String, Vec<String>)>, String> {
+/// When the table cannot be read or a live required key is not always-on.
+pub fn coverage_dimensions(rules: &mut dyn ReviewRules) -> Result<CoverageRule, String> {
     let code = rules.always_on_dimensions("code")?;
     let plan = rules.always_on_dimensions("plan")?;
     check_coverage_dimensions(&|mode| match mode {
@@ -382,7 +413,7 @@ pub fn attach_dispositions(u: &mut Unit, non_gating: &[String]) -> bool {
 ///
 /// Pure: needs no canonical call (the `ac`-table diagnostic is computed by
 /// [`mark_ac_table_gaps`]).
-pub fn prepare_unit(u: &mut Unit, non_gating: &[String], coverage: &[(String, Vec<String>)]) {
+pub fn prepare_unit(u: &mut Unit, non_gating: &[String], coverage: &[(String, Vec<Vec<String>>)]) {
     // A ` (retry N)` dispatch supersedes the previous attempt at its
     // dimension; two NON-retry finders at one dimension are a second review
     // round collapsing into one unit identity.
@@ -417,14 +448,18 @@ pub fn prepare_unit(u: &mut Unit, non_gating: &[String], coverage: &[(String, Ve
     let ambiguous = attach_dispositions(u, non_gating);
 
     let finder_dims: Vec<Option<&str>> = selected.iter().map(|f| f.dim.as_deref()).collect();
-    let required: &[String] = u
+    // A mode's required sets are ALTERNATIVES: the unit is covered when one of
+    // them is wholly present in its finder set. A mode with no rule is covered.
+    let alternatives: &[Vec<String>] = u
         .mode
         .as_deref()
         .and_then(|m| coverage.iter().find(|(mode, _)| mode == m))
-        .map_or(&[], |(_, keys)| keys.as_slice());
-    let coverage_gap = required
-        .iter()
-        .any(|d| !finder_dims.contains(&Some(d.as_str())))
+        .map_or(&[], |(_, sets)| sets.as_slice());
+    let covered = alternatives.is_empty()
+        || alternatives
+            .iter()
+            .any(|set| set.iter().all(|d| finder_dims.contains(&Some(d.as_str()))));
+    let coverage_gap = !covered
         || u.refuters.iter().any(|r| {
             r.dim
                 .as_deref()
@@ -845,7 +880,7 @@ pub fn build(
     refuters: &[Refuter],
     rules: &mut dyn ReviewRules,
     non_gating: &[String],
-    coverage: &[(String, Vec<String>)],
+    coverage: &[(String, Vec<Vec<String>>)],
 ) -> Result<RankBlock, String> {
     let (mut units, orphans) = build_units(finders, refuters);
     for u in &mut units {
@@ -916,11 +951,19 @@ mod tests {
         }
     }
 
-    fn coverage() -> Vec<(String, Vec<String>)> {
+    /// The live catalogue's always-on keys, as the rule's own constant states
+    /// them (so these tests need no JavaScript runtime).
+    fn live(mode: &str) -> Vec<String> {
         COVERAGE_REQUIRED_DIMENSIONS
             .iter()
-            .map(|(m, k)| ((*m).to_owned(), k.iter().map(|x| (*x).to_owned()).collect()))
+            .filter(|(m, _)| *m == mode)
+            .flat_map(|(_, sets)| sets.iter().flat_map(|set| set.iter()))
+            .map(|k| (*k).to_owned())
             .collect()
+    }
+
+    fn coverage() -> CoverageRule {
+        check_coverage_dimensions(&live).unwrap_or_else(|e| panic!("{e}"))
     }
 
     fn reason_of(
@@ -1073,7 +1116,21 @@ mod tests {
                 vec![]
             )
             .1,
-            Some("dimension-coverage-gap")
+            Some("dimension-coverage-gap"),
+            "a pre-split plan unit missing architectural-fit"
+        );
+        assert_eq!(
+            reason_of(
+                "plan",
+                vec![
+                    finder("architectural-fit", Some(vec![]), false),
+                    finder("unit-of-work", Some(vec![]), false)
+                ],
+                vec![]
+            )
+            .1,
+            Some("dimension-coverage-gap"),
+            "a pre-split plan unit missing coherence"
         );
         assert_eq!(
             reason_of(
@@ -1240,24 +1297,96 @@ mod tests {
     }
 
     #[test]
+    fn plan_units_are_covered_by_the_set_they_ran_under() {
+        let clean = |dims: &[&str]| -> Option<&'static str> {
+            reason_of(
+                "plan",
+                dims.iter()
+                    .map(|d| finder(d, Some(vec![]), false))
+                    .collect(),
+                vec![],
+            )
+            .1
+        };
+        assert_eq!(
+            clean(&["coherence", "architectural-fit", "restraint"]),
+            None,
+            "a pre-split unit, by the rule of the recorded window"
+        );
+        assert_eq!(
+            clean(&["scope", "specification", "acceptance-criteria"]),
+            None,
+            "a phase or task unit has no coherence finder and is not a gap"
+        );
+        assert_eq!(
+            clean(&["specification"]),
+            None,
+            "a roadmap-body unit runs specification alone"
+        );
+        assert_eq!(
+            clean(&["code-change", "confirmation", "architectural-fit"]),
+            None,
+            "an implementation-plan unit"
+        );
+        assert_eq!(
+            clean(&["scope", "acceptance-criteria"]),
+            Some("dimension-coverage-gap"),
+            "an item-document unit that lost its specification finder"
+        );
+        assert_eq!(
+            clean(&["code-change", "architectural-fit"]),
+            Some("dimension-coverage-gap"),
+            "an implementation-plan unit that lost its confirmation finder"
+        );
+        assert_eq!(
+            clean(&["coherence", "confirmation", "code-change"]),
+            Some("dimension-coverage-gap"),
+            "no alternative is pieced together from two partial sets"
+        );
+    }
+
+    #[test]
     fn coverage_dimensions_must_be_always_on() {
         let without_correctness = |mode: &str| -> Vec<String> {
             match mode {
                 "code" => vec!["ac".to_owned(), "tests".to_owned()],
-                _ => vec!["coherence".to_owned(), "architectural-fit".to_owned()],
+                _ => live(mode),
             }
         };
         let e = check_coverage_dimensions(&without_correctness)
             .err()
             .unwrap_or_default();
         assert!(e.contains("\"correctness\""), "{e}");
-        let all = |mode: &str| -> Vec<String> {
+        let without_confirmation = |mode: &str| -> Vec<String> {
             match mode {
-                "code" => vec!["ac".to_owned(), "correctness".to_owned()],
-                _ => vec!["coherence".to_owned(), "architectural-fit".to_owned()],
+                "plan" => vec![
+                    "specification".to_owned(),
+                    "code-change".to_owned(),
+                    "architectural-fit".to_owned(),
+                ],
+                _ => live(mode),
             }
         };
-        assert!(check_coverage_dimensions(&all).is_ok());
+        let e = check_coverage_dimensions(&without_confirmation)
+            .err()
+            .unwrap_or_default();
+        assert!(e.contains("\"confirmation\""), "{e}");
+        // The live catalogue holds no retired key, and the recorded-window
+        // alternative is still part of the rule.
+        let rule = check_coverage_dimensions(&live).unwrap_or_else(|e| panic!("{e}"));
+        let plan = rule
+            .iter()
+            .find(|(mode, _)| mode == "plan")
+            .map(|(_, sets)| sets.clone())
+            .unwrap_or_default();
+        assert!(
+            plan.contains(&vec![
+                "coherence".to_owned(),
+                "architectural-fit".to_owned()
+            ]),
+            "{plan:?}"
+        );
+        assert!(plan.contains(&vec!["specification".to_owned()]), "{plan:?}");
     }
 
     fn walk_unit(candidates: Vec<Candidate>) -> Unit {

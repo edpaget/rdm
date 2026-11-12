@@ -1312,7 +1312,8 @@ lines, so plan-mode finders read their own document line-numbered (each unit's
 `itemCommand` is `<kind> show … --numbered`, or `cat -n` for a free-form plan)
 and report `start_line`/`end_line` copied from those printed numbers instead of
 a `quote`. Only the document under review is numbered: the parent roadmap
-(`roadmapCommand`) and pinned-source reads stay un-numbered, so a span can only
+(`roadmapCommand`), the item an implementation plan implements
+(`implementsCommand`) and pinned-source reads stay un-numbered, so a span can only
 name lines of the document the review is persisted on. The refuter checks a
 span the way it checks a quote: `refutePrompt` appends a span clause only for a
 plan-mode finding that carries a usable span (the same corpus-safety
@@ -1444,12 +1445,12 @@ severity: blocking
 confidence: 90
 refuted: false
 unrefutedReason: none
-dimension: coherence
+dimension: specification
 finding-id: f1
 inScope: n/a
 anchor: path
 
-coherence
+specification
 What fails: the retry backoff strategy is unspecified
 Why: no stated rule covers it
 Recommendation: state the backoff policy
@@ -2371,8 +2372,8 @@ ascending as a stable tiebreaker.
 Returns an async `runReview(context)` that composes
 `parallel(finders)` → **barrier** → consolidate → budget cut → `parallel(refuters)`:
 
-0. **Select** — the deterministic pre-step `resolveReviewers(mode, reviewers)`
-   decides which dimensions actually run (see below).
+0. **Select** — the deterministic pre-step `resolveReviewers(mode, reviewers,
+   target)` decides which dimensions actually run (see below).
 1. **Find** — one finder `agent()` per selected dimension, in parallel, as a
    `parallel()` fan-out of per-dimension thunks. In `code` mode, the `ac`
    dimension's finder is forced to satisfy `AC_REVIEW_SCHEMA` instead of
@@ -2551,10 +2552,36 @@ the target's type).
 | mode | always-on | triggered |
 | --- | --- | --- |
 | `code` | `ac`, `correctness` | `tests`, `architecture`, `api-docs`, `changelog`, `security` |
-| `plan` | `coherence`, `architectural-fit`, `restraint` | `unit-of-work` (phases only), `intent-alignment` (recorded intent only) |
 
-`unit-of-work` triggers on `signals.targetType === 'phase'`, which is why target
-type is a first-class signal rather than diff shape alone.
+**Plan mode is not split that way.** Its seven reviewers form two rubrics, one per
+**kind of document under review**, and the target type picks the set. An item
+document says what the change will accomplish; an implementation plan says what
+will change in the code and how the result will be confirmed.
+
+| document kind | target type | reviewers that run when the caller names none |
+| --- | --- | --- |
+| item document | `phase` | `scope`, `specification`, `acceptance-criteria`, plus `intent-alignment` when the caller states the parent roadmap records an Intent |
+| item document | `task` | `scope`, `specification`, `acceptance-criteria` |
+| item document | `roadmap` (the body; each phase of a sweep is its own `phase` unit) | `specification` |
+| implementation plan | `implementation-plan` | `code-change`, `confirmation`, `architectural-fit` |
+
+`DIMENSIONS.plan` is still one flat array in that declaration order, and no entry
+carries a `when` predicate: the table is `PLAN_TARGET_REVIEWERS` in `review.mjs`,
+read by `resolveReviewers` (see "`context.reviewers`" below). The same table
+records which rubric a reviewer belongs to — the `implementation-plan` row is the
+implementation-plan rubric, every other plan reviewer is an item-document one —
+and `findPrompt` pushes the severity contract of the reviewer's own rubric
+(`ITEM_DOCUMENT_SEVERITY_CONTRACT` or `IMPLEMENTATION_PLAN_SEVERITY_CONTRACT`).
+For an item document, an acceptance criterion that cannot be verified is
+`blocking`; for an implementation plan, an item acceptance criterion with no
+stated means of confirmation is.
+
+The split retired three reviewers. `unit-of-work` became `scope`, which now also
+runs on a task. `coherence` was divided: its checks on a document went to
+`specification`, its check on criteria to `acceptance-criteria`, and its checks on
+a plan to `code-change`. `restraint` survives only as the implementation-detail
+finding inside `specification`; it is not applied to an implementation plan,
+where concreteness is the point.
 
 #### Dimension prose states intent; the project's principles document states the conventions
 
@@ -2612,7 +2639,9 @@ Each always-on dimension is its own agent, paying its own agent context floor.
 Collapsing them is an obvious token target, and both halves of the answer are
 recorded rather than assumed.
 
-**`plan` — measured, and rejected.** The three always-on plan dimensions all
+**`plan` — measured, and rejected.** (This measurement predates the split of plan
+review by document kind: "the three always-on plan dimensions" are the retired
+`coherence` and `restraint` plus `architectural-fit`.) The three always-on plan dimensions all
 resolve the same `FINDINGS_SCHEMA`, so merging them into one agent holding three
 lenses needs no schema change and was a live candidate. It was A/B'd against the
 current three-finder shape over real mined plan documents; the collapsed finder
@@ -2622,7 +2651,8 @@ rule, the run, the per-lens figures and the `no-ship` DECISION are in
 [`token-baseline.json`](token-baseline.json) § `planFinderCollapse`. The
 instrument and its harness (`scripts/verify-finder-collapse.sh`) were retired
 on 2026-09-23 — the decision is closed, and the harness's corpus assumed three
-plan reviewers, which is stale now that there are five.
+plan reviewers, which was already stale when there were five and is more so now
+that the catalogue is two rubrics of seven.
 
 **`code` — not a candidate at all, and this is the canonical statement of why.**
 `ac` and `correctness` are not symmetric with plan mode's lenses:
@@ -2641,26 +2671,47 @@ A short form of this rationale lives in the `//|code|` spec prose in
 `.claude/workflows/lib/review.mjs`, so it renders into the shipped code-review
 skill templates and travels with the lane rather than staying tribal knowledge.
 
-`unit-of-work` likewise stays a separate reviewer in either scenario: a caller
-reviewing something that is not a phase simply omits it, and folding a
-selectively-included lens into an unconditional agent would take that choice
+The same holds for a reviewer that runs on only some targets (at the time of that
+measurement, `unit-of-work`; today `intent-alignment`): folding a
+selectively-included lens into an unconditional agent would take the selection
 away.
 
-### `context.reviewers` and `resolveReviewers(mode, reviewers)`
+### `context.reviewers` and `resolveReviewers(mode, reviewers, target)`
 
-**The caller selects the reviewers.** `resolveReviewers` only resolves the names
-it was handed against the mode's catalogue:
+**A caller's list is exact; with none, plan mode selects by target type.**
+`resolveReviewers` takes an optional third argument, `target = { kind,
+intentRecorded }`: the plan target type the caller already resolved, and whether
+the parent roadmap records an Intent. Both are **stated** by the caller — the
+engine still reads no document. `runReview` builds it from `context.targetKind`
+and `context.intentRecorded`.
 
-- `reviewers` **omitted** (`null`/`undefined`) → every reviewer for the mode, in
-  declaration order. A maximal default encodes no policy, where a selective one
-  would.
-- a **list of keys** → exactly those, filtered out of `DIMENSIONS[mode]` in
-  declaration order (never the caller's order, so the fan-out and the candidate
-  `order` tiebreak stay stable).
+| `reviewers` | `target.kind` | result |
+| --- | --- | --- |
+| omitted | `phase` | `scope`, `specification`, `acceptance-criteria`, plus `intent-alignment` when `target.intentRecorded === true` |
+| omitted | `task` | `scope`, `specification`, `acceptance-criteria` (a task has no parent roadmap, so the flag adds nothing) |
+| omitted | `roadmap` | `specification` |
+| omitted | `implementation-plan` | `code-change`, `confirmation`, `architectural-fit` |
+| omitted | not given | every reviewer of the mode: code mode, a parse-time two-argument call, and the legacy `mode: 'plan'` path of `rdm-wf-review-refute-fix` |
+| a list | any of the four, or not given | exactly the named reviewers out of the mode's **whole** catalogue |
+| any | given, but not one of the four | throws, like an unknown mode |
+
+- Every result is in declaration order (never the caller's order, so the fan-out
+  and the candidate `order` tiebreak stay stable).
+- An explicit list is **exact, not narrowed to the target's rubric**: a caller
+  can still run `scope` against an implementation plan by naming it. The rubric
+  split is a default, not a wall. On a roadmap sweep one list applies to the
+  body unit and to every phase unit.
 - an **unrecognised name** selects nothing and is **not** rejected. There is no
   unknown-name guard: the mistake shows in `coverage.selected` / `coverage.ran`,
   which is where under-coverage is meant to be visible.
-- an unknown `mode` → throw.
+- an unknown `mode` → throw. Code mode ignores `target`.
+
+`parsePlanArgs` reads `intentRecorded` from the structured key only (`true` means
+the parent roadmap records an Intent; anything else is false). The plan-review
+driver passes each unit's own kind as `targetKind` — so a sweep reviews the
+roadmap body with `specification` and each phase with the item-document set —
+and passes `intentRecorded` only for a phase unit. Omitting the flag omits
+`intent-alignment`, visibly, in that unit's `coverage.selected`.
 
 **Coverage is visible, not enforced.** Nothing checks the set's size,
 composition, or fitness for the target — a caller may deliberately under-review,
@@ -2677,11 +2728,24 @@ reviewers over a small delta is the judgment call a follow-up removes.
 `DIMENSIONS.code` does not contain that reviewer, so a full review's default
 fleet is unchanged.
 
-The `context` contract carries **no** diff-shape signals, no target type, and no
-document body. It holds `target` (an identifier — an item ref, a plan slug, or
-the `rdm … show` command a finder runs itself), the optional `reviewers`,
-`maxRefutations`, and the optional `findModel`/`verifyModel` ids. A reviewer that
-needs a document **fetches it itself**; nothing transcribes one into this object.
+The `context` contract carries **no** diff-shape signals and no document body.
+It holds `target` (an identifier — an item ref, a plan slug, or the `rdm … show`
+command a finder runs itself), the optional `reviewers`, the plan-mode
+`targetKind` and `intentRecorded` described above, `maxRefutations`, and the
+optional `findModel`/`verifyModel` ids. A reviewer that needs a document
+**fetches it itself**; nothing transcribes one into this object. The reader
+commands it may be handed are `itemCommand` (the document under review,
+line-numbered in plan mode), `roadmapCommand` (the parent roadmap),
+`planCommand` (code mode: the approved plan the change implements),
+`sourceCommand` (the pinned checkout) and `implementsCommand`: on an
+implementation-plan review, the un-numbered `rdm phase show … --format json` or
+`rdm task show … --format json` for the item the caller named with `roadmap` +
+`phase` or `task`, which the `confirmation` reviewer reads for the item's
+acceptance criteria. That item is reference material and is not under review;
+with no item named the key is null and `confirmation` works from the criteria
+the plan itself restates. Like every other conditional clause of
+`reviewTargetBlock`, it renders only when the key is set, so a `{ target }`-only
+context produces the same prompt bytes as before.
 
 **What was deleted.** `selectDimensions`, every per-dimension `when` predicate,
 `SIGNAL_KEYS`, `deriveSignals`, `contentSignal`, `addedLines`, `matchesAny`, the
@@ -2692,9 +2756,10 @@ transport (`extractIntent`, `intentPresent`, `INTENT_PREAMBLE`,
 `INTENT_MISSING_NOTICE`). Diff-shape inference existed to guess what a caller
 already knows; `unit-of-work` scoping and the intent channel existed because the
 engine was choosing rather than being told. All three answers are now the
-caller's, and each reviewer's catalogue entry carries a one-line cue for when to
-include it — single-sourced in `review.mjs`'s `//|` prose and rendered into every
-review skill.
+caller's — stated as a reviewer list, a target kind, or the `intentRecorded`
+flag, never read by the engine — and each reviewer's catalogue entry carries a
+one-line cue — single-sourced in `review.mjs`'s `//|` prose and rendered into
+every review skill.
 
 
 ### Verdict and status mapping
@@ -2893,7 +2958,9 @@ json` in task mode. A task does not have a containing roadmap or phase number.
 The plan document the planner agent produces from **only** the phase body (no
 worktree, no code). Rendered to text and fed to the plan-review gate, then — once
 approved — to the implementer. A vague or empty plan is flagged `blocking` by the
-plan-review `coherence` dimension and escalates before any implementation.
+plan-review `coherence` dimension (the reviewer of that retired engine's day; it
+predates the split by document kind, under which `code-change` raises it) and
+escalates before any implementation.
 
 | field              | type                                    | notes                                    |
 | ------------------ | --------------------------------------- | ---------------------------------------- |
@@ -3080,7 +3147,8 @@ owned by the rework/status machinery, per "never fix large changes inline".
 **The code-review stage is the canonical review.** It is
 `rdm-wf-review-refute-fix.js`'s stamped `buildReviewPipeline('code')` — there is no
 independent code-review logic anywhere — fed the caller's reviewer set (see
-`resolveReviewers(mode, reviewers)` above; omitting it runs them all).
+`resolveReviewers(mode, reviewers, target)` above; in code mode omitting it runs
+them all).
 The since-deleted `verify-workflow-review-outcome.sh` counted those two call
 sites in the driver's source; the Rust `workflow_review` engine tests now
 execute the driver instead.

@@ -855,10 +855,17 @@ rather than out of the data. The missing-candidate hazard such a rule reaches
 for is caught locally instead, by `dimension-coverage-gap` — the unit's own
 finder set failing to cover the dimensions that were always-on for the whole
 window (code: `ac` + `correctness`; plan: `coherence` +
-`architectural-fit` — `restraint` is always-on today but shipped part-way
+`architectural-fit` — `restraint` was always-on at the time but shipped part-way
 through this window, so requiring it would flag pre-`restraint` units for an
 artefact of release timing), or the unit holding a refuter for a dimension it
-has no finder for. The residual risk this accepts is stated rather than
+has no finder for. Plan review has since been split by document kind and
+`coherence` retired, so the plan rule is now a list of alternative required
+sets and a unit has a gap only when none is wholly present in its finder set:
+the `coherence` + `architectural-fit` pair above, which still judges every unit
+of this window exactly as recorded; `specification` alone, for an item document
+reviewed after the split; or `code-change` + `confirmation` +
+`architectural-fit`, for an implementation plan. Only the two post-split sets
+are checked against the live reviewer catalogue. The residual risk this accepts is stated rather than
 imputed: an orphan **finder** could in principle have belonged to a named unit
 whose coverage nonetheless looks complete (an unlabeled retry, say), leaving
 that unit's candidate list short and its rank understated. The 252 orphan

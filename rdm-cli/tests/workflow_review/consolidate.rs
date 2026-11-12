@@ -28,7 +28,7 @@ fn reviewers(mode: &str) -> [&'static str; 3] {
     if mode == "code" {
         ["correctness", "tests", "architecture"]
     } else {
-        ["coherence", "architectural-fit", "restraint"]
+        ["scope", "specification", "acceptance-criteria"]
     }
 }
 

@@ -165,10 +165,10 @@ fn comment_header_round_trip() {
             .filter_map(|k| k.as_str().map(str::to_owned))
             .collect();
         let matrix = [
-            json!({ "id": "g1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "plain" }),
-            json!({ "id": "n1", "concern": "restraint", "severity": "suggestion", "confidence": 75, "what_fails": "ng", "unrefuted": true, "unrefutedReason": "non-gating" }),
+            json!({ "id": "g1", "concern": "specification", "severity": "blocking", "confidence": 90, "what_fails": "plain" }),
+            json!({ "id": "n1", "concern": "scope", "severity": "suggestion", "confidence": 75, "what_fails": "ng", "unrefuted": true, "unrefutedReason": "non-gating" }),
             json!({ "id": "b1", "concern": "architectural-fit", "severity": "concern", "confidence": 80, "what_fails": "bg", "unrefuted": true, "unrefutedReason": "budget" }),
-            json!({ "id": "e1", "concern": "coherence", "severity": "blocking", "confidence": 99, "what_fails": "line one\nline two", "refuterError": true }),
+            json!({ "id": "e1", "concern": "specification", "severity": "blocking", "confidence": 99, "what_fails": "line one\nline two", "refuterError": true }),
         ];
         for f in matrix {
             let body = js.call("formatCommentBody", vec![f.clone()])?;
@@ -528,7 +528,7 @@ fn prior_round_and_findings_from_reviews() {
         );
         let body = js.call(
             "formatCommentBody",
-            vec![json!({ "id": "p1", "concern": "coherence", "severity": "blocking", "confidence": 91, "what_fails": "the backoff is unspecified" })],
+            vec![json!({ "id": "p1", "concern": "specification", "severity": "blocking", "confidence": 91, "what_fails": "the backoff is unspecified" })],
         )?;
         let reviews = json!([
             { "id": "2026-01-01-0000-aaaa", "state": "submitted", "created": "2026-01-01T00:00:00Z", "comments": [{ "body": "a human note" }] },
@@ -538,7 +538,7 @@ fn prior_round_and_findings_from_reviews() {
         let prior = js.plan_call("priorFindingsFromReviews", vec![reviews.clone()])?;
         check_eq!(
             prior,
-            json!([{ "severity": "blocking", "concern": "coherence", "what_fails": "the backoff is unspecified" }]),
+            json!([{ "severity": "blocking", "concern": "specification", "what_fails": "the backoff is unspecified" }]),
             "only header-carrying comments of the latest review"
         );
         let reversed = json!([reviews[1], reviews[0]]);
@@ -554,9 +554,9 @@ fn prior_round_and_findings_from_reviews() {
 fn quoted_agent(quote_ok: Option<bool>) -> Agent {
     Agent::scripted(move |call| {
         if call.label.starts_with("find:") {
-            if call.label.contains("coherence") {
+            if call.label.contains("specification") {
                 Reply::Value(
-                    json!({ "findings": [{ "id": "q1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                    json!({ "findings": [{ "id": "q1", "concern": "specification", "severity": "blocking", "confidence": 90,
                     "what_fails": "the retry backoff strategy is unspecified", "quote": "retry with backoff" }] }),
                 )
             } else {
@@ -627,7 +627,7 @@ fn quote_changes_refute_prompt() {
         let mut js = Js::open(lib)?;
         let dims = js.call("resolveReviewers", vec![json!("plan")])?;
         let dim = dims[0].clone();
-        let no_quote = json!({ "id": "f1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "x" });
+        let no_quote = json!({ "id": "f1", "concern": "specification", "severity": "blocking", "confidence": 90, "what_fails": "x" });
         let mut with_quote = no_quote.clone();
         with_quote["quote"] = json!("a verbatim span");
         let ctx = json!({ "target": "t" });
@@ -705,9 +705,9 @@ fn ladder_lands_anchored_whole_doc_and_cleared_comments() {
         let mut js = Js::open(lib)?;
         let repo = seeded()?;
         let survivors = json!([
-            { "id": "a1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "the backoff is unspecified",
+            { "id": "a1", "concern": "specification", "severity": "blocking", "confidence": 90, "what_fails": "the backoff is unspecified",
               "why": "no rule", "recommendation": "state it", "quote": "The retry backoff strategy is unspecified here." },
-            { "id": "w1", "concern": "restraint", "severity": "concern", "confidence": 80, "what_fails": "scope creep" },
+            { "id": "w1", "concern": "scope", "severity": "concern", "confidence": 80, "what_fails": "scope creep" },
             { "id": "c1", "concern": "architectural-fit", "severity": "concern", "confidence": 85, "what_fails": "a stale quote was cleared by the refuter" }
         ]);
         let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
@@ -771,7 +771,11 @@ fn ladder_lands_anchored_whole_doc_and_cleared_comments() {
         }
         check_eq!(by_id["a1"]["severity"], json!("blocking"), "a1 severity");
         check_eq!(by_id["a1"]["confidence"], json!(90), "a1 confidence");
-        check_eq!(by_id["a1"]["dimension"], json!("coherence"), "a1 dimension");
+        check_eq!(
+            by_id["a1"]["dimension"],
+            json!("specification"),
+            "a1 dimension"
+        );
         check_eq!(by_id["w1"]["severity"], json!("concern"), "w1 severity");
         check_eq!(by_id["c1"]["confidence"], json!(85), "c1 confidence");
         let body = cs
@@ -809,7 +813,7 @@ fn verdict_mapping_via_real_binary() {
             "a zero-survivor review is submitted"
         );
 
-        let esc = json!([{ "id": "e1", "concern": "coherence", "severity": "blocking", "confidence": 95, "what_fails": "the goal is wrong" }]);
+        let esc = json!([{ "id": "e1", "concern": "specification", "severity": "blocking", "confidence": 95, "what_fails": "the goal is wrong" }]);
         let script = ladder(
             &mut js,
             "plan",
@@ -855,7 +859,7 @@ fn phase_stem_and_numeric_refs_resolve() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let repo = seeded()?;
-        let survivors = json!([{ "id": "p1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+        let survivors = json!([{ "id": "p1", "concern": "specification", "severity": "blocking", "confidence": 90,
                                  "what_fails": "phase gap", "quote": "a unique phase sentence" }]);
         let script = ladder(
             &mut js,
@@ -921,7 +925,7 @@ fn ambiguous_quote_not_silently_anchored() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let repo = seeded()?;
-        let survivors = json!([{ "id": "amb", "concern": "coherence", "severity": "blocking", "confidence": 90,
+        let survivors = json!([{ "id": "amb", "concern": "specification", "severity": "blocking", "confidence": 90,
                                  "what_fails": "ambiguous", "quote": "A repeated sentence." }]);
         let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
         let tmp = repo.tmpdir("amb")?;
@@ -1105,7 +1109,7 @@ fn mutant_scratch_path_predictable() {
 fn leaves_no_scratch(lib: &Lib) -> Outcome {
     let mut js = Js::open(lib)?;
     let repo = seeded()?;
-    let survivors = json!([{ "id": "f1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "x" }]);
+    let survivors = json!([{ "id": "f1", "concern": "specification", "severity": "blocking", "confidence": 90, "what_fails": "x" }]);
     let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
     let tmp = repo.tmpdir("clean")?;
     let out = repo.sh(&script, "clean", &tmp)?;
@@ -1203,14 +1207,14 @@ fn concurrent_ladders_do_not_collide() {
 
 // --- Line-span anchors (plan mode) ---------------------------------------------
 
-/// A plan-mode run whose coherence finder reports a line span on the task
+/// A plan-mode run whose specification finder reports a line span on the task
 /// body, and whose refuter answers `lines_ok` with `lines_ok`.
 fn spanned_agent(lines_ok: Option<bool>) -> Agent {
     Agent::scripted(move |call| {
         if call.label.starts_with("find:") {
-            if call.label.contains("coherence") {
+            if call.label.contains("specification") {
                 Reply::Value(
-                    json!({ "findings": [{ "id": "s1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                    json!({ "findings": [{ "id": "s1", "concern": "specification", "severity": "blocking", "confidence": 90,
                     "what_fails": "the retry backoff strategy is unspecified", "start_line": 2, "end_line": 3 }] }),
                 )
             } else {
@@ -1298,7 +1302,7 @@ fn span_changes_refute_prompt() {
         let mut js = Js::open(lib)?;
         let dims = js.call("resolveReviewers", vec![json!("plan")])?;
         let dim = dims[0].clone();
-        let no_span = json!({ "id": "f1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "x" });
+        let no_span = json!({ "id": "f1", "concern": "specification", "severity": "blocking", "confidence": 90, "what_fails": "x" });
         let mut with_span = no_span.clone();
         with_span["start_line"] = json!(3);
         with_span["end_line"] = json!(4);
@@ -1369,7 +1373,7 @@ fn reflowed_wrap_persists_with_its_line_anchor() {
             String::from_utf8_lossy(&refused.stdout)
         );
 
-        let survivors = json!([{ "id": "w1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+        let survivors = json!([{ "id": "w1", "concern": "specification", "severity": "blocking", "confidence": 90,
                                  "what_fails": "the claim is unsupported", "start_line": 2, "end_line": 3 }]);
         let script = ladder(&mut js, "plan", "rework", survivors, "task/wrapped")?;
         let review = repo.review(PROJECT, &land(&repo, &script, "wrapped")?)?;
@@ -1416,7 +1420,7 @@ fn refused_line_anchor_lands_whole_document_and_is_counted() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let repo = seeded()?;
-        let survivors = json!([{ "id": "o1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+        let survivors = json!([{ "id": "o1", "concern": "specification", "severity": "blocking", "confidence": 90,
                                  "what_fails": "past the end", "start_line": 40, "end_line": 41 }]);
         let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
         let tmp = repo.tmpdir("oor")?;
@@ -1583,7 +1587,7 @@ fn plan_target_span_beats_quote() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
         let cfg = json!({ "rdmBin": "/fake/bin/rdm", "project": "demo" });
-        let base = json!({ "id": "p1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+        let base = json!({ "id": "p1", "concern": "specification", "severity": "blocking", "confidence": 90,
                            "what_fails": "x" });
         let mut span_only = base.clone();
         span_only["start_line"] = json!(2);

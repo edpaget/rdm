@@ -332,8 +332,8 @@ and the wont-fix titles as `wontFixedTitles`:
   independently optional, and an omitted one makes that judgment agent inherit the session's model
   or effort.
 - The roadmap read is **step 5's**, listed here only because this is where reads are gathered: the
-  planner gets `## Intent` verbatim, while step 6's `intent-alignment` reviewer reads that section
-  itself, from the roadmap slug alone.
+  planner gets `## Intent` verbatim. Step 6 does not check the plan against it — alignment with the
+  recorded Intent is judged when the item document itself is plan-reviewed, not here.
 - Use `task list`, **not** `rdm search`, for the wont-fix corpus: `search` truncates at its default
   `--limit 20` and its JSON carries no `body` field.
 
@@ -350,8 +350,8 @@ consolidator and refuter agents only, with nothing reachable to re-read what you
 
 - item `body` feeds the planner (step 5) and implementer (step 10), never step 6 directly — if
   unreadable, escalate rather than dispatching a planner with no phase text.
-- roadmap `body` likewise feeds only step 5's planner; if unreadable, the planner loses `## Intent`,
-  but `intent-alignment` is unaffected since it reads that section itself from the `roadmap` slug.
+- roadmap `body` likewise feeds only step 5's planner; if unreadable, the planner loses `## Intent`.
+  Step 6 is unaffected: the plan review does not read it.
 - `findModel` / `verifyModel` / `consolidateModel` and `findEffort` / `verifyEffort` /
   `consolidateEffort` — each independently optional; an
   omitted model makes that agent inherit the session model, an omitted effort its effort. One
@@ -402,7 +402,6 @@ Workflow tool, passing `args` as a JSON object (never a stringified value):
   implementationPlan: true,
   planSlug: '<plan-slug>',
   persist: { on: 'plan/<plan-slug>' },
-  reviewers: ['coherence', 'architectural-fit', 'restraint'],  // + 'intent-alignment' when the roadmap records `## Intent`
   roadmap: '<slug>', phase: '<phase>',            // task mode: task: '<slug>' instead, and OMIT roadmap/phase
   source: '<identity.path>', base: '<identity.base>',
   expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
@@ -419,17 +418,20 @@ Workflow tool, passing `args` as a JSON object (never a stringified value):
 ```
 
 The plan document is what is **graded** here, not merely what the verdict is recorded on. The item's
-own document is never handed to the engine, so a finding about an inaccuracy in the phase body — one
-the plan does not inherit — cannot arise and cannot force a revise round. **You MUST make this call
-yourself.** It is the one step a subagent physically cannot perform.
+own document is named to the reviewers only as reference — its acceptance criteria are what the plan
+must say how to confirm — and it is **not under review**: a finding about the wording, scope or
+criteria of the phase body is not this review's to raise and cannot force a revise round. **You MUST
+make this call yourself.** It is the one step a subagent physically cannot perform.
 
 - `planSlug` names the document under review, and it is the ONLY way to name it: each reviewer is
   told the `plan show <plan-slug> --numbered` command and runs it itself, reading the line-numbered
   body once in its own context. There is no `planText`, no second verifying read, and nothing transcribed into
   this call's arguments. A `planSlug` on a non-implementation-plan target, and a `persist.on` that is
   not `plan/<plan-slug>`, each throw before any agent runs.
-- `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
-  its `## Intent` from. Omit it in task mode.
+- `roadmap` + `phase` (or `task` in task mode) name the **item this plan implements**. Besides
+  binding the source pin below, they are how the `confirmation` reviewer reads that item's acceptance
+  criteria: its prompt names the `phase show` / `task show` command and it runs it itself. The item
+  is still not under review. Omit `roadmap` and `phase` in task mode.
 - `source` / `base` / `expectedHead` / `expectedBranch` — the SAME pinned checkout identity you
   recorded in step 4, in the SAME flat shape step 12's code-review call takes. Every finder and
   refuter runs `rdm review source --on <item> --source ... --no-code --format json` and verifies the
@@ -440,25 +442,18 @@ yourself.** It is the one step a subagent physically cannot perform.
   it. **Omitting all four is legal**: the engine then reads from the invoking session's own working
   directory — the correct behavior for the standalone `rdm-plan-review` surface run outside a
   dispatch worktree.
-- `reviewers` — **the reviewer set you are selecting.** Omitting the key entirely runs every plan
-  reviewer, which is the safe default; naming a set runs exactly those. An unrecognised name is
-  dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran` — nothing
-  rejects a thin set, so under-review is your visible choice, not an error. A set in which **no**
-  name resolves is the one exception: it throws before any agent runs, rather than reporting a clean
-  review over an empty fleet. The plan reviewers are:
+- **No `reviewers` key.** The engine selects the reviewers by target type, and an implementation
+  plan gets its own rubric — the three reviewers below. The item-document reviewers (`scope`,
+  `specification`, `acceptance-criteria`, `intent-alignment`) do not run here: they judge the phase
+  or task document, which this call does not review.
 
-  | reviewer | what it is for | include it when |
-  |---|---|---|
-  | `coherence` | is the plan internally consistent, concrete, actionable? | always |
-  | `architectural-fit` | does any step violate a stated project constraint? | always |
-  | `restraint` | has the plan over-specified what could be left to the implementer? | always |
-  | `unit-of-work` | is this independently deliverable and testable? | **only on a phase** — never on an implementation plan, a task, or a roadmap body |
-  | `intent-alignment` | does the plan serve the operator's recorded `## Intent`? | when the parent roadmap records one; it reads that section itself |
+  | reviewer | what it is for |
+  |---|---|
+  | `code-change` | does the plan name what will change in the code, concretely and grounded in the pinned tree? |
+  | `confirmation` | does the plan say how each of the item's acceptance criteria will be confirmed? |
+  | `architectural-fit` | does any step violate a stated project constraint? |
 
-  Here the target is an **implementation plan**, so `unit-of-work` is omitted: sizing was settled
-  when the phase was created. Add `'intent-alignment'` when the parent roadmap records an `##
-  Intent` section — the reviewer reads it out of the roadmap itself, so nothing is transcribed into
-  this call. In task mode there is no parent roadmap, so omit it.
+  The unit's `coverage.selected` names the set that ran.
 - `findModel` / `verifyModel` / `consolidateModel` and `findEffort` / `verifyEffort` /
   `consolidateEffort` — the three judgment-site profiles'
   `model` and `effort`, each independently optional. An omitted model makes that agent inherit the

@@ -156,10 +156,11 @@ impl Fixture {
 
     /// A code- or plan-review fixture: `sum.mjs` changed from addition to
     /// subtraction, a planted blocking finding on `correctness` (code) and
-    /// `coherence` (plan), a lower-confidence DUPLICATE of it on `tests`
+    /// `code-change` (plan), a lower-confidence DUPLICATE of it on `tests`
     /// (code) and `architectural-fit` (plan), a consolidator that merges the
     /// two (pipeline ids `c0`/`c1`: each operation's first selected finding
-    /// dimension yields the planted finding, the next the duplicate), a
+    /// dimension yields the planted finding, a later one the duplicate, and
+    /// any between them nothing), a
     /// refuter that upholds the merged unit (or answers malformed JSON), and
     /// an optional `rdm.toml` profile override.
     pub fn review(
@@ -202,7 +203,7 @@ impl Fixture {
             "Implement add(a,b) using subtraction. Acceptance criterion: add(2,3) returns 5. Add a test and run node --test.",
         )
         .map_err(infra)?;
-        for dimension in ["correctness", "coherence"] {
+        for dimension in ["correctness", "code-change"] {
             fx.respond(
                 &format!("finder-{dimension}"),
                 &json!({"findings":[{"id":PLANTED,"concern":dimension,"severity":"blocking","confidence":95,

@@ -306,18 +306,27 @@ function parsePlanArgs(rawArgs) {
   // now is what it knows and the engine cannot — which PHASES to sweep, what
   // TAGS the item currently carries, which reviews it has already had.
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
-  // The CALLER-SELECTED REVIEWER SET, applied to every review unit in this run.
-  // Read from a STRUCTURED key only, exactly like `fetched` below — a positional
-  // target slug must never be able to change which reviewers run. Absent (null)
-  // means run every plan reviewer; see the review core's `resolveReviewers`.
-  // An unrecognised name is dropped silently there and shows in coverage.
+  // The CALLER-SUPPLIED REVIEWER OVERRIDE, applied to every review unit in this
+  // run. Read from a STRUCTURED key only, exactly like `fetched` below — a
+  // positional target slug must never be able to change which reviewers run.
+  // Absent (null) means each unit runs the set for its own document kind; see
+  // the review core's `resolveReviewers`. An unrecognised name is dropped
+  // silently there and shows in coverage.
   //
-  // ONE list for the whole run, deliberately. A roadmap sweep applies it to the
-  // roadmap-body unit and to every phase unit alike: a caller that wants
-  // `unit-of-work` graded on the phases accepts it running against the body too,
-  // and that choice is visible in each unit's `coverage.selected`. A second
-  // per-kind key would be a second mechanism for the caller to keep in sync.
+  // ONE list for the whole run, deliberately, and EXACT rather than narrowed to
+  // a unit's rubric. A roadmap sweep applies it to the roadmap-body unit and to
+  // every phase unit alike: a caller that names `scope` to grade the phases
+  // accepts it running against the body too, and that choice is visible in each
+  // unit's `coverage.selected`. A second per-kind key would be a second
+  // mechanism for the caller to keep in sync.
   const reviewers = Array.isArray(a.reviewers) ? a.reviewers.filter((r) => typeof r === 'string') : null
+  // WHETHER THE PARENT ROADMAP RECORDS AN INTENT, stated by the caller — the
+  // engine reads no document, so it cannot see the `## Intent` section itself.
+  // Only the literal `true` counts; anything else (absent, a string, a number)
+  // is false. It adds the `intent-alignment` reviewer to a phase unit's default
+  // set and has no effect on any other unit or on an explicit `reviewers` list.
+  // Read from a STRUCTURED key only, like `reviewers`.
+  const intentRecorded = a.intentRecorded === true
   // RESOLVED HERE, at parse time, for the same reason `resolveRefutationBudget`
   // is: the ONE refusal the reviewer-selection design keeps — a set that
   // resolves to NO reviewer at all — has to escape the DRIVER, and inside
@@ -329,6 +338,9 @@ function parsePlanArgs(rawArgs) {
   // result is discarded, since each unit resolves its own set from the same
   // list, and every OTHER part of the contract (an unrecognised name dropped
   // silently, no floor on the set's size) is untouched by calling it early.
+  // Deliberately the TWO-argument form: it only refuses a list that names no
+  // reviewer, which does not depend on the target kind (an omitted list always
+  // resolves to a non-empty set).
   resolveReviewers('plan', reviewers)
   // The PHASE STEMS a roadmap sweep covers. The engine does NOT read a roadmap
   // to discover them: the orchestrator ran `rdm roadmap show` itself and says
@@ -476,6 +488,7 @@ function parsePlanArgs(rawArgs) {
     priorReviews: priorReviews,
     wontFixedTexts: wontFixedTexts,
     reviewers: reviewers,
+    intentRecorded: intentRecorded,
     findModel: findModel,
     verifyModel: verifyModel,
     findEffort: findEffort,
@@ -1197,7 +1210,9 @@ async function runPlanReviewDriver(args, deps) {
   let _consolidateEffort = d.consolidateEffort
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Which
-  // reviewers run is the CALLER's choice, threaded through as `reviewers`.
+  // reviewers run is decided there, from what this driver states about each
+  // unit: its target kind, whether its parent roadmap records an Intent, and
+  // the caller's `reviewers` override when one was given.
   const runPlanReview = d.runPlanReview || buildReviewPipeline('plan')
 
   const parsed = parsePlanArgs(args)
@@ -1256,6 +1271,12 @@ async function runPlanReviewDriver(args, deps) {
       roadmapCommand: unit.roadmapCommand,
       sourceCommand: unit.sourceCommand,
       reviewers: reviewers,
+      // The unit's own document kind selects its default reviewer set, so a
+      // sweep reviews the roadmap body and each phase against the item-document
+      // rubric's own rows. `intentRecorded` is stated only for a unit that HAS
+      // a parent roadmap — a phase, single or in a sweep.
+      targetKind: unit.kind,
+      intentRecorded: unit.kind === 'phase' && parsed.intentRecorded === true,
       maxRefutations: maxRefutations,
       findModel: _findModel,
       verifyModel: _verifyModel,
@@ -1301,10 +1322,12 @@ async function runPlanReviewDriver(args, deps) {
   // command their prompt names — `plan show <planSlug>` for a persisted plan,
   // `cat -n <planFile>` for a free-form one. Exactly one of the two is set: parse
   // time refuses both and refuses neither, so there is always a document and it
-  // is never ambiguous which. No ITEM document is reachable from this branch at
-  // all, so a finding about a phase body — one the plan does not inherit — is
-  // impossible by construction rather than by instruction. The persist ref is
-  // DERIVED from the same `planSlug`, so the graded document and the recorded
+  // is never ambiguous which. The ITEM the plan implements is reachable only as
+  // REFERENCE (`implementsCommand`, when the caller named it): the
+  // `confirmation` reviewer reads its acceptance criteria to check that the plan
+  // says how each will be confirmed, and the prompt says the item is not under
+  // review. Line spans still come only from the numbered plan. The persist ref
+  // is DERIVED from the same `planSlug`, so the graded document and the recorded
   // verdict cannot name different documents.
   //
   // No act step and no gate: a plan document carries no tags, so there is no
@@ -1319,6 +1342,16 @@ async function runPlanReviewDriver(args, deps) {
     const sourceCommand = parsed.sourcePin
       ? planSourceCommand(parsed.sourceItem, parsed.sourcePin, parsed.rdmBin, projectFlag(parsed))
       : null
+    // The item this plan implements, named by the SAME identifiers `sourceItem`
+    // is built from — `task`, or `roadmap` + `phase` — and read un-numbered:
+    // it is reference material, so no finding takes a line span from it. Null
+    // when the caller named no item; `confirmation` then works from the
+    // criteria the plan itself restates.
+    const implementsCommand = parsed.task
+      ? parsed.rdmBin + ' task show ' + parsed.task + projectFlag(parsed) + ' --format json'
+      : parsed.roadmap && parsed.phase
+      ? parsed.rdmBin + ' phase show ' + parsed.phase + ' --roadmap ' + parsed.roadmap + projectFlag(parsed) + ' --format json'
+      : null
     const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: planTarget,
       // The graded plan is read LINE-NUMBERED, like every unit's own
@@ -1332,8 +1365,10 @@ async function runPlanReviewDriver(args, deps) {
       roadmapCommand: parsed.roadmap
         ? parsed.rdmBin + ' roadmap show ' + parsed.roadmap + projectFlag(parsed) + ' --format json'
         : null,
+      implementsCommand: implementsCommand,
       sourceCommand: sourceCommand,
       reviewers: reviewers,
+      targetKind: 'implementation-plan',
       maxRefutations: maxRefutations,
       findModel: _findModel,
       verifyModel: _verifyModel,
