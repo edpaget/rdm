@@ -13,6 +13,12 @@ sha = "9cd9ca3a51c3d3e2a99d2488a25baf73a2204451"
 # Upstream's configs/runs/lite_under20.yaml ("strict under-$20 subset"); each
 # problem has several checkpoints.
 subset = ["mvvault", "xjq"]
+# Each subset problem's checkpoint count, from its config.yaml `checkpoints:`
+# at the pin above (mvvault: checkpoint_1-checkpoint_6; xjq:
+# checkpoint_1-checkpoint_5). It sizes `scbench ladder --dry-run`'s projected
+# run count and floors the report's pass-rate denominator; change it with
+# `subset`.
+checkpoints = { mvvault = 6, xjq = 5 }
 
 [agent]
 provider = "claude_code_oauth"

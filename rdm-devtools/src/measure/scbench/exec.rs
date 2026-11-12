@@ -1,7 +1,7 @@
 //! Executes a [`RunPlan`]: spawns its commands in order and keeps the run
 //! record current after every one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -15,10 +15,16 @@ use super::lane::{self, LaneRecord};
 use super::manifest::{ArmGroup, ArmImage, Manifest};
 use super::plan::{self, CommandSpec, Paths, RunPlan, Tools};
 
+/// The run record's schema version: 2 records one [`ArmRecord`] per arm and
+/// seed. A record without `schema` (phases 1-4) has one per arm, at seed 1.
+pub const RECORD_SCHEMA: u32 = 2;
+
 /// The run record written to `<out>/rdm-scbench-run.json`.
 #[derive(Debug, Serialize)]
 pub struct RunRecord {
-    /// Every pin, as parsed.
+    /// [`RECORD_SCHEMA`].
+    pub schema: u32,
+    /// Every pin, as parsed, with the selected arms.
     pub manifest: Manifest,
     /// The manifest file the run loaded.
     pub manifest_path: PathBuf,
@@ -28,7 +34,12 @@ pub struct RunRecord {
     pub observed: Observed,
     /// The installed model file, once copied.
     pub model_file: Option<ModelFileRecord>,
-    /// Each arm's generated configs and SCBench run directory.
+    /// The seeds each selected arm runs with (`1..=n`).
+    pub seeds: Vec<u64>,
+    /// The arms `--arms` selected, in manifest order.
+    pub selected_arms: Vec<String>,
+    /// Each unit's (arm and seed's) generated configs and SCBench run
+    /// directory, in run order.
     pub arms: Vec<ArmRecord>,
     /// Every command spawned, in order.
     pub commands: Vec<CommandRecord>,
@@ -63,11 +74,13 @@ pub struct ModelFileRecord {
     pub sha256: String,
 }
 
-/// One arm's configuration.
+/// One unit's configuration: an arm at one seed.
 #[derive(Debug, Serialize)]
 pub struct ArmRecord {
     /// The arm name.
     pub name: String,
+    /// The unit's SCBench seed.
+    pub seed: u64,
     /// The agent image the arm runs in.
     pub image: ArmImage,
     /// The arm's treatment group, which the ablation comparison keys on.
@@ -79,12 +92,15 @@ pub struct ArmRecord {
     pub agent_config: Value,
     /// The run config written for the arm.
     pub run_config: Value,
-    /// SCBench's output directory for the arm.
+    /// SCBench's output directory for the unit.
     pub run_dir: PathBuf,
     /// For an rdm arm, once its run finished: each checkpoint's copied plan
     /// repo and lane classification (`lane::collect`); `null` for a stock
     /// arm.
     pub lane: Option<LaneRecord>,
+    /// RFC 3339 time at which the unit's eval exited 0; `null` until then, so
+    /// a report skips a unit that never finished.
+    pub finished: Option<String>,
 }
 
 /// One spawned command.
@@ -281,25 +297,30 @@ pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     write_file(path, format!("{body}\n").as_bytes())
 }
 
-/// Runs `manifest` (loaded from `manifest_path`) against `paths` to
-/// completion, stopping at the first failing step, and returns the plan it
-/// ran. The plan is built once the rdm SHA is resolved, so rdm arms carry it;
+/// Runs `manifest` (loaded from `manifest_path`, holding the selected arms)
+/// against `paths` over `seeds` to completion, stopping at the first failing
+/// step, and returns the plan it ran. The plan is built once the rdm SHA is
+/// resolved, so rdm arms carry it;
 /// `template` is the unrendered [`super::rdm_image::TEMPLATE`] and `prompts`
 /// the unrendered manifest prompts (see [`plan::build_plan`]). Between an rdm
 /// arm's run and its eval, its plan repos are copied out and classified
-/// (`lane::collect`) and a `<landed>/<total>` line goes to `stderr`.
+/// (`lane::collect`) and a `<landed>/<total>` line goes to `stderr`. An arm's
+/// agent config, agent template and prompt are written once, before its
+/// first unit; each unit writes its own run config.
 ///
 /// # Errors
 ///
 /// When a probe, provisioning step, arm command or plan-repo extraction
 /// fails, an rdm arm's plan root lies in SCBench's graded directory, or a
 /// file cannot be written. An arm failure reads
-/// `arm <name>: <run|eval> exited <code>`.
+/// `arm <name> seed <n>: <run|eval> exited <code>`.
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
     manifest: &Manifest,
     manifest_path: &Path,
     paths: &Paths,
     tools: &Tools,
+    seeds: &[u64],
     template: Option<&str>,
     prompts: &BTreeMap<String, String>,
     stderr: &mut dyn Write,
@@ -309,11 +330,14 @@ pub fn execute(
         .map_err(|e| format!("cannot create --out {}: {e}", out_dir.display()))?;
     let mut ex = Executor {
         record: RunRecord {
+            schema: RECORD_SCHEMA,
             manifest: manifest.clone(),
             manifest_path: manifest_path.to_path_buf(),
             rdm: RdmInfo::default(),
             observed: Observed::default(),
             model_file: None,
+            seeds: seeds.to_vec(),
+            selected_arms: manifest.arms.iter().map(|a| a.name.clone()).collect(),
             arms: Vec::new(),
             commands: Vec::new(),
         },
@@ -331,13 +355,14 @@ pub fn execute(
         ));
     }
     let sha = ran.stdout.trim().to_owned();
-    let plan = plan::build_plan(manifest, paths, tools, Some(&sha), template, prompts);
+    let plan = plan::build_plan(manifest, paths, tools, seeds, Some(&sha), template, prompts);
     ex.record.rdm.sha = Some(sha);
     ex.record.arms = plan
         .arms
         .iter()
         .map(|a| ArmRecord {
             name: a.name.clone(),
+            seed: a.seed,
             image: a.image,
             group: a.group,
             graded_dir: None,
@@ -345,6 +370,7 @@ pub fn execute(
             run_config: a.run_config.clone(),
             run_dir: a.run_dir.clone(),
             lane: None,
+            finished: None,
         })
         .collect();
     ex.save()?;
@@ -394,27 +420,37 @@ pub fn execute(
             }
         }
         ex.save()?;
-        for arm in plan.arms.iter().filter(|a| a.image == ArmImage::Rdm) {
+        let rdm_arms: BTreeSet<&str> = plan
+            .arms
+            .iter()
+            .filter(|a| a.image == ArmImage::Rdm)
+            .map(|a| a.name.as_str())
+            .collect();
+        for arm in rdm_arms {
             environment::refuse_graded_plan_root(
-                &format!("arm {}", arm.name),
+                &format!("arm {arm}"),
                 &rdm.plan_root,
                 &env.docker.workdir,
             )?;
         }
     }
 
+    let mut written = BTreeSet::new();
     for (i, arm) in plan.arms.iter().enumerate() {
-        write_json(&arm.agent_config_path, &arm.agent_config)?;
+        let unit = format!("{} seed {}", arm.name, arm.seed);
+        if written.insert(arm.name.as_str()) {
+            write_json(&arm.agent_config_path, &arm.agent_config)?;
+            if let (Some(path), Some(text)) = (&arm.docker_template_path, &arm.docker_template) {
+                write_file(path, text.as_bytes())?;
+            }
+            if let (Some(path), Some(text)) = (&arm.prompt_path, &arm.prompt) {
+                write_file(path, text.as_bytes())?;
+            }
+        }
         write_json(&arm.run_config_path, &arm.run_config)?;
-        if let (Some(path), Some(text)) = (&arm.docker_template_path, &arm.docker_template) {
-            write_file(path, text.as_bytes())?;
-        }
-        if let (Some(path), Some(text)) = (&arm.prompt_path, &arm.prompt) {
-            write_file(path, text.as_bytes())?;
-        }
         let ran = ex.spawn(&arm.run, Io::Inherit)?;
         if !ran.ok() {
-            return Err(format!("arm {}: run {}", arm.name, ran.describe()));
+            return Err(format!("arm {unit}: run {}", ran.describe()));
         }
         if let (Some(dir), Some(rdm)) = (&arm.plan_repos_dir, &manifest.rdm) {
             let record = lane::collect(
@@ -430,14 +466,15 @@ pub fn execute(
             ex.save()?;
             let _ = writeln!(
                 stderr,
-                "scbench run: {}: {landed}/{total} checkpoints landed",
-                arm.name
+                "scbench run: {unit}: {landed}/{total} checkpoints landed"
             );
         }
         let ran = ex.spawn(&arm.eval, Io::Inherit)?;
         if !ran.ok() {
-            return Err(format!("arm {}: eval {}", arm.name, ran.describe()));
+            return Err(format!("arm {unit}: eval {}", ran.describe()));
         }
+        ex.record.arms[i].finished = Some(now());
+        ex.save()?;
     }
     Ok(plan)
 }

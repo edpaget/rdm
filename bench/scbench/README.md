@@ -1,8 +1,8 @@
 # SCBench control-arm runner
 
 `rdm-measure scbench run` drives [SlopCodeBench](https://github.com/SprocketLab/slop-code-bench)
-(SCBench) from the pinned manifest in this directory. Each manifest arm gets
-one `slop-code run` and one `slop-code eval`. The arms are the ablation
+(SCBench) from the pinned manifest in this directory. Each selected manifest
+arm gets one `slop-code run` and one `slop-code eval` per seed. The arms are the ablation
 ladder described in [`ladder.md`](ladder.md). Four arms are upstream's own
 control prompts: `just-solve`, `anti_slop`, `plan_first` and `plan-and-test`.
 The `tracked` and `planned` arms add rdm tracking, then rdm's planning lane.
@@ -10,8 +10,9 @@ The `full-lane` arm (see "Full-lane arm") runs the full rdm lane.
 
 > **COST WARNING.** `scbench run` without `--dry-run` runs paid Claude Code
 > agents in Docker. Each arm runs every problem in the subset, and every
-> checkpoint of each problem. Cost scales with arms × problems × checkpoints,
-> and a run takes hours. Use `--dry-run` first.
+> checkpoint of each problem, once per seed. Cost scales with
+> arms × seeds × problems × checkpoints, and a run takes hours. Use
+> `--dry-run` first: it prints the projected run count.
 
 ## What is pinned
 
@@ -21,7 +22,8 @@ The `full-lane` arm (see "Full-lane arm") runs the full rdm lane.
 - the provider and the model (Claude Opus 5.5)
 - the thinking level and the Claude Code version installed in the agent image
 - the pass policy, the environment and the cost limits
-- the problem subset and the arms
+- the problem subset, each problem's checkpoint count
+  (`[problems] checkpoints`, from its `config.yaml` at the pin), and the arms
 
 The runner builds the `slop-code` run config and agent config from the
 manifest alone. No SCBench default decides anything, so the manifest always
@@ -57,9 +59,13 @@ From the rdm checkout:
 cargo run -q -p rdm-devtools --bin rdm-measure -- scbench run \
   --out bench/scbench/runs/<name> --dry-run
 
-# The paid run.
+# The paid run: every arm, one seed.
 cargo run -q -p rdm-devtools --bin rdm-measure -- scbench run \
   --out bench/scbench/runs/<name>
+
+# Two arms, three seeds each.
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench run \
+  --arms just-solve,full-lane --seeds 3 --out bench/scbench/runs/<name>
 ```
 
 `--out` is required and must be missing or empty. The runner refuses a used
@@ -67,6 +73,12 @@ directory, so a finished run is never overwritten.
 
 Other flags:
 
+- `--arms NAME[,NAME...]` (repeatable) runs only those manifest arms, always
+  in manifest order whatever order they are listed in; an unknown name is
+  refused before anything runs. The default is every arm.
+- `--seeds N` runs each selected arm with seeds 1 to N (default 1). The seed
+  reaches SCBench as its global `--seed` option:
+  `slop-code --seed <n> run ...` and `slop-code --seed <n> eval ...`.
 - `--manifest PATH` (default `bench/scbench/manifest.toml`)
 - `--cache-dir DIR` (default `bench/scbench/cache`)
 - `--uv-bin`, `--docker-bin`, `--claude-bin` to choose the executables
@@ -78,11 +90,17 @@ The runner:
 3. clones or fetches both pinned repositories under `--cache-dir` and checks
    out each pin
 4. copies the model file into the SCBench checkout
-5. runs each arm in manifest order
+5. for seed 1, runs each arm in manifest order, then does the same for seed
+   2, and so on; an interrupted run's finished seeds therefore cover every arm
 
-It stops at the first failing step with a non-zero exit. An arm failure is
-reported as `error: arm <name>: <run|eval> exited <code>`. Arms that already
-finished stay on disk.
+`--dry-run` also prints `seeds`, `selected_arms` and `projection`: the arms,
+seeds, per-problem checkpoint counts, `sessions` (arms × seeds × problems,
+one `slop-code` problem run each) and `checkpoint_runs`
+(arms × seeds × checkpoints).
+
+It stops at the first failing step with a non-zero exit. A unit failure is
+reported as `error: arm <name> seed <n>: <run|eval> exited <code>`. Units that
+already finished stay on disk.
 
 ### Run, then evaluate
 
@@ -95,7 +113,7 @@ paying for inference again. From the cached SCBench checkout:
 ```bash
 cd bench/scbench/cache/slop-code-bench
 SCBENCH_PROBLEMS_PATH="$PWD/../scb-problems" SCBENCH_HOME="$PWD/../scbench-home" \
-  uv run slop-code eval <out>/<arm>/output --overwrite
+  uv run slop-code --seed <n> eval <out>/<arm>/seed-<n>/output --overwrite
 ```
 
 ## Where output lands
@@ -109,22 +127,26 @@ bench/scbench/
   runs/<name>/                # --out; git-ignored under bench/scbench/runs
     rdm-scbench-run.json      # the run record
     <arm>/
-      agent.yaml              # the generated agent config
+      agent.yaml              # the generated agent config, shared by the seeds
       docker.j2               # rdm arms only: the rendered agent template
       prompt.jinja            # prompt_from = "manifest" arms: the rendered prompt
-      run.yaml                # the generated run config
-      output/                 # SCBench's own run directory, layout untouched
-      plan-repos/<problem>/<checkpoint>/  # rdm arms only: each checkpoint's plan repo
+      seed-<n>/               # one per seed
+        run.yaml              # the generated run config (save_dir is seed-<n>)
+        output/               # SCBench's own run directory, layout untouched
+        plan-repos/<problem>/<checkpoint>/  # rdm arms only: each checkpoint's plan repo
 ```
 
 The run record `rdm-scbench-run.json` sits beside the arm directories, never
 inside SCBench's `output/` trees. It holds:
 
+- `schema: 2`, `seeds` (`[1, ..., n]`) and `selected_arms`
 - every manifest pin, and the manifest path
 - the rdm SHA
 - the observed `uv`, Docker and `claude` versions
 - the model file's source, installed path and SHA-256
-- each arm's `group`, generated configs and run directory
+- one entry per unit (arm and seed) in run order, with its `seed`, `group`,
+  generated configs and run directory, and `finished`: the time its eval
+  exited 0, `null` until then
 - for an rdm arm, each checkpoint's copied plan repo and lane
   classification (`lane`, see "Full-lane arm")
 - every command spawned, with its working directory, `SCBENCH_*`

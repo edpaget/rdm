@@ -185,6 +185,7 @@ sha = "{scbench_sha}"
 repo = "{problems_repo}"
 sha = "{problems_sha}"
 subset = ["mvvault", "xjq"]
+checkpoints = {{ mvvault = 3, xjq = 2 }}
 
 [agent]
 provider = "{provider}"
@@ -419,6 +420,37 @@ fn p(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// The fake `uv`'s argv for one unit: `arm` at `seed`, run then eval.
+fn unit_argvs(out: &Path, arm: &str, seed: u64, policy: &str) -> [Vec<String>; 2] {
+    let dir = out.join(arm).join(format!("seed-{seed}"));
+    let seed = seed.to_string();
+    let v = |x: &[&str]| x.iter().map(|&a| a.to_owned()).collect::<Vec<_>>();
+    [
+        v(&[
+            "run",
+            "slop-code",
+            "--seed",
+            &seed,
+            "run",
+            "--config",
+            &p(&dir.join("run.yaml")),
+            "--no-evaluate",
+            "--no-live-progress",
+        ]),
+        v(&[
+            "run",
+            "slop-code",
+            "--seed",
+            &seed,
+            "eval",
+            &p(&dir.join("output")),
+            "--pass-policy",
+            policy,
+            "--no-live-progress",
+        ]),
+    ]
+}
+
 /// The committed manifest's `--dry-run` plan, built against `cache` and `out`.
 fn committed_plan(cache: &Path, out: &Path) -> Value {
     let o = measure_support::run(&[
@@ -524,12 +556,14 @@ fn committed_ladder_arms_construct_their_invocations() {
         let ctx = rung.name;
         assert_eq!(arm["group"], rung.group, "{ctx}");
         assert_eq!(arm["image"], rung.image, "{ctx}");
-        let run_yaml = out.join(rung.name).join("run.yaml");
+        let run_yaml = out.join(rung.name).join("seed-1/run.yaml");
         assert_eq!(
             strs(&arm["run"]["args"]),
             [
                 "run",
                 "slop-code",
+                "--seed",
+                "1",
                 "run",
                 "--config",
                 &p(&run_yaml),
@@ -652,46 +686,10 @@ fn model_file_is_installed_in_pinned_checkout() {
 fn runs_each_arm_in_order() {
     let b = Bench::new(&Spec::default());
     ok(&b.run(&[]));
-    let out = &b.out;
-    let expected: Vec<Vec<String>> = vec![
-        vec!["--version".into()],
-        vec![
-            "run".into(),
-            "slop-code".into(),
-            "run".into(),
-            "--config".into(),
-            p(&out.join("just-solve/run.yaml")),
-            "--no-evaluate".into(),
-            "--no-live-progress".into(),
-        ],
-        vec![
-            "run".into(),
-            "slop-code".into(),
-            "eval".into(),
-            p(&out.join("just-solve/output")),
-            "--pass-policy".into(),
-            "all-cases".into(),
-            "--no-live-progress".into(),
-        ],
-        vec![
-            "run".into(),
-            "slop-code".into(),
-            "run".into(),
-            "--config".into(),
-            p(&out.join("anti_slop/run.yaml")),
-            "--no-evaluate".into(),
-            "--no-live-progress".into(),
-        ],
-        vec![
-            "run".into(),
-            "slop-code".into(),
-            "eval".into(),
-            p(&out.join("anti_slop/output")),
-            "--pass-policy".into(),
-            "all-cases".into(),
-            "--no-live-progress".into(),
-        ],
-    ];
+    let mut expected = vec![vec!["--version".to_owned()]];
+    for arm in ["just-solve", "anti_slop"] {
+        expected.extend(unit_argvs(&b.out, arm, 1, "all-cases"));
+    }
     assert_eq!(b.argvs("uv"), expected);
     for call in &b.calls("uv").expect("uv called")[1..] {
         assert_eq!(call["cwd"], p(&b.scbench_dir()));
@@ -705,6 +703,103 @@ fn runs_each_arm_in_order() {
     }
 }
 
+/// The record's units as `(arm, seed)` pairs, in record order.
+fn units(record: &Value) -> Vec<(String, u64)> {
+    record["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .map(|a| {
+            (
+                a["name"].as_str().expect("name").to_owned(),
+                a["seed"].as_u64().expect("seed"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn run_seeds_run_each_selected_arm_per_seed() {
+    let b = Bench::new(&Spec::default());
+    ok(&b.run(&["--arms", "just-solve,anti_slop", "--seeds", "3"]));
+    let mut expected = vec![vec!["--version".to_owned()]];
+    for seed in 1..=3 {
+        for arm in ["just-solve", "anti_slop"] {
+            expected.extend(unit_argvs(&b.out, arm, seed, "all-cases"));
+            let run_yaml = read_json(&b.out.join(arm).join(format!("seed-{seed}/run.yaml")));
+            assert_eq!(
+                run_yaml["save_dir"],
+                p(&b.out.join(arm).join(format!("seed-{seed}")))
+            );
+            assert_eq!(run_yaml["problems"], json!(["mvvault", "xjq"]));
+        }
+    }
+    assert_eq!(b.argvs("uv"), expected);
+
+    let record = b.record();
+    assert_eq!(record["schema"], 2);
+    assert_eq!(record["seeds"], json!([1, 2, 3]));
+    assert_eq!(record["selected_arms"], json!(["just-solve", "anti_slop"]));
+    let arms = record["arms"].as_array().expect("arms");
+    assert_eq!(arms.len(), 6);
+    for (seed, arm) in (1..=3).flat_map(|s| ["just-solve", "anti_slop"].map(|a| (s, a))) {
+        let unit = arms
+            .iter()
+            .find(|a| a["name"] == arm && a["seed"] == seed)
+            .unwrap_or_else(|| panic!("no unit {arm} seed {seed}"));
+        assert_eq!(
+            unit["run_dir"],
+            p(&b.out.join(arm).join(format!("seed-{seed}/output")))
+        );
+        assert!(unit["finished"].is_string(), "{unit}");
+    }
+}
+
+#[test]
+fn run_arms_selects_a_subset_in_manifest_order() {
+    let b = Bench::new(&Spec::default());
+    ok(&b.run(&["--arms", "anti_slop,just-solve", "--seeds", "3"]));
+    let order: Vec<(String, u64)> = (1..=3)
+        .flat_map(|s| ["just-solve", "anti_slop"].map(|a| (a.to_owned(), s)))
+        .collect();
+    assert_eq!(units(&b.record()), order);
+
+    let second = b.root.join("out2");
+    ok(&b.run_into(&second, &["--arms", "anti_slop"]));
+    let record = b.record_at(&second);
+    assert_eq!(units(&record), [("anti_slop".to_owned(), 1)]);
+    assert_eq!(record["selected_arms"], json!(["anti_slop"]));
+    assert!(!second.join("just-solve").exists());
+    let spawned_just_solve = b.argvs("uv").iter().any(|a| {
+        a.iter()
+            .any(|x| x.starts_with(&p(&second.join("just-solve"))))
+    });
+    assert!(!spawned_just_solve, "{:?}", b.argvs("uv"));
+}
+
+#[test]
+fn run_refuses_an_unknown_arm_before_spawning() {
+    let b = Bench::new(&Spec::default());
+    let err = fails(&b.run(&["--arms", "just-solve,nope"]));
+    assert!(
+        err.contains("--arms") && err.contains("\"nope\"") && err.contains("just-solve, anti_slop"),
+        "stderr: {err}"
+    );
+    for role in ["uv", "docker", "claude"] {
+        assert!(b.calls(role).is_none(), "{role} was spawned");
+    }
+    assert!(!b.out.exists() && !b.cache.exists());
+}
+
+#[test]
+fn run_refuses_zero_seeds() {
+    let b = Bench::new(&Spec::default());
+    let err = fails(&b.run(&["--seeds", "0"]));
+    assert!(err.contains("--seeds"), "stderr: {err}");
+    assert!(b.calls("uv").is_none());
+    assert!(!b.out.exists());
+}
+
 #[test]
 fn failing_step_stops_and_names_arm() {
     let b = Bench::new(&Spec::default());
@@ -713,20 +808,44 @@ fn failing_step_stops_and_names_arm() {
         &json!({ "default": { "exit": 0 } }),
         &[
             (&["--version"], json!({ "stdout": "uv 0.0.0-fake\n" })),
-            (&["anti_slop/run.yaml"], json!({ "exit": 3 })),
+            (&["anti_slop/seed-1/run.yaml"], json!({ "exit": 3 })),
         ],
     );
     let err = fails(&b.run(&[]));
-    assert!(err.contains("anti_slop"), "stderr: {err}");
+    assert!(
+        err.contains("arm anti_slop seed 1: run exited 3"),
+        "stderr: {err}"
+    );
     let argvs = b.argvs("uv");
     assert_eq!(argvs.len(), 4, "{argvs:?}");
-    assert!(argvs[1].iter().any(|a| a.ends_with("just-solve/run.yaml")));
-    assert!(argvs[2].iter().any(|a| a.ends_with("just-solve/output")));
-    assert!(argvs[3].iter().any(|a| a.ends_with("anti_slop/run.yaml")));
+    assert!(
+        argvs[1]
+            .iter()
+            .any(|a| a.ends_with("just-solve/seed-1/run.yaml"))
+    );
+    assert!(
+        argvs[2]
+            .iter()
+            .any(|a| a.ends_with("just-solve/seed-1/output"))
+    );
+    assert!(
+        argvs[3]
+            .iter()
+            .any(|a| a.ends_with("anti_slop/seed-1/run.yaml"))
+    );
     assert!(
         !argvs
             .iter()
-            .any(|a| a.iter().any(|x| x.ends_with("anti_slop/output")))
+            .any(|a| a.iter().any(|x| x.ends_with("anti_slop/seed-1/output")))
+    );
+    assert_eq!(
+        b.record()["arms"]
+            .as_array()
+            .expect("arms")
+            .iter()
+            .map(|a| (a["name"].clone(), a["finished"].is_string()))
+            .collect::<Vec<_>>(),
+        [(json!("just-solve"), true), (json!("anti_slop"), false)]
     );
     let record = b.record();
     let last = record["commands"]
@@ -1026,10 +1145,12 @@ fn rdm_arm_invocation_uses_rdm_agent_config() {
     });
     ok(&b.run(&[]));
     let arm_dir = b.out.join("just-solve-rdm");
-    let run_yaml = arm_dir.join("run.yaml");
+    let run_yaml = arm_dir.join("seed-1/run.yaml");
     let want: Vec<String> = [
         "run",
         "slop-code",
+        "--seed",
+        "1",
         "run",
         "--config",
         &p(&run_yaml),
@@ -1389,10 +1510,12 @@ fn full_lane_invocation_uses_rdm_image_template_and_arm_limits() {
     });
     ok(&b.run(&[]));
     let arm_dir = b.out.join("full-lane");
-    let run_yaml = arm_dir.join("run.yaml");
+    let run_yaml = arm_dir.join("seed-1/run.yaml");
     let want: Vec<String> = [
         "run",
         "slop-code",
+        "--seed",
+        "1",
         "run",
         "--config",
         &p(&run_yaml),
@@ -1430,7 +1553,7 @@ fn full_lane_invocation_uses_rdm_image_template_and_arm_limits() {
 
     let stock = read_json(&b.out.join("just-solve/agent.yaml"));
     assert_eq!(stock["cost_limits"]["step_limit"], 7);
-    let stock_run = read_json(&b.out.join("just-solve/run.yaml"));
+    let stock_run = read_json(&b.out.join("just-solve/seed-1/run.yaml"));
     assert_eq!(
         stock_run["prompt"],
         p(&b.scbench_dir().join("configs/prompts/just-solve.jinja"))
@@ -1565,38 +1688,57 @@ struct Checkpoint {
 
 /// A full-lane bench whose fake `uv` run of the full-lane arm leaves
 /// `checkpoints` in SCBench's output layout, written out literally:
-/// `<out>/full-lane/output/<problem>/<checkpoint>/checkpoint.yaml` and
-/// `.../agent/workspace/projects/-workspace/rdm-plan/<n>.tar`.
+/// `<out>/full-lane/seed-1/output/<problem>/<checkpoint>/checkpoint.yaml`
+/// and `.../agent/workspace/projects/-workspace/rdm-plan/<n>.tar`.
 fn full_lane_bench(b: &Bench, checkpoints: &[Checkpoint]) {
+    full_lane_bench_seeds(b, &[(1, checkpoints)]);
+}
+
+/// [`full_lane_bench`] for several seeds: each seed's run of the full-lane
+/// arm (matched by its own `seed-<n>/run.yaml`) leaves its own checkpoints
+/// under `<out>/full-lane/seed-<n>/output/`.
+fn full_lane_bench_seeds(b: &Bench, seeds: &[(u64, &[Checkpoint])]) {
     let staged = b.root.join("staged");
-    let output = b.out.join("full-lane/output");
-    let mut place = Vec::new();
-    for c in checkpoints {
-        let yaml = staged.join(format!("{}-{}.yaml", c.problem, c.name));
-        write(
-            &yaml,
-            &format!(
-                "name: {}\norder: {}\nstate: Core Tests\nspecification: spec.md\n",
-                c.name, c.order
-            ),
-        );
-        let dir = output.join(c.problem).join(c.name);
-        place.push(json!({ "from": yaml, "to": dir.join("checkpoint.yaml") }));
-        for (file, tar) in &c.tars {
-            let to = dir
-                .join("agent/workspace/projects/-workspace/rdm-plan")
-                .join(file);
-            place.push(json!({ "from": tar, "to": to }));
+    let mut responses: Vec<(Vec<String>, Value)> = vec![(
+        vec!["--version".to_owned()],
+        json!({ "stdout": "uv 0.0.0-fake\n" }),
+    )];
+    for (seed, checkpoints) in seeds {
+        let output = b.out.join(format!("full-lane/seed-{seed}/output"));
+        let mut place = Vec::new();
+        for c in *checkpoints {
+            let yaml = staged.join(format!("{seed}-{}-{}.yaml", c.problem, c.name));
+            write(
+                &yaml,
+                &format!(
+                    "name: {}\norder: {}\nstate: Core Tests\nspecification: spec.md\n",
+                    c.name, c.order
+                ),
+            );
+            let dir = output.join(c.problem).join(c.name);
+            place.push(json!({ "from": yaml, "to": dir.join("checkpoint.yaml") }));
+            for (file, tar) in &c.tars {
+                let to = dir
+                    .join("agent/workspace/projects/-workspace/rdm-plan")
+                    .join(file);
+                place.push(json!({ "from": tar, "to": to }));
+            }
         }
+        responses.push((
+            vec![format!("full-lane/seed-{seed}/run.yaml")],
+            json!({ "place": place }),
+        ));
     }
-    b.scenario(
-        "uv",
-        &json!({ "default": { "exit": 0 } }),
-        &[
-            (&["--version"], json!({ "stdout": "uv 0.0.0-fake\n" })),
-            (&["full-lane/run.yaml"], json!({ "place": place })),
-        ],
-    );
+    let needles: Vec<Vec<&str>> = responses
+        .iter()
+        .map(|(n, _)| n.iter().map(String::as_str).collect())
+        .collect();
+    let responses: Vec<(&[&str], Value)> = needles
+        .iter()
+        .zip(&responses)
+        .map(|(n, (_, r))| (n.as_slice(), r.clone()))
+        .collect();
+    b.scenario("uv", &json!({ "default": { "exit": 0 } }), &responses);
 }
 
 fn full_lane_spec() -> Spec {
@@ -1673,7 +1815,7 @@ fn has_path_named(dir: &Path, name: &str) -> bool {
 #[test]
 fn full_lane_run_copies_plan_repos_next_to_output() {
     let b = copy_out_run();
-    let repos = b.out.join("full-lane/plan-repos");
+    let repos = b.out.join("full-lane/seed-1/plan-repos");
     let cp2 = repos.join("mvvault/checkpoint_2");
     assert!(cp2.join("MARKER-000003").is_file());
     assert!(!cp2.join("MARKER-000002").exists());
@@ -1681,7 +1823,7 @@ fn full_lane_run_copies_plan_repos_next_to_output() {
     assert!(repos.join("mvvault/checkpoint_1/MARKER-000001").is_file());
     assert!(repos.join("xjq/checkpoint_1/MARKER-XJQ-1").is_file());
     assert!(!has_path_named(
-        &b.out.join("full-lane/output"),
+        &b.out.join("full-lane/seed-1/output"),
         "plan-repos"
     ));
 
@@ -1710,8 +1852,8 @@ fn full_lane_run_copies_plan_repos_next_to_output() {
     let at = |pred: &dyn Fn(&[String]) -> bool| {
         argvs.iter().position(|a| pred(a)).expect("command present")
     };
-    let run = at(&|a| a.iter().any(|x| x.ends_with("full-lane/run.yaml")));
-    let eval = at(&|a| a.iter().any(|x| x.ends_with("full-lane/output")));
+    let run = at(&|a| a.iter().any(|x| x.ends_with("full-lane/seed-1/run.yaml")));
+    let eval = at(&|a| a.iter().any(|x| x.ends_with("full-lane/seed-1/output")));
     let tars: Vec<usize> = argvs
         .iter()
         .enumerate()
@@ -1720,7 +1862,7 @@ fn full_lane_run_copies_plan_repos_next_to_output() {
         .collect();
     assert_eq!(tars.len(), 3, "{argvs:?}");
     assert!(tars.iter().all(|&i| run < i && i < eval), "{argvs:?}");
-    let output = b.out.join("full-lane/output");
+    let output = b.out.join("full-lane/seed-1/output");
     let export = "agent/workspace/projects/-workspace/rdm-plan";
     assert_eq!(
         argvs[tars[1]],
@@ -1742,7 +1884,7 @@ fn stock_arm_has_no_lane_record() {
     let b = copy_out_run();
     let record = b.record();
     assert_eq!(arm_record(&record, "just-solve")["lane"], Value::Null);
-    assert!(!b.out.join("just-solve/plan-repos").exists());
+    assert!(!b.out.join("just-solve/seed-1/plan-repos").exists());
 }
 
 #[test]
@@ -1782,12 +1924,12 @@ fn full_lane_classifies_each_checkpoint() {
     let o = b.run(&[]);
     ok(&o);
     assert!(
-        stderr(&o).contains("scbench run: full-lane: 1/6 checkpoints landed"),
+        stderr(&o).contains("scbench run: full-lane seed 1: 1/6 checkpoints landed"),
         "{}",
         stderr(&o)
     );
 
-    let repos = b.out.join("full-lane/plan-repos");
+    let repos = b.out.join("full-lane/seed-1/plan-repos");
     let at = |problem: &str, name: &str| json!(p(&repos.join(problem).join(name)));
     let row = |problem: &str,
                name: &str,
@@ -1859,7 +2001,7 @@ fn failed_extraction_stops_before_eval() {
     let err = fails(&b.run(&[]));
     let placed = b
         .out
-        .join("full-lane/output/mvvault/checkpoint_1")
+        .join("full-lane/seed-1/output/mvvault/checkpoint_1")
         .join("agent/workspace/projects/-workspace/rdm-plan/000001.tar");
     // The exit code is tar's own (bsdtar 1, GNU tar 2).
     let want = format!("arm full-lane: extracting {} exited ", p(&placed));
@@ -1867,14 +2009,14 @@ fn failed_extraction_stops_before_eval() {
     assert!(
         b.argvs("uv")
             .iter()
-            .any(|a| a.iter().any(|x| x.ends_with("full-lane/run.yaml"))),
+            .any(|a| a.iter().any(|x| x.ends_with("full-lane/seed-1/run.yaml"))),
         "{:?}",
         b.argvs("uv")
     );
     assert!(
         !b.argvs("uv")
             .iter()
-            .any(|a| a.iter().any(|x| x.ends_with("full-lane/output"))),
+            .any(|a| a.iter().any(|x| x.ends_with("full-lane/seed-1/output"))),
         "eval ran: {:?}",
         b.argvs("uv")
     );
@@ -1963,7 +2105,7 @@ fn unreadable_plan_repo_keeps_previous_phases() {
     let detail = rows[1]["detail"].as_str().expect("unreadable detail");
     assert!(detail.contains("phase-2-corrupt"), "{}", rows[1]);
     assert_eq!(rows[1]["status"], Value::Null);
-    let repos = b.out.join("full-lane/plan-repos/mvvault");
+    let repos = b.out.join("full-lane/seed-1/plan-repos/mvvault");
     assert_eq!(rows[1]["plan_repo"], json!(p(&repos.join("checkpoint_2"))));
     assert_eq!(
         lane["problems"][0]["plan_repo"],
@@ -1991,4 +2133,58 @@ fn missing_manifest_prompt_fails_before_any_spawn() {
         assert!(!b.cache.exists(), "{extra:?}: --cache-dir was created");
         assert!(!b.out.exists(), "{extra:?}: --out was created");
     }
+}
+
+#[test]
+fn rdm_arm_collects_plan_repos_per_seed() {
+    use rdm_core::model::PhaseStatus::{Blocked, Done};
+    let b = Bench::new(&full_lane_spec());
+    let home = b.home();
+    let tars = b.root.join("tars");
+    let mut one = PlanRepo::new(&home, &b.root.join("fixture/seed-1"));
+    one.add(1, Done, None);
+    let t1 = one.snapshot(&tars.join("s1.tar"), "SEED-1");
+    let mut two = PlanRepo::new(&home, &b.root.join("fixture/seed-2"));
+    two.add(1, Blocked, Some("[plan] escalated"));
+    let t2 = two.snapshot(&tars.join("s2.tar"), "SEED-2");
+    let cp = |tar: &PathBuf| {
+        vec![Checkpoint {
+            problem: "mvvault",
+            name: "checkpoint_1",
+            order: 1,
+            tars: vec![("000001.tar", tar.clone())],
+        }]
+    };
+    let (c1, c2) = (cp(&t1), cp(&t2));
+    full_lane_bench_seeds(&b, &[(1, &c1), (2, &c2)]);
+    let o = b.run(&["--arms", "full-lane", "--seeds", "2"]);
+    ok(&o);
+    for seed in [1, 2] {
+        let line = format!(
+            "scbench run: full-lane seed {seed}: {}/1 checkpoints landed",
+            2 - seed
+        );
+        assert!(stderr(&o).contains(&line), "{}", stderr(&o));
+        let repo = b.out.join(format!(
+            "full-lane/seed-{seed}/plan-repos/mvvault/checkpoint_1"
+        ));
+        assert!(repo.join(format!("SEED-{seed}")).is_file(), "seed {seed}");
+    }
+    let record = b.record();
+    let lane = |seed: u64| {
+        record["arms"]
+            .as_array()
+            .expect("arms")
+            .iter()
+            .find(|a| a["name"] == "full-lane" && a["seed"] == seed)
+            .expect("unit")["lane"]["problems"][0]["checkpoints"][0]
+            .clone()
+    };
+    assert_eq!(lane(1)["outcome"], "landed");
+    assert_eq!(lane(2)["reason"], "parked");
+    assert_eq!(
+        lane(2)["plan_repo"],
+        p(&b.out
+            .join("full-lane/seed-2/plan-repos/mvvault/checkpoint_1"))
+    );
 }

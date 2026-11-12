@@ -1,7 +1,7 @@
 //! The pinned SCBench manifest (`bench/scbench/manifest.toml`): every value a
 //! result depends on, parsed strictly and validated before anything runs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,11 @@ pub struct Problems {
     pub sha: String,
     /// The problem names to run, in order.
     pub subset: Vec<String>,
+    /// Each subset problem's checkpoint count, pinned with [`Problems::sha`]
+    /// (the problem's `config.yaml` `checkpoints:`); its keys are exactly
+    /// [`Problems::subset`]. It sizes the projected run count and floors the
+    /// report's pass-rate denominator.
+    pub checkpoints: BTreeMap<String, u64>,
 }
 
 /// Agent, model and evaluation settings.
@@ -240,6 +245,41 @@ impl Manifest {
             .ok_or_else(|| "rdm: scbench image needs an [rdm] table".to_owned())
     }
 
+    /// A copy holding only the arms `names` selects, in manifest order
+    /// (duplicates collapse); `None` selects every arm.
+    ///
+    /// # Errors
+    ///
+    /// When a name is not a manifest arm, or `names` selects none; the
+    /// message names the flag (`--arms`), the name and the manifest's arms.
+    pub fn select_arms(&self, names: Option<&[String]>) -> Result<Self, String> {
+        let Some(names) = names else {
+            return Ok(self.clone());
+        };
+        let known = || {
+            self.arms
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if names.is_empty() {
+            return Err(format!("--arms: no arm selected; arms: {}", known()));
+        }
+        if let Some(unknown) = names
+            .iter()
+            .find(|n| !self.arms.iter().any(|a| &a.name == *n))
+        {
+            return Err(format!(
+                "--arms: no arm \"{unknown}\" in the manifest; arms: {}",
+                known()
+            ));
+        }
+        let mut selected = self.clone();
+        selected.arms.retain(|a| names.contains(&a.name));
+        Ok(selected)
+    }
+
     /// The absolute path of `arm`'s prompt when it is a
     /// [`PromptFrom::Manifest`] prompt; `None` for an SCBench prompt.
     pub fn manifest_prompt_source(&self, arm: &Arm) -> Option<PathBuf> {
@@ -290,6 +330,31 @@ impl Manifest {
         }
         if self.problems.subset.iter().any(|p| p.trim().is_empty()) {
             return Err("problems.subset must not contain an empty name".to_owned());
+        }
+        for problem in &self.problems.subset {
+            match self.problems.checkpoints.get(problem) {
+                None => {
+                    return Err(format!(
+                        "problems.checkpoints has no count for subset problem \"{problem}\""
+                    ));
+                }
+                Some(0) => {
+                    return Err(format!(
+                        "problems.checkpoints of problem \"{problem}\" must be at least 1"
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some(extra) = self
+            .problems
+            .checkpoints
+            .keys()
+            .find(|k| !self.problems.subset.contains(k))
+        {
+            return Err(format!(
+                "problems.checkpoints names \"{extra}\", which is not in problems.subset"
+            ));
         }
         if self.arms.is_empty() {
             return Err("arm: the manifest must define at least one [[arm]]".to_owned());
@@ -380,6 +445,7 @@ sha = "{SHA_A}"
 repo = "https://example.invalid/problems"
 sha = "{SHA_B}"
 subset = ["mvvault", "xjq"]
+checkpoints = {{ mvvault = 6, xjq = 5 }}
 
 [agent]
 provider = "claude_code_oauth"
@@ -646,6 +712,82 @@ prompt = "configs/prompts/anti_slop.jinja"
             ),
             "group",
         );
+    }
+
+    #[test]
+    fn checkpoints_parse_per_problem() {
+        let m = parse(&text()).expect("valid");
+        assert_eq!(
+            m.problems.checkpoints,
+            BTreeMap::from([("mvvault".to_owned(), 6), ("xjq".to_owned(), 5)])
+        );
+    }
+
+    #[test]
+    fn checkpoints_missing_a_subset_problem_fails() {
+        let e =
+            parse(&text().replace("mvvault = 6, xjq = 5", "mvvault = 6")).expect_err("must fail");
+        assert!(
+            e.contains("problems.checkpoints") && e.contains("xjq"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn checkpoints_naming_a_problem_outside_the_subset_fails() {
+        let e = parse(&text().replace("xjq = 5", "xjq = 5, other = 2")).expect_err("must fail");
+        assert!(
+            e.contains("problems.checkpoints") && e.contains("other"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn zero_checkpoints_fails() {
+        let e = parse(&text().replace("xjq = 5", "xjq = 0")).expect_err("must fail");
+        assert!(
+            e.contains("problems.checkpoints") && e.contains("xjq"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn missing_checkpoints_fails() {
+        fails_naming(
+            &text().replace("checkpoints = { mvvault = 6, xjq = 5 }\n", ""),
+            "checkpoints",
+        );
+    }
+
+    fn arm_names(m: &Manifest) -> Vec<&str> {
+        m.arms.iter().map(|a| a.name.as_str()).collect()
+    }
+
+    #[test]
+    fn select_arms_keeps_manifest_order_and_collapses_duplicates() {
+        let m = parse(&text()).expect("valid");
+        let names = ["anti_slop", "just-solve", "anti_slop"].map(str::to_owned);
+        let picked = m.select_arms(Some(&names)).expect("selected");
+        assert_eq!(arm_names(&picked), ["just-solve", "anti_slop"]);
+        let one = m
+            .select_arms(Some(&["anti_slop".to_owned()]))
+            .expect("selected");
+        assert_eq!(arm_names(&one), ["anti_slop"]);
+        assert_eq!(m.select_arms(None).expect("all"), m);
+    }
+
+    #[test]
+    fn select_arms_refuses_an_unknown_or_empty_selection() {
+        let m = parse(&text()).expect("valid");
+        let e = m
+            .select_arms(Some(&["nope".to_owned()]))
+            .expect_err("unknown");
+        assert!(
+            e.contains("--arms") && e.contains("\"nope\"") && e.contains("just-solve, anti_slop"),
+            "{e}"
+        );
+        let e = m.select_arms(Some(&[])).expect_err("empty");
+        assert!(e.contains("--arms"), "{e}");
     }
 
     #[test]

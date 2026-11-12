@@ -106,11 +106,16 @@ pub struct ModelCopy {
     pub installed: PathBuf,
 }
 
-/// One arm's generated configs and commands.
+/// One unit of a run: one arm at one seed, with its generated configs and
+/// commands. The agent config, agent template and prompt are the arm's,
+/// shared by its seeds; the run config, run directory and plan repos are the
+/// seed's own.
 #[derive(Debug, Clone, Serialize)]
 pub struct ArmPlan {
     /// The arm name.
     pub name: String,
+    /// The SCBench seed (`slop-code --seed <n>`) this unit runs with.
+    pub seed: u64,
     /// The agent image the arm runs in.
     pub image: ArmImage,
     /// The arm's treatment group ([`super::manifest::Arm::group`]).
@@ -119,7 +124,7 @@ pub struct ArmPlan {
     pub agent_config_path: PathBuf,
     /// The agent config written there.
     pub agent_config: Value,
-    /// `<out>/<arm>/run.yaml`.
+    /// `<out>/<arm>/seed-<n>/run.yaml`.
     pub run_config_path: PathBuf,
     /// The run config written there.
     pub run_config: Value,
@@ -133,14 +138,15 @@ pub struct ArmPlan {
     /// The prompt written there, its `@RDM_...@` placeholders filled
     /// ([`lane::render_prompt`]); SCBench's Jinja renders the rest.
     pub prompt: Option<String>,
-    /// `<out>/<arm>/plan-repos`, for an rdm arm: where the runner copies each
-    /// checkpoint's plan repo (`lane::collect`).
+    /// `<out>/<arm>/seed-<n>/plan-repos`, for an rdm arm: where the runner
+    /// copies each checkpoint's plan repo (`lane::collect`).
     pub plan_repos_dir: Option<PathBuf>,
-    /// SCBench's own output directory for the arm (`<out>/<arm>/output`).
+    /// SCBench's own output directory for the unit
+    /// (`<out>/<arm>/seed-<n>/output`).
     pub run_dir: PathBuf,
-    /// `uv run slop-code run ...`.
+    /// `uv run slop-code --seed <n> run ...`.
     pub run: CommandSpec,
-    /// `uv run slop-code eval ...`.
+    /// `uv run slop-code --seed <n> eval ...`.
     pub eval: CommandSpec,
 }
 
@@ -157,7 +163,8 @@ pub struct RunPlan {
     pub problems: Checkout,
     /// The model-file copy.
     pub model_file: ModelCopy,
-    /// The arms, in manifest order.
+    /// The units in seed-major order: every arm (in manifest order) for the
+    /// first seed, then every arm for the next.
     pub arms: Vec<ArmPlan>,
     /// The run record's path (`<out>/rdm-scbench-run.json`).
     pub record_path: PathBuf,
@@ -165,6 +172,60 @@ pub struct RunPlan {
 
 /// The run record's file name, beside the arm directories.
 pub const RECORD_FILE: &str = "rdm-scbench-run.json";
+
+/// How many SCBench runs a manifest's arms and a seed count make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Projection {
+    /// The arms run.
+    pub arms: u64,
+    /// The seeds each arm runs with.
+    pub seeds: u64,
+    /// Each problem's checkpoint count (`[problems] checkpoints`).
+    pub problems: BTreeMap<String, u64>,
+    /// The checkpoints over the subset (the sum of `problems`).
+    pub checkpoints: u64,
+    /// The `slop-code` problem sessions: arms x seeds x problems.
+    pub sessions: u64,
+    /// The agent checkpoint runs: arms x seeds x checkpoints.
+    pub checkpoint_runs: u64,
+}
+
+/// The projected run count of `manifest`'s arms over `seeds` seeds.
+pub fn projection(manifest: &Manifest, seeds: u64) -> Projection {
+    let arms = manifest.arms.len() as u64;
+    let problems: BTreeMap<String, u64> = manifest
+        .problems
+        .subset
+        .iter()
+        .map(|p| {
+            (
+                p.clone(),
+                manifest.problems.checkpoints.get(p).copied().unwrap_or(0),
+            )
+        })
+        .collect();
+    let checkpoints = problems.values().sum();
+    Projection {
+        arms,
+        seeds,
+        sessions: arms * seeds * problems.len() as u64,
+        checkpoint_runs: arms * seeds * checkpoints,
+        checkpoints,
+        problems,
+    }
+}
+
+/// The version probes a run (and the ladder's preflight) spawns.
+pub fn probes(tools: &Tools) -> Probes {
+    Probes {
+        uv: CommandSpec::new(&tools.uv, &["--version"]),
+        docker: CommandSpec::new(
+            &tools.docker,
+            &["version", "--format", "{{.Server.Version}}"],
+        ),
+        claude: CommandSpec::new(&tools.claude, &["--version"]),
+    }
+}
 
 fn s(p: &Path) -> String {
     p.display().to_string()
@@ -216,7 +277,8 @@ fn checkout(repo: &str, sha: &str, dir: PathBuf) -> Checkout {
     }
 }
 
-/// Builds the plan for `manifest` against `paths`, invoking `tools`.
+/// Builds the plan for `manifest` against `paths`, invoking `tools`, with one
+/// unit per arm and seed in `seeds`, seed-major.
 ///
 /// `rdm_sha` is the rdm checkout's HEAD (`None` before it is resolved, as in
 /// `--dry-run`, where rdm arms show [`rdm_image::SHA_PLACEHOLDER`]).
@@ -228,6 +290,7 @@ pub fn build_plan(
     manifest: &Manifest,
     paths: &Paths,
     tools: &Tools,
+    seeds: &[u64],
     rdm_sha: Option<&str>,
     template: Option<&str>,
     prompts: &BTreeMap<String, String>,
@@ -247,14 +310,17 @@ pub fn build_plan(
         s(&paths.cache_dir.join("scbench-home")),
     );
     let a = &manifest.agent;
-    let arms = manifest
-        .arms
+    let units = seeds
         .iter()
-        .map(|arm| {
+        .flat_map(|&seed| manifest.arms.iter().map(move |arm| (seed, arm)));
+    let arms = units
+        .map(|(seed, arm)| {
             let dir = paths.out_dir.join(&arm.name);
+            let seed_dir = dir.join(format!("seed-{seed}"));
+            let seed_arg = seed.to_string();
             let agent_config_path = dir.join("agent.yaml");
-            let run_config_path = dir.join("run.yaml");
-            let run_dir = dir.join("output");
+            let run_config_path = seed_dir.join("run.yaml");
+            let run_dir = seed_dir.join("output");
             let limits = arm.limits(a);
             let (prompt_path, prompt) = match (prompts.get(&arm.name), &manifest.rdm) {
                 (Some(raw), Some(rdm)) if manifest.manifest_prompt_source(arm).is_some() => (
@@ -293,7 +359,7 @@ pub fn build_plan(
                 "thinking": a.thinking,
                 "pass_policy": a.pass_policy,
                 "problems": manifest.problems.subset,
-                "save_dir": s(&dir),
+                "save_dir": s(&seed_dir),
                 "save_template": "output",
             });
             let uv = |args: &[&str]| CommandSpec {
@@ -303,16 +369,19 @@ pub fn build_plan(
             };
             ArmPlan {
                 name: arm.name.clone(),
+                seed,
                 image: arm.image,
                 group: arm.group(),
                 docker_template_path,
                 docker_template,
                 prompt_path,
                 prompt,
-                plan_repos_dir: (arm.image == ArmImage::Rdm).then(|| dir.join("plan-repos")),
+                plan_repos_dir: (arm.image == ArmImage::Rdm).then(|| seed_dir.join("plan-repos")),
                 run: uv(&[
                     "run",
                     "slop-code",
+                    "--seed",
+                    &seed_arg,
                     "run",
                     "--config",
                     &s(&run_config_path),
@@ -322,6 +391,8 @@ pub fn build_plan(
                 eval: uv(&[
                     "run",
                     "slop-code",
+                    "--seed",
+                    &seed_arg,
                     "eval",
                     &s(&run_dir),
                     "--pass-policy",
@@ -338,14 +409,7 @@ pub fn build_plan(
         .collect();
     RunPlan {
         rdm_sha: rdm_sha_command(paths),
-        probes: Probes {
-            uv: CommandSpec::new(&tools.uv, &["--version"]),
-            docker: CommandSpec::new(
-                &tools.docker,
-                &["version", "--format", "{{.Server.Version}}"],
-            ),
-            claude: CommandSpec::new(&tools.claude, &["--version"]),
-        },
+        probes: probes(tools),
         scbench: scbench_checkout(manifest, &paths.cache_dir),
         problems: checkout(
             &manifest.problems.repo,
@@ -371,6 +435,7 @@ sha = "1111111111111111111111111111111111111111"
 repo = "R2"
 sha = "2222222222222222222222222222222222222222"
 subset = ["p1", "p2"]
+checkpoints = { p1 = 3, p2 = 2 }
 [agent]
 provider = "prov"
 model = "mod"
@@ -393,6 +458,10 @@ prompt = "configs/prompts/a2.jinja"
     }
 
     fn plan() -> RunPlan {
+        plan_with_seeds(&[1])
+    }
+
+    fn plan_with_seeds(seeds: &[u64]) -> RunPlan {
         build_plan(
             &manifest(),
             &Paths {
@@ -405,6 +474,7 @@ prompt = "configs/prompts/a2.jinja"
                 docker: "DOCKER".into(),
                 claude: "CLAUDE".into(),
             },
+            seeds,
             None,
             None,
             &BTreeMap::new(),
@@ -481,7 +551,8 @@ prompt = "configs/prompts/a2.jinja"
             "/c/slop-code-bench/configs/prompts/a1.jinja"
         );
         assert_eq!(a.run_config["agent"], "/o/a1/agent.yaml");
-        assert_eq!(a.run_config["save_dir"], "/o/a1");
+        assert_eq!(a.run_config["save_dir"], "/o/a1/seed-1");
+        assert_eq!(a.run_dir, PathBuf::from("/o/a1/seed-1/output"));
         assert_eq!(a.agent_config["version"], "9.9.9");
         assert_eq!(a.agent_config["cost_limits"]["step_limit"], 7);
         assert_eq!(
@@ -490,9 +561,11 @@ prompt = "configs/prompts/a2.jinja"
                 "UV",
                 "run",
                 "slop-code",
+                "--seed",
+                "1",
                 "run",
                 "--config",
-                "/o/a1/run.yaml",
+                "/o/a1/seed-1/run.yaml",
                 "--no-evaluate",
                 "--no-live-progress"
             ]
@@ -503,8 +576,10 @@ prompt = "configs/prompts/a2.jinja"
                 "UV",
                 "run",
                 "slop-code",
+                "--seed",
+                "1",
                 "eval",
-                "/o/a1/output",
+                "/o/a1/seed-1/output",
                 "--pass-policy",
                 "core-cases",
                 "--no-live-progress"
@@ -514,5 +589,44 @@ prompt = "configs/prompts/a2.jinja"
         assert_eq!(a.run.env["SCBENCH_PROBLEMS_PATH"], "/c/scb-problems");
         assert_eq!(a.eval.env["SCBENCH_HOME"], "/c/scbench-home");
         assert_eq!(p.record_path, PathBuf::from("/o/rdm-scbench-run.json"));
+    }
+
+    #[test]
+    fn units_are_seed_major_with_per_seed_paths() {
+        let p = plan_with_seeds(&[1, 2, 3]);
+        let units: Vec<(u64, &str)> = p.arms.iter().map(|a| (a.seed, a.name.as_str())).collect();
+        assert_eq!(
+            units,
+            [
+                (1, "a1"),
+                (1, "a2"),
+                (2, "a1"),
+                (2, "a2"),
+                (3, "a1"),
+                (3, "a2")
+            ]
+        );
+        let a = &p.arms[3];
+        assert_eq!(a.agent_config_path, PathBuf::from("/o/a2/agent.yaml"));
+        assert_eq!(a.run_config_path, PathBuf::from("/o/a2/seed-2/run.yaml"));
+        assert_eq!(a.run_config["save_dir"], "/o/a2/seed-2");
+        assert_eq!(a.run_dir, PathBuf::from("/o/a2/seed-2/output"));
+        assert_eq!(&a.eval.args[..4], ["run", "slop-code", "--seed", "2"]);
+    }
+
+    #[test]
+    fn projection_multiplies_arms_seeds_and_checkpoints() {
+        let got = projection(&manifest(), 3);
+        assert_eq!(
+            got,
+            Projection {
+                arms: 2,
+                seeds: 3,
+                problems: BTreeMap::from([("p1".to_owned(), 3), ("p2".to_owned(), 2)]),
+                checkpoints: 5,
+                sessions: 12,
+                checkpoint_runs: 30,
+            }
+        );
     }
 }

@@ -4,12 +4,14 @@
 //! rdm-equipped agent image an `image = "rdm"` arm runs in ([`image`]).
 //!
 //! COST WARNING: `scbench run` without `--dry-run` runs paid Claude Code
-//! agents in Docker (arms x problems x checkpoints). `--dry-run` prints the
-//! plan and spawns nothing.
+//! agents in Docker (arms x seeds x problems x checkpoints). `--dry-run`
+//! prints the plan and its projected run count ([`plan::projection`]) and
+//! spawns nothing.
 //!
 //! A run, in order:
 //!
-//! 1. loads and validates the manifest ([`manifest`]);
+//! 1. loads and validates the manifest ([`manifest`]) and keeps the arms
+//!    `--arms` selects ([`Manifest::select_arms`]);
 //! 2. refuses an `--out` that exists and is non-empty;
 //! 3. with `--dry-run`, prints the plan ([`plan`]) as JSON and stops;
 //! 4. resolves the rdm SHA (`git -C <manifest dir> rev-parse HEAD`);
@@ -19,12 +21,16 @@
 //!    `<scbench>/configs/models/` (rdm's only addition to the checkout);
 //! 7. for rdm arms, reads the SCBench environment's graded directory
 //!    ([`environment`]) and refuses a `[rdm] plan_root` inside it;
-//! 8. for each arm, writes its agent and run configs (for an rdm arm, its
-//!    rendered agent template, [`rdm_image`]; for a `prompt_from =
-//!    "manifest"` arm, its rendered `prompt.jinja`, [`lane::render_prompt`]),
-//!    then runs `uv run slop-code run --no-evaluate`; for an rdm arm, copies
-//!    each checkpoint's plan repo to `<out>/<arm>/plan-repos/` and classifies
-//!    the checkpoint ([`lane`]); then runs `uv run slop-code eval`.
+//! 8. for each seed, then each arm (seed-major, so the finished seeds of an
+//!    interrupted run cover every arm): writes the arm's agent config once
+//!    (for an rdm arm, its rendered agent template, [`rdm_image`]; for a
+//!    `prompt_from = "manifest"` arm, its rendered `prompt.jinja`,
+//!    [`lane::render_prompt`]) and the unit's run config under
+//!    `<out>/<arm>/seed-<n>/`, then runs
+//!    `uv run slop-code --seed <n> run --no-evaluate`; for an rdm arm, copies
+//!    each checkpoint's plan repo to `<out>/<arm>/seed-<n>/plan-repos/` and
+//!    classifies the checkpoint ([`lane`]); then runs
+//!    `uv run slop-code --seed <n> eval`.
 //!
 //! The run record `<out>/rdm-scbench-run.json` ([`exec::RunRecord`]) is
 //! rewritten after every command, so a failed run still records the command
@@ -63,8 +69,30 @@ pub struct RunOptions {
     pub out: PathBuf,
     /// The executables to invoke.
     pub tools: Tools,
+    /// The arms to run (`--arms`); `None` runs every manifest arm.
+    pub arms: Option<Vec<String>>,
+    /// How many seeds each arm runs with (`1..=seeds`).
+    pub seeds: u64,
     /// Print the plan; spawn nothing and create nothing.
     pub dry_run: bool,
+}
+
+/// Refuses an `--out` that exists and is not empty.
+///
+/// # Errors
+///
+/// When `out` holds anything, naming it.
+fn refuse_used_out(out: &std::path::Path) -> Result<(), String> {
+    if out.exists() {
+        let used = std::fs::read_dir(out).map_or(true, |mut entries| entries.next().is_some());
+        if used {
+            return Err(format!(
+                "--out {} already exists and is not empty; choose a fresh directory",
+                out.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Runs `scbench run`, returning the process exit code.
@@ -78,17 +106,12 @@ pub fn run(
     stderr: &mut dyn Write,
 ) -> Result<u8, String> {
     let manifest_path = std::path::absolute(&opts.manifest).unwrap_or(opts.manifest.clone());
-    let manifest = Manifest::load(&manifest_path)?;
+    let manifest = Manifest::load(&manifest_path)?
+        .select_arms(opts.arms.as_deref())
+        .map_err(|e| format!("{e} ({})", manifest_path.display()))?;
+    let seeds: Vec<u64> = (1..=opts.seeds).collect();
     let out = std::path::absolute(&opts.out).unwrap_or(opts.out.clone());
-    if out.exists() {
-        let used = std::fs::read_dir(&out).map_or(true, |mut entries| entries.next().is_some());
-        if used {
-            return Err(format!(
-                "--out {} already exists and is not empty; choose a fresh directory",
-                out.display()
-            ));
-        }
-    }
+    refuse_used_out(&out)?;
     let paths = Paths {
         manifest_dir: manifest.dir.clone(),
         cache_dir: std::path::absolute(&opts.cache_dir).unwrap_or(opts.cache_dir.clone()),
@@ -121,14 +144,19 @@ pub fn run(
             &manifest,
             &paths,
             &opts.tools,
+            &seeds,
             None,
             template.as_deref(),
             &prompts,
         );
+        let selected: Vec<&str> = manifest.arms.iter().map(|a| a.name.as_str()).collect();
         let body = serde_json::to_string_pretty(&json!({
             "manifest": manifest,
             "manifest_path": manifest_path,
             "rdm": { "sha": null },
+            "seeds": seeds,
+            "selected_arms": selected,
+            "projection": plan::projection(&manifest, opts.seeds),
             "plan": plan,
         }))
         .map_err(|e| e.to_string())?;
@@ -140,13 +168,14 @@ pub fn run(
         &manifest_path,
         &paths,
         &opts.tools,
+        &seeds,
         template.as_deref(),
         &prompts,
         stderr,
     )?;
     let _ = writeln!(
         stderr,
-        "scbench run: {} arm(s) finished; run record {}",
+        "scbench run: {} arm run(s) finished; run record {}",
         plan.arms.len(),
         plan.record_path.display()
     );

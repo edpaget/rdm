@@ -19,6 +19,7 @@
 //!                               [--min-batch-group N] [--allow-underpowered]
 //!                               [--review-lib PATH] [--host-timeout-secs N]
 //! rdm-measure scbench run --out DIR [--manifest PATH] [--cache-dir DIR]
+//!                         [--arms NAME,...] [--seeds N]
 //!                         [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
 //!                         [--dry-run]
 //! rdm-measure scbench image build [--manifest PATH] [--cache-dir DIR]
@@ -31,7 +32,7 @@
 //! dispatches paid agents (items x tiers x replicates) through `claude -p`.
 //!
 //! COST WARNING: `scbench run` without `--dry-run` runs paid Claude Code
-//! agents in Docker (arms x problems x checkpoints).
+//! agents in Docker (arms x seeds x problems x checkpoints).
 //!
 //! `scbench image build` makes no paid call but is slow: it runs a release
 //! build of rdm and builds SCBench's base and agent images.
@@ -96,7 +97,7 @@ enum Cmd {
     RefuterAgreement(AgreementArgs),
     /// Drive SlopCodeBench from the pinned manifest in bench/scbench/.
     /// COST WARNING: `scbench run` without --dry-run runs paid Claude Code
-    /// agents in Docker (arms x problems x checkpoints).
+    /// agents in Docker (arms x seeds x problems x checkpoints).
     Scbench(ScbenchArgs),
 }
 
@@ -108,9 +109,10 @@ struct ScbenchArgs {
 
 #[derive(Subcommand)]
 enum ScbenchCmd {
-    /// Run every manifest arm once (one `slop-code run` and one `slop-code
-    /// eval` each). COST WARNING: without --dry-run this runs paid Claude
-    /// Code agents in Docker (arms x problems x checkpoints).
+    /// Run the selected manifest arms (default every arm) once per seed (one
+    /// `slop-code run` and one `slop-code eval` each). COST WARNING: without
+    /// --dry-run this runs paid Claude Code agents in Docker (arms x seeds x
+    /// problems x checkpoints).
     Run(ScbenchRunArgs),
     /// Build or smoke-check the rdm-equipped agent image that arms with
     /// `image = "rdm"` run in. No paid call.
@@ -169,6 +171,13 @@ struct ScbenchRunArgs {
     /// The run's output directory; must be missing or empty.
     #[arg(long, value_name = "DIR", value_parser = flag_value)]
     out: String,
+    /// The manifest arms to run; repeatable and comma-separated (default:
+    /// every arm). They always run in manifest order.
+    #[arg(long, value_name = "NAME", value_parser = flag_value)]
+    arms: Vec<String>,
+    /// How many seeds each arm runs with (seeds 1..=N).
+    #[arg(long, value_name = "N", value_parser = positive_int, default_value = "1")]
+    seeds: u64,
     /// The `uv` executable.
     #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "uv")]
     uv_bin: String,
@@ -646,6 +655,8 @@ fn scbench_cmd(a: &ScbenchArgs) -> Result<ExitCode, String> {
             docker: r.docker_bin.clone(),
             claude: r.claude_bin.clone(),
         },
+        arms: (!r.arms.is_empty()).then(|| comma_split(&r.arms)),
+        seeds: r.seeds,
         dry_run: r.dry_run,
     };
     let code = scbench::run(&options, &mut std::io::stdout(), &mut std::io::stderr())?;
