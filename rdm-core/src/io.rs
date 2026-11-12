@@ -1255,4 +1255,645 @@ mod tests {
             assert!(message.ends_with(position), "{message}");
         }
     }
+
+    // -- files the previous writer wrote --
+    //
+    // Each constant is a whole file as `serde_yaml` wrote it: the text was
+    // generated once, while that writer was the one in use, and is kept as
+    // written. `\u{2028}` stands for the raw character, which that writer
+    // put in the file unescaped.
+
+    const PREVIOUS_PROJECT: &str = "\
+---
+name: rdm
+title: 'Roadmaps: the tool'
+source:
+  repo: https://example.com/rdm.git
+  default_branch: main
+---
+
+The project.
+";
+
+    const PREVIOUS_ROADMAP: &str = "\
+---
+project: rdm
+roadmap: alpha
+title: 'Writer''s block: a roadmap'
+phases:
+- phase-1-one
+- phase-2-two
+dependencies:
+- 1_000
+priority: high
+tags:
+- yes
+- on
+- nan
+- 'true'
+- 0X1F
+- ''
+---
+
+The roadmap.
+";
+
+    const PREVIOUS_PHASE: &str = "\
+---
+phase: 3
+title: |2-
+   Indented first line
+  and a second
+status: blocked
+tags:
+- '0755'
+- 1e999
+completed: 2026-03-13
+commit: abc1234
+difficulty: hard
+model: large
+blocked_reason: |
+  Waiting on upstream.
+  See the tracker.
+gate_override:
+  reason: |+
+    Reviewed by hand.
+
+  actor: ed
+  at: 2026-01-02
+---
+
+## Context
+
+Details.
+";
+
+    const PREVIOUS_TASK: &str = "\
+---
+project: rdm
+title: 'Split the\u{2028}  parser'
+status: wont-fix
+priority: high
+created: 2026-03-14
+tags:
+- parser
+close_reason: |
+  Superseded by the roadmap.
+---
+
+The task.
+";
+
+    const PREVIOUS_PLAN: &str = "\
+---
+project: rdm
+plan: impl-parser
+title: \"Ends in a space \\nthen goes on\"
+implements: rdm:phase/alpha/phase-3-three
+supersedes: rdm:plan/impl-parser-v1
+status: approved
+created: 2026-03-14
+updated: 2026-03-15
+---
+
+## Approach
+
+Details.
+";
+
+    const PREVIOUS_REVIEW: &str = "\
+---
+id: 2026-11-11-2018-af41
+author: ed@example.com
+target:
+  kind: change
+  head: 12345e6789012345678901234567890123456789
+  base: abcdef0123456789abcdef0123456789abcdef01
+state: submitted
+verdict: request-changes
+created: 2026-09-24T15:30:12Z
+submitted: 2026-09-24T15:31:00Z
+created_commit: abc1234
+implements: rdm:plan/impl-parser
+change_branch: roadmap/alpha
+comments:
+- id: 1
+  doc:
+    kind: phase
+    stem: phase-3-three
+  status: open
+  anchor:
+    anchor_type: text-quote
+    quote: '## Acceptance Criteria'
+    prefix: |+
+      right?
+
+    suffix: |2-
+
+
+      - [ ] Criterion
+  body: |
+    Tighten this.
+
+    It contradicts step 3.
+  reply: |-
+    Done.
+    See the next commit.
+- id: 2
+  status: addressed
+  applied_commit: beefcafe
+  anchor:
+    anchor_type: line-range
+    start_line: 3
+    end_line: 9
+    snippet: |
+      let x = 1;
+      let y\u{2028}      = 2;
+  anchor_state: relocated
+  intended_path: src/lib.rs
+  body: A one-line body.
+  reply: \"Tab\\there, next-line\\Nthere.\"
+- id: 3
+  status: open
+  anchor:
+    anchor_type: file-quote
+    path: rdm-core/src/io.rs
+    quote: fn main() {}
+    occurrence: 2
+    start_line: 1
+    end_line: 4
+  body: Another one.
+- id: 4
+  status: open
+  anchor:
+    anchor_type: heading-path
+    depth: 3
+    extra: {}
+    label: a string
+    parent: null
+    path: []
+    pinned: true
+    ratio: 1.0
+    span:
+      from: 2
+      note: kept
+    weight: 1e300
+  body: |
+    The last comment.
+---
+
+Overall summary.
+";
+
+    const PREVIOUS_REVIEW_WITHOUT_COMMENTS: &str = "\
+---
+id: 2026-07-01-0900-c3d4
+author: '@ed'
+target:
+  kind: task
+  slug: fix-login
+state: draft
+created: 2026-07-01T09:00:00Z
+comments: []
+---
+
+Draft in progress.
+";
+
+    const PREVIOUS_RUN: &str = "\
+---
+id: 2026-09-24-1530-a1b2
+project: rdm
+driver: autopilot
+roadmap: alpha
+session_uuid: 0f3c9a1e-1111-4222-8333-444455556666
+args: alpha --max 3
+status: closed
+started: 2026-09-24T15:30:12.345Z
+ended: 2026-09-24T16:40:00.001Z
+stop_reason: 'blocked: phase-2-two'
+units:
+- unit: phase-1-one
+  attempt: 1
+  started: 2026-09-24T15:31:00Z
+  ended: 2026-09-24T15:58:10.250Z
+  outcome: reviewed
+- unit: phase-2-two
+  attempt: 2
+  started: 2026-09-24T15:59:00Z
+  outcome: 'blocked: needs a decision'
+---
+";
+
+    const PREVIOUS_RUN_WITHOUT_UNITS: &str = "\
+---
+id: 2026-09-24-1530-ffff
+project: rdm
+driver: dispatch-phase
+task: fix-login
+args: ''
+status: open
+started: 2026-09-24T15:30:12.345Z
+units: []
+---
+";
+
+    fn day(date: &str) -> chrono::NaiveDate {
+        date.parse().unwrap()
+    }
+
+    fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
+        values.map(str::to_string).to_vec()
+    }
+
+    /// What [`PREVIOUS_PROJECT`] holds.
+    fn previous_project() -> Document<Project> {
+        Document {
+            frontmatter: Project {
+                name: "rdm".to_string(),
+                title: "Roadmaps: the tool".to_string(),
+                source: Some(crate::model::Source {
+                    repo: "https://example.com/rdm.git".to_string(),
+                    default_branch: Some("main".to_string()),
+                }),
+            },
+            body: "The project.\n".to_string(),
+        }
+    }
+
+    /// What [`PREVIOUS_ROADMAP`] holds.
+    fn previous_roadmap() -> Document<Roadmap> {
+        Document {
+            frontmatter: Roadmap {
+                project: "rdm".to_string(),
+                roadmap: "alpha".to_string(),
+                title: "Writer's block: a roadmap".to_string(),
+                phases: strings(["phase-1-one", "phase-2-two"]),
+                dependencies: Some(strings(["1_000"])),
+                priority: Some(crate::model::Priority::High),
+                tags: Some(strings(["yes", "on", "nan", "true", "0X1F", ""])),
+            },
+            body: "The roadmap.\n".to_string(),
+        }
+    }
+
+    /// What [`PREVIOUS_PHASE`] holds.
+    fn previous_phase() -> Document<Phase> {
+        use crate::model::{Difficulty, GateOverride, ModelTier};
+        Document {
+            frontmatter: Phase {
+                phase: 3,
+                title: " Indented first line\nand a second".to_string(),
+                status: PhaseStatus::Blocked,
+                tags: Some(strings(["0755", "1e999"])),
+                completed: Some(day("2026-03-13")),
+                commit: Some("abc1234".to_string()),
+                review_sha: None,
+                review_branch: None,
+                started_head: None,
+                difficulty: Some(Difficulty::Hard),
+                model: Some(ModelTier::Large),
+                blocked_reason: Some("Waiting on upstream.\nSee the tracker.\n".to_string()),
+                gate_override: Some(GateOverride {
+                    reason: "Reviewed by hand.\n\n".to_string(),
+                    actor: "ed".to_string(),
+                    at: day("2026-01-02"),
+                }),
+            },
+            body: "## Context\n\nDetails.\n".to_string(),
+        }
+    }
+
+    /// What [`PREVIOUS_TASK`] is read to. Two readings are inherited and
+    /// differ from what was written: the U+2028 in the title is a line
+    /// break, which a quoted scalar folds to a space, and `close_reason`,
+    /// the last value of the frontmatter, has lost its final line break.
+    fn previous_task() -> Document<Task> {
+        Document {
+            frontmatter: Task {
+                project: "rdm".to_string(),
+                title: "Split the parser".to_string(),
+                status: TaskStatus::WontFix,
+                priority: crate::model::Priority::High,
+                created: day("2026-03-14"),
+                tags: Some(strings(["parser"])),
+                completed: None,
+                commit: None,
+                review_sha: None,
+                review_branch: None,
+                started_head: None,
+                close_reason: Some("Superseded by the roadmap.".to_string()),
+                gate_override: None,
+            },
+            body: "The task.\n".to_string(),
+        }
+    }
+
+    /// What [`PREVIOUS_PLAN`] holds.
+    fn previous_plan() -> Document<Plan> {
+        use crate::model::{PlanStatus, ReviewTarget};
+        Document {
+            frontmatter: Plan {
+                project: "rdm".to_string(),
+                plan: "impl-parser".to_string(),
+                title: "Ends in a space \nthen goes on".to_string(),
+                implements: ReviewTarget::Phase {
+                    roadmap: "alpha".to_string(),
+                    stem: "phase-3-three".to_string(),
+                },
+                supersedes: Some(ReviewTarget::Plan {
+                    slug: "impl-parser-v1".to_string(),
+                }),
+                status: PlanStatus::Approved,
+                created: day("2026-03-14"),
+                updated: day("2026-03-15"),
+            },
+            body: "## Approach\n\nDetails.\n".to_string(),
+        }
+    }
+
+    /// What [`PREVIOUS_REVIEW`] is read to. Two readings are inherited and
+    /// differ from what was written: the U+2028 in the second comment's
+    /// snippet is a line break, and the last comment's body, the last value
+    /// of the frontmatter, has lost its final line break.
+    fn previous_review() -> Document<Review> {
+        use crate::model::{
+            Anchor, AnchorState, CommentDoc, CommentDocKind, ReviewComment, ReviewCommentStatus,
+            ReviewState, ReviewTarget, Verdict,
+        };
+        let comment = |id: u32, anchor: Anchor, body: &str| ReviewComment {
+            id,
+            doc: None,
+            status: ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor: Some(anchor),
+            anchor_state: None,
+            intended_path: None,
+            body: body.to_string(),
+            reply: None,
+        };
+        Document {
+            frontmatter: Review {
+                id: "2026-11-11-2018-af41".to_string(),
+                author: "ed@example.com".to_string(),
+                target: ReviewTarget::Change {
+                    head: "12345e6789012345678901234567890123456789".to_string(),
+                    base: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                },
+                state: ReviewState::Submitted,
+                verdict: Some(Verdict::RequestChanges),
+                created: run_time("2026-09-24T15:30:12Z"),
+                submitted: Some(run_time("2026-09-24T15:31:00Z")),
+                created_commit: Some("abc1234".to_string()),
+                implements: Some(ReviewTarget::Plan {
+                    slug: "impl-parser".to_string(),
+                }),
+                change_branch: Some("roadmap/alpha".to_string()),
+                comments: vec![
+                    ReviewComment {
+                        doc: Some(CommentDoc {
+                            kind: CommentDocKind::Phase,
+                            stem: "phase-3-three".to_string(),
+                        }),
+                        reply: Some("Done.\nSee the next commit.".to_string()),
+                        ..comment(
+                            1,
+                            Anchor::TextQuote {
+                                quote: "## Acceptance Criteria".to_string(),
+                                prefix: "right?\n\n".to_string(),
+                                suffix: "\n\n- [ ] Criterion".to_string(),
+                            },
+                            "Tighten this.\n\nIt contradicts step 3.\n",
+                        )
+                    },
+                    ReviewComment {
+                        status: ReviewCommentStatus::Addressed,
+                        applied_commit: Some("beefcafe".to_string()),
+                        anchor_state: Some(AnchorState::Unknown("relocated".to_string())),
+                        intended_path: Some("src/lib.rs".to_string()),
+                        reply: Some("Tab\there, next-line\u{85}there.".to_string()),
+                        ..comment(
+                            2,
+                            Anchor::LineRange {
+                                start_line: 3,
+                                end_line: 9,
+                                snippet: "let x = 1;\nlet y\n= 2;\n".to_string(),
+                            },
+                            "A one-line body.",
+                        )
+                    },
+                    comment(
+                        3,
+                        Anchor::FileQuote {
+                            path: "rdm-core/src/io.rs".to_string(),
+                            quote: "fn main() {}".to_string(),
+                            occurrence: 2,
+                            start_line: 1,
+                            end_line: 4,
+                        },
+                        "Another one.",
+                    ),
+                    comment(
+                        4,
+                        Anchor::Unknown {
+                            anchor_type: "heading-path".to_string(),
+                            raw: serde_json::json!({
+                                "anchor_type": "heading-path",
+                                "depth": 3,
+                                "extra": {},
+                                "label": "a string",
+                                "parent": null,
+                                "path": [],
+                                "pinned": true,
+                                "ratio": 1.0,
+                                "span": {"from": 2, "note": "kept"},
+                                "weight": 1e300,
+                            }),
+                        },
+                        "The last comment.",
+                    ),
+                ],
+            },
+            body: "Overall summary.\n".to_string(),
+        }
+    }
+
+    /// What [`PREVIOUS_REVIEW_WITHOUT_COMMENTS`] holds.
+    fn previous_review_without_comments() -> Document<Review> {
+        use crate::model::{ReviewState, ReviewTarget};
+        Document {
+            frontmatter: Review {
+                id: "2026-07-01-0900-c3d4".to_string(),
+                author: "@ed".to_string(),
+                target: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                state: ReviewState::Draft,
+                verdict: None,
+                created: run_time("2026-07-01T09:00:00Z"),
+                submitted: None,
+                created_commit: None,
+                implements: None,
+                change_branch: None,
+                comments: vec![],
+            },
+            body: "Draft in progress.\n".to_string(),
+        }
+    }
+
+    /// What [`PREVIOUS_RUN`] holds.
+    fn previous_run() -> Document<Run> {
+        use crate::model::{RunDriver, RunStatus, RunTarget, RunUnit};
+        Document {
+            frontmatter: Run {
+                id: "2026-09-24-1530-a1b2".to_string(),
+                project: "rdm".to_string(),
+                driver: RunDriver::Autopilot,
+                target: RunTarget::Roadmap("alpha".to_string()),
+                session_uuid: Some("0f3c9a1e-1111-4222-8333-444455556666".to_string()),
+                args: Some("alpha --max 3".to_string()),
+                status: RunStatus::Closed,
+                started: run_time("2026-09-24T15:30:12.345Z"),
+                ended: Some(run_time("2026-09-24T16:40:00.001Z")),
+                stop_reason: Some("blocked: phase-2-two".to_string()),
+                units: vec![
+                    RunUnit {
+                        unit: "phase-1-one".to_string(),
+                        attempt: 1,
+                        started: run_time("2026-09-24T15:31:00Z"),
+                        ended: Some(run_time("2026-09-24T15:58:10.250Z")),
+                        outcome: Some("reviewed".to_string()),
+                    },
+                    RunUnit {
+                        unit: "phase-2-two".to_string(),
+                        attempt: 2,
+                        started: run_time("2026-09-24T15:59:00Z"),
+                        ended: None,
+                        outcome: Some("blocked: needs a decision".to_string()),
+                    },
+                ],
+            },
+            body: String::new(),
+        }
+    }
+
+    /// What [`PREVIOUS_RUN_WITHOUT_UNITS`] holds.
+    fn previous_run_without_units() -> Document<Run> {
+        use crate::model::{RunDriver, RunStatus, RunTarget};
+        Document {
+            frontmatter: Run {
+                id: "2026-09-24-1530-ffff".to_string(),
+                project: "rdm".to_string(),
+                driver: RunDriver::DispatchPhase,
+                target: RunTarget::Task("fix-login".to_string()),
+                session_uuid: None,
+                args: Some(String::new()),
+                status: RunStatus::Open,
+                started: run_time("2026-09-24T15:30:12.345Z"),
+                ended: None,
+                stop_reason: None,
+                units: vec![],
+            },
+            body: String::new(),
+        }
+    }
+
+    /// Stores `file`, a file the previous writer wrote, at `path` and
+    /// asserts that it is read to `expected`, that writing what was read
+    /// and reading it again gives the same document, and that writing that
+    /// a second time leaves the stored bytes as the first write left them.
+    fn assert_previous_file_keeps_its_document<T>(
+        path: &RelPath,
+        file: &str,
+        expected: &Document<T>,
+        load: impl Fn(&MemoryStore) -> Result<Document<T>>,
+        write: impl Fn(&mut MemoryStore, &Document<T>) -> Result<()>,
+    ) where
+        T: PartialEq + std::fmt::Debug,
+    {
+        let mut store = MemoryStore::new();
+        store.write(path, file.to_string()).unwrap();
+
+        let loaded = load(&store).unwrap();
+        assert_eq!(&loaded, expected, "{path}: as the previous writer left it");
+
+        write(&mut store, &loaded).unwrap();
+        let first = store.read(path).unwrap();
+        let reloaded = load(&store).unwrap();
+        assert_eq!(&reloaded, expected, "{path}: once rewritten\n{first}");
+
+        write(&mut store, &reloaded).unwrap();
+        let second = store.read(path).unwrap();
+        assert_eq!(second, first, "{path}: written a second time");
+    }
+
+    #[test]
+    fn a_file_the_previous_writer_wrote_keeps_its_document_through_a_rewrite() {
+        // A project has no `write_project`: its row renders the document
+        // and stores the text itself.
+        let project = crate::paths::project_md_path("rdm");
+        assert_previous_file_keeps_its_document(
+            &project,
+            PREVIOUS_PROJECT,
+            &previous_project(),
+            |store| Document::parse(&store.read(&project)?),
+            |store, doc| store.write(&project, doc.render()?),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::roadmap_path("rdm", "alpha"),
+            PREVIOUS_ROADMAP,
+            &previous_roadmap(),
+            |store| load_roadmap(store, "rdm", "alpha"),
+            |store, doc| write_roadmap(store, "rdm", "alpha", doc),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::phase_path("rdm", "alpha", "phase-3-three"),
+            PREVIOUS_PHASE,
+            &previous_phase(),
+            |store| load_phase(store, "rdm", "alpha", "phase-3-three"),
+            |store, doc| write_phase(store, "rdm", "alpha", "phase-3-three", doc),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::task_path("rdm", "split-the-parser"),
+            PREVIOUS_TASK,
+            &previous_task(),
+            |store| load_task(store, "rdm", "split-the-parser"),
+            |store, doc| write_task(store, "rdm", "split-the-parser", doc),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::plan_path("rdm", "impl-parser"),
+            PREVIOUS_PLAN,
+            &previous_plan(),
+            |store| load_plan(store, "rdm", "impl-parser"),
+            |store, doc| write_plan(store, "rdm", "impl-parser", doc),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::review_path("rdm", "2026-11-11-2018-af41"),
+            PREVIOUS_REVIEW,
+            &previous_review(),
+            |store| load_review(store, "rdm", "2026-11-11-2018-af41"),
+            |store, doc| write_review(store, "rdm", "2026-11-11-2018-af41", doc),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::review_path("rdm", "2026-07-01-0900-c3d4"),
+            PREVIOUS_REVIEW_WITHOUT_COMMENTS,
+            &previous_review_without_comments(),
+            |store| load_review(store, "rdm", "2026-07-01-0900-c3d4"),
+            |store, doc| write_review(store, "rdm", "2026-07-01-0900-c3d4", doc),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::run_path("rdm", "2026-09-24-1530-a1b2"),
+            PREVIOUS_RUN,
+            &previous_run(),
+            |store| load_run(store, "rdm", "2026-09-24-1530-a1b2"),
+            |store, doc| write_run(store, "rdm", "2026-09-24-1530-a1b2", doc),
+        );
+        assert_previous_file_keeps_its_document(
+            &crate::paths::run_path("rdm", "2026-09-24-1530-ffff"),
+            PREVIOUS_RUN_WITHOUT_UNITS,
+            &previous_run_without_units(),
+            |store| load_run(store, "rdm", "2026-09-24-1530-ffff"),
+            |store, doc| write_run(store, "rdm", "2026-09-24-1530-ffff", doc),
+        );
+    }
 }
