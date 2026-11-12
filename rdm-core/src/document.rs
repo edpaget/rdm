@@ -815,7 +815,9 @@ Still loads.
                 doc: None,
                 status: ReviewCommentStatus::Open,
                 applied_commit: None,
+                applied_commit_repo: None,
                 anchor,
+                document: None,
                 body: body.to_string(),
                 reply: reply.map(str::to_string),
             };
@@ -872,6 +874,7 @@ Still loads.
                     comments,
                     implements: None,
                     change_branch: Some(s.clone()),
+                    follows: Some(s.clone()),
                 },
                 body: "Summary.\n".to_string(),
             };
@@ -1102,7 +1105,7 @@ Still loads.
 
     #[test]
     fn a_review_is_read_back_whole_and_written_the_same_twice() {
-        use crate::model::AnchorState;
+        use crate::model::{AnchorState, CommitRepo};
 
         for s in strings_for_every_position() {
             let anchors = [
@@ -1146,9 +1149,14 @@ Still loads.
                     }),
                     status: ReviewCommentStatus::Addressed,
                     applied_commit: Some(s.clone()),
+                    applied_commit_repo: Some(CommitRepo::Plan),
                     anchor: Some(anchor),
                     anchor_state: Some(AnchorState::Unknown(s.clone())),
                     intended_path: Some(s.clone()),
+                    document: Some(ReviewTarget::Phase {
+                        roadmap: "r".to_string(),
+                        stem: "phase-1-a".to_string(),
+                    }),
                     body: s.clone(),
                     reply: (id < 4).then(|| s.clone()),
                 })
@@ -1169,6 +1177,7 @@ Still loads.
                     slug: "impl".to_string(),
                 }),
                 change_branch: Some(s.clone()),
+                follows: Some(s.clone()),
                 comments,
             };
             assert_stable(review, "Summary.\n", &format!("review {s:?}"));

@@ -2096,10 +2096,12 @@ impl Review {
     /// # Examples
     ///
     /// ```
+    /// use rdm_core::document::Document;
     /// use rdm_core::model::Review;
     ///
-    /// let review: Review = serde_yaml::from_str(
-    ///     "id: r1
+    /// let review = Document::<Review>::parse(
+    ///     "---
+    /// id: r1
     /// author: a
     /// target:
     ///   kind: task
@@ -2115,9 +2117,11 @@ impl Review {
     ///   status: open
     ///   anchor_state: whole-document
     ///   body: whole-document on purpose
+    /// ---
     /// ",
     /// )
-    /// .unwrap();
+    /// .unwrap()
+    /// .frontmatter;
     /// assert_eq!(review.degraded_anchor_count(), 1);
     /// ```
     #[must_use]
@@ -2146,10 +2150,12 @@ impl Review {
     /// # Examples
     ///
     /// ```
+    /// use rdm_core::document::Document;
     /// use rdm_core::model::Review;
     ///
-    /// let review: Review = serde_yaml::from_str(
-    ///     "id: r1
+    /// let review = Document::<Review>::parse(
+    ///     "---
+    /// id: r1
     /// author: a
     /// target:
     ///   kind: task
@@ -2163,9 +2169,11 @@ impl Review {
     /// - id: 2
     ///   status: wont-fix
     ///   body: declined
+    /// ---
     /// ",
     /// )
-    /// .unwrap();
+    /// .unwrap()
+    /// .frontmatter;
     /// assert_eq!(review.open_comment_count(), 1);
     /// ```
     #[must_use]
@@ -2596,9 +2604,9 @@ state: draft
 created: 2026-07-01T00:00:00Z
 comments: []
 ";
-        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        let review: Review = crate::frontmatter::from_str(yaml).unwrap();
         assert!(review.follows.is_none());
-        let out = serde_yaml::to_string(&review).unwrap();
+        let out = crate::frontmatter::to_string(&review).unwrap();
         assert!(!out.contains("follows"), "{out}");
     }
 
@@ -2615,11 +2623,14 @@ created: 2026-07-01T00:00:00Z
 follows: r1
 comments: []
 ";
-        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        let review: Review = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(review.follows.as_deref(), Some("r1"));
-        let out = serde_yaml::to_string(&review).unwrap();
+        let out = crate::frontmatter::to_string(&review).unwrap();
         assert!(out.contains("follows: r1"), "{out}");
-        assert_eq!(serde_yaml::from_str::<Review>(&out).unwrap(), review);
+        assert_eq!(
+            crate::frontmatter::from_str::<Review>(&out).unwrap(),
+            review
+        );
     }
 
     #[test]
@@ -2661,7 +2672,7 @@ comments: []
     #[test]
     fn a_comment_document_round_trips_as_an_rdm_reference() {
         let yaml = "id: 1\nstatus: open\nanchor_state: whole-document\ndocument: rdm:phase/auth/phase-2-login\nbody: b\n";
-        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        let comment: ReviewComment = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(
             comment.document,
             Some(ReviewTarget::Phase {
@@ -2669,13 +2680,13 @@ comments: []
                 stem: "phase-2-login".to_string(),
             })
         );
-        let out = serde_yaml::to_string(&comment).unwrap();
+        let out = crate::frontmatter::to_string(&comment).unwrap();
         assert!(
             out.contains("document: rdm:phase/auth/phase-2-login"),
             "{out}"
         );
         assert_eq!(
-            serde_yaml::from_str::<ReviewComment>(&out).unwrap(),
+            crate::frontmatter::from_str::<ReviewComment>(&out).unwrap(),
             comment
         );
     }
@@ -2683,9 +2694,9 @@ comments: []
     #[test]
     fn a_comment_without_a_document_loads_as_none_and_does_not_gain_the_key() {
         let yaml = "id: 1\nstatus: open\nbody: legacy\n";
-        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        let comment: ReviewComment = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(comment.document, None);
-        let out = serde_yaml::to_string(&comment).unwrap();
+        let out = crate::frontmatter::to_string(&comment).unwrap();
         assert!(!out.contains("document"), "{out}");
     }
 
@@ -2730,7 +2741,7 @@ comments:
     end_line: 1
   body: anchored
 ";
-        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        let review: Review = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(review.comments.len(), 6);
         assert_eq!(review.degraded_anchor_count(), 3);
     }
@@ -2746,7 +2757,7 @@ state: draft
 created: 2026-07-01T00:00:00Z
 comments: []
 ";
-        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        let review: Review = crate::frontmatter::from_str(yaml).unwrap();
         assert_eq!(review.degraded_anchor_count(), 0);
     }
 

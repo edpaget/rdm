@@ -1627,9 +1627,11 @@ units: []
             doc: None,
             status: ReviewCommentStatus::Open,
             applied_commit: None,
+            applied_commit_repo: None,
             anchor: Some(anchor),
             anchor_state: None,
             intended_path: None,
+            document: None,
             body: body.to_string(),
             reply: None,
         };
@@ -1650,6 +1652,7 @@ units: []
                     slug: "impl-parser".to_string(),
                 }),
                 change_branch: Some("roadmap/alpha".to_string()),
+                follows: None,
                 comments: vec![
                     ReviewComment {
                         doc: Some(CommentDoc {
@@ -1736,6 +1739,7 @@ units: []
                 created_commit: None,
                 implements: None,
                 change_branch: None,
+                follows: None,
                 comments: vec![],
             },
             body: "Draft in progress.\n".to_string(),
