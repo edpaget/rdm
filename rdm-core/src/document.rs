@@ -468,6 +468,8 @@ Summary.
         let content = review_with_anchor(
             r#"      anchor_type: heading-path
       label: 'true'
+      pinned: true
+      stale: false
       depth: 3
       weight: 0.5
       parent: null
@@ -484,10 +486,13 @@ Summary.
 
         assert_eq!(anchor_type, "heading-path");
         let fields = raw.as_object().expect("the anchor is a mapping");
-        assert_eq!(fields.len(), 7, "{raw}");
+        assert_eq!(fields.len(), 9, "{raw}");
         assert_eq!(fields.get("anchor_type"), Some(&json!("heading-path")));
         // A string that spells a boolean stays a string.
         assert_eq!(fields.get("label"), Some(&json!("true")));
+        // A boolean stays a boolean.
+        assert_eq!(fields.get("pinned"), Some(&json!(true)));
+        assert_eq!(fields.get("stale"), Some(&json!(false)));
         assert_eq!(fields.get("depth"), Some(&json!(3)));
         assert_eq!(fields.get("weight"), Some(&json!(0.5)));
         // A null value keeps its key.
