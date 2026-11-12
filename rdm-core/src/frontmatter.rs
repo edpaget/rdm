@@ -892,8 +892,6 @@ mod tests {
         ];
         for (text, expected) in cases {
             assert_eq!(from_str::<Value>(text).unwrap(), expected, "{text:?}");
-            let old = serde_yaml::from_str::<Value>(text).unwrap();
-            assert_eq!(old, expected, "the old reader, {text:?}");
         }
     }
 
@@ -926,8 +924,6 @@ mod tests {
         ];
         for (text, expected) in cases {
             assert_eq!(from_str::<Value>(text).unwrap(), expected, "{text:?}");
-            let old = serde_yaml::from_str::<Value>(text).unwrap();
-            assert_eq!(old, expected, "the old reader, {text:?}");
         }
     }
 
