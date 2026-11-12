@@ -35,6 +35,9 @@ struct Spec {
     model_file: Option<PathBuf>,
     /// Adds a third arm, `just-solve-rdm`, with `image = "rdm"`.
     rdm_arm: bool,
+    /// An explicit `group` written on the `just-solve-rdm` arm; `None`
+    /// leaves the key out so the group follows the image.
+    rdm_arm_group: Option<&'static str>,
     /// Adds a `full-lane` arm (the committed template, `prompt_from =
     /// "manifest"`, `image = "rdm"`) with limits [`FULL_LANE_LIMITS`].
     full_lane: bool,
@@ -53,6 +56,7 @@ impl Default for Spec {
             pass_policy: "all-cases",
             model_file: None,
             rdm_arm: false,
+            rdm_arm_group: None,
             full_lane: false,
             plan_root: "/rdm-plan",
         }
@@ -215,9 +219,13 @@ project = "bench"
             pass_policy = spec.pass_policy,
             step_limit = spec.step_limit,
             rdm_arm = if spec.rdm_arm {
-                "\n[[arm]]\nname = \"just-solve-rdm\"\nprompt = \"configs/prompts/just-solve.jinja\"\nimage = \"rdm\"\n"
+                format!(
+                    "\n[[arm]]\nname = \"just-solve-rdm\"\nprompt = \"configs/prompts/just-solve.jinja\"\nimage = \"rdm\"\n{}",
+                    spec.rdm_arm_group
+                        .map_or_else(String::new, |g| format!("group = \"{g}\"\n"))
+                )
             } else {
-                ""
+                String::new()
             },
             full_lane = if spec.full_lane {
                 format!(
@@ -592,6 +600,30 @@ fn run_record_carries_each_arms_group() {
     ] {
         assert_eq!(arm_record(&record, name)["group"], group, "{name}");
     }
+}
+
+#[test]
+fn explicit_arm_group_overrides_the_image_default() {
+    let b = Bench::new(&Spec {
+        rdm_arm: true,
+        rdm_arm_group: Some("control"),
+        ..Spec::default()
+    });
+    let plan = json(&ok(&b.run(&["--dry-run"])));
+    let planned = plan["plan"]["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .find(|a| a["name"] == "just-solve-rdm")
+        .cloned()
+        .expect("planned just-solve-rdm");
+    assert_eq!(planned["group"], "control");
+    assert_eq!(planned["image"], "rdm");
+
+    ok(&b.run(&[]));
+    let recorded = arm_record(&b.record(), "just-solve-rdm");
+    assert_eq!(recorded["group"], "control");
+    assert_eq!(recorded["image"], "rdm");
 }
 
 #[test]
