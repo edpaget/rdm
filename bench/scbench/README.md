@@ -48,6 +48,10 @@ SCBench checkout.
 - A credential:
   - **Subscription** (the manifest's `provider = "claude_code_oauth"`): run
     `claude setup-token` and export the token as `CLAUDE_CODE_OAUTH_TOKEN`.
+    Or keep it in 1Password and run every subcommand through
+    `bench/scbench/run.sh <subcommand> ...`, which loads it with `op run`
+    from `op://rdm-dev/claude-token/credential` (override with
+    `SCBENCH_CLAUDE_TOKEN_REF`) into the run's environment only.
   - **API key**: set `provider = "anthropic"` in the manifest and export
     `ANTHROPIC_API_KEY`. Do not pair `anthropic` with
     `CLAUDE_CODE_OAUTH_TOKEN`; SCBench would pass the token as an API key.
