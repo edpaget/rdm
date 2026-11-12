@@ -7,10 +7,12 @@ use crate::model::{ReviewState, RunStatus};
 /// from a store does; a bare string handed to
 /// [`Document::parse`](crate::document::Document::parse) does not — together
 /// with the problem and, when the YAML reader reported one, the position it
-/// was found at.
+/// was found at. A document read as it stood at a historical revision names
+/// that revision too, because the file as it stands now may be fine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontmatterError {
     document: Option<String>,
+    revision: Option<String>,
     problem: String,
     position: Option<(u64, u64)>,
 }
@@ -21,6 +23,7 @@ impl FrontmatterError {
     pub(crate) fn new(problem: impl Into<String>, position: Option<(u64, u64)>) -> Self {
         FrontmatterError {
             document: None,
+            revision: None,
             problem: problem.into(),
             position,
         }
@@ -29,6 +32,13 @@ impl FrontmatterError {
     /// Names the document the frontmatter came from.
     pub(crate) fn in_document(mut self, document: impl Into<String>) -> Self {
         self.document = Some(document.into());
+        self
+    }
+
+    /// Names the revision the document was read at, when it was not read as
+    /// it stands now.
+    pub(crate) fn at_revision(mut self, revision: impl Into<String>) -> Self {
+        self.revision = Some(revision.into());
         self
     }
 
@@ -46,6 +56,26 @@ impl FrontmatterError {
     /// from, or `None` when a bare string was parsed.
     pub fn document(&self) -> Option<&str> {
         self.document.as_deref()
+    }
+
+    /// The revision the document was read at, as the caller gave it, or
+    /// `None` when the document was read as it stands now. When it is set,
+    /// the problem is in the content at that revision, not necessarily in
+    /// the current file.
+    pub fn revision(&self) -> Option<&str> {
+        self.revision.as_deref()
+    }
+
+    /// Writes the document and, when it was read at one, the revision: where
+    /// the frontmatter came from. Writes nothing when no document is known.
+    fn fmt_origin(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(document) = &self.document {
+            f.write_str(document)?;
+            if let Some(revision) = &self.revision {
+                write!(f, " at {revision}")?;
+            }
+        }
+        Ok(())
     }
 
     /// What is wrong, in the YAML reader's words, without the position.
@@ -79,8 +109,9 @@ impl FrontmatterError {
 
 impl std::fmt::Display for FrontmatterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(document) = &self.document {
-            write!(f, "{document}: ")?;
+        if self.document.is_some() {
+            self.fmt_origin(f)?;
+            f.write_str(": ")?;
         }
         self.fmt_problem(f)
     }
@@ -835,8 +866,9 @@ impl std::fmt::Display for Error {
             ),
             Error::FrontmatterParse(e) => {
                 f.write_str("failed to parse frontmatter")?;
-                if let Some(document) = e.document() {
-                    write!(f, " in {document}")?;
+                if e.document().is_some() {
+                    f.write_str(" in ")?;
+                    e.fmt_origin(f)?;
                 }
                 f.write_str(": ")?;
                 e.fmt_problem(f)

@@ -24,6 +24,19 @@ where
     })
 }
 
+/// Parses the text the document stored at `path` had at revision `sha`, so a
+/// frontmatter failure names that revision and not only a file that may be
+/// fine as it stands now.
+fn parse_stored_at<T>(path: &RelPath, sha: &str, content: &str) -> Result<Document<T>>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    parse_stored(path, content).map_err(|err| match err {
+        Error::FrontmatterParse(problem) => Error::FrontmatterParse(problem.at_revision(sha)),
+        other => other,
+    })
+}
+
 /// Loads and parses `rdm.toml` from the plan repo root.
 ///
 /// # Errors
@@ -285,7 +298,7 @@ pub fn load_roadmap_at(
     let mut doc = load_roadmap(store, project, roadmap)?;
     let path = crate::paths::roadmap_path(project, roadmap);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = parse_stored::<Roadmap>(&path, &historical)?.body;
+    doc.body = parse_stored_at::<Roadmap>(&path, sha, &historical)?.body;
     Ok(doc)
 }
 
@@ -313,7 +326,7 @@ pub fn load_phase_at(
     let mut doc = load_phase(store, project, roadmap, phase_stem)?;
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = parse_stored::<Phase>(&path, &historical)?.body;
+    doc.body = parse_stored_at::<Phase>(&path, sha, &historical)?.body;
     Ok(doc)
 }
 
@@ -340,7 +353,7 @@ pub fn load_task_at(
     let mut doc = load_task(store, project, task_slug)?;
     let path = crate::paths::task_path(project, task_slug);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = parse_stored::<Task>(&path, &historical)?.body;
+    doc.body = parse_stored_at::<Task>(&path, sha, &historical)?.body;
     Ok(doc)
 }
 
@@ -367,7 +380,7 @@ pub fn load_plan_at(
     let mut doc = load_plan(store, project, plan_slug)?;
     let path = crate::paths::plan_path(project, plan_slug);
     let historical = store.fetch_body_at(&path, sha)?;
-    doc.body = parse_stored::<Plan>(&path, &historical)?.body;
+    doc.body = parse_stored_at::<Plan>(&path, sha, &historical)?.body;
     Ok(doc)
 }
 
@@ -1131,6 +1144,7 @@ mod tests {
         let problem = frontmatter_error(err);
 
         assert_eq!(problem.document(), Some(PHASE_FILE));
+        assert_eq!(problem.revision(), None);
         assert!(
             problem.problem().contains("unknown variant `nearly`"),
             "{problem:?}"
@@ -1189,14 +1203,23 @@ mod tests {
         store.commit().unwrap();
 
         let err = load_phase_at(&store, "test", "alpha", "phase-1-one", &broken).unwrap_err();
+        let message = err.to_string();
         let problem = frontmatter_error(err);
 
         assert_eq!(problem.document(), Some(PHASE_FILE));
+        // The file as it stands is fine: the revision says where to look.
+        assert_eq!(problem.revision(), Some(broken.as_str()));
         assert!(
             problem.problem().contains("unknown variant `nearly`"),
             "{problem:?}"
         );
         assert_eq!(problem.line(), Some(4));
+        assert!(
+            message.starts_with(&format!(
+                "failed to parse frontmatter in {PHASE_FILE} at {broken}: "
+            )),
+            "{message}"
+        );
     }
 
     #[test]
