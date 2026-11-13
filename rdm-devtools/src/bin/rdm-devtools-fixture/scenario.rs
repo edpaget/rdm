@@ -1,7 +1,8 @@
 //! Shared plumbing for the argv0-dispatched fake roles: the scenario file
 //! (named by `DEVTOOLS_FAKE_SCENARIO`, deliberately not `RDM_`-prefixed so it
 //! survives an `RDM_*` scrub; otherwise `<role>.scenario.json` beside the
-//! symlink the role was started through) and the per-call record log.
+//! symlink the role was started through, found on `PATH` when it was started
+//! by bare name) and the per-call record log.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -15,7 +16,13 @@ pub const SCENARIO_ENV: &str = "DEVTOOLS_FAKE_SCENARIO";
 pub fn load(role: &str) -> Value {
     let beside = || {
         let argv0 = std::env::args_os().next()?;
-        let dir = std::path::Path::new(&argv0).parent()?.to_owned();
+        let argv0 = std::path::Path::new(&argv0);
+        let dir = match argv0.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_owned(),
+            // Started by bare name: the first `PATH` entry holding it.
+            _ => std::env::split_paths(&std::env::var_os("PATH")?)
+                .find(|d| d.join(argv0).exists())?,
+        };
         Some(dir.join(format!("{role}.scenario.json")).into_os_string())
     };
     std::env::var_os(SCENARIO_ENV)

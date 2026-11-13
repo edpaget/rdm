@@ -433,18 +433,13 @@ impl Executor<'_> {
     }
 
     /// Removes the containers that mount `scratch` (see [`containers`]) and
-    /// returns their ids. A docker failure is reported on `stderr` and the
-    /// teardown carries on; it never fails the caller.
+    /// returns the ids actually removed. A docker failure is reported on
+    /// `stderr` and the teardown carries on as far as it can; it never fails
+    /// the caller. A container that vanished between the listing and the
+    /// inspection, or a malformed inspect line, does not stop the others from
+    /// being attributed, and each attributed container is removed on its own.
     fn teardown_containers(&mut self, scratch: &Path, stderr: &mut dyn Write) -> Vec<String> {
         let docker = self.docker.clone();
-        let mut failed = |what: &str, how: &str| {
-            let _ = writeln!(
-                stderr,
-                "scbench run: could not {what} containers ({how}); check `docker ps` for \
-                 SlopCodeBench containers mounting {}",
-                scratch.display()
-            );
-        };
         let listed = match self.spawn_teardown(&containers::list(&docker), Io::Capture) {
             Ok(r) if r.ok() => r
                 .stdout
@@ -452,37 +447,52 @@ impl Executor<'_> {
                 .map(str::to_owned)
                 .collect::<Vec<_>>(),
             Ok(r) => {
-                failed("list", &r.describe());
+                teardown_note(stderr, "list", &r.describe(), scratch);
                 return Vec::new();
             }
             Err(e) => {
-                failed("list", &e);
+                teardown_note(stderr, "list", &e, scratch);
                 return Vec::new();
             }
         };
-        let ours = if listed.is_empty() {
-            Vec::new()
-        } else {
-            let inspected =
-                match self.spawn_teardown(&containers::inspect(&docker, &listed), Io::Capture) {
-                    Ok(r) if r.ok() => r.stdout,
-                    Ok(r) => {
-                        failed("inspect", &r.describe());
-                        return Vec::new();
-                    }
-                    Err(e) => {
-                        failed("inspect", &e);
-                        return Vec::new();
-                    }
-                };
-            match containers::attributed(&inspected, scratch) {
-                Ok(ids) => ids,
+        let mut ours = Vec::new();
+        if !listed.is_empty() {
+            let r = match self.spawn_teardown(&containers::inspect(&docker, &listed), Io::Capture) {
+                Ok(r) => r,
                 Err(e) => {
-                    failed("inspect", &e);
+                    teardown_note(stderr, "inspect", &e, scratch);
                     return Vec::new();
                 }
+            };
+            if !r.ok() {
+                if r.stdout.trim().is_empty() {
+                    teardown_note(stderr, "inspect", &r.describe(), scratch);
+                    return Vec::new();
+                }
+                // Exits non-zero when any listed container is gone by now,
+                // but still prints the others.
+                teardown_note(
+                    stderr,
+                    "inspect all the listed",
+                    &format!("{}; the ones it printed are still attributed", r.describe()),
+                    scratch,
+                );
             }
-        };
+            let found = containers::attributed(&r.stdout, scratch);
+            if !found.malformed.is_empty() {
+                let lines: Vec<String> = found.malformed.iter().map(usize::to_string).collect();
+                teardown_note(
+                    stderr,
+                    "inspect",
+                    &format!(
+                        "line(s) {} of the output were not `<id> <mounts JSON>` and were skipped",
+                        lines.join(", ")
+                    ),
+                    scratch,
+                );
+            }
+            ours = found.ours;
+        }
         if ours.is_empty() {
             let _ = writeln!(
                 stderr,
@@ -491,25 +501,27 @@ impl Executor<'_> {
             );
             return Vec::new();
         }
-        match self.spawn_teardown(&containers::remove(&docker, &ours), Io::Capture) {
-            Ok(r) if r.ok() => {
-                let _ = writeln!(
-                    stderr,
-                    "scbench run: removed {} container(s) mounting {}",
-                    ours.len(),
-                    scratch.display()
-                );
-                ours
-            }
-            Ok(r) => {
-                failed("remove", &r.describe());
-                Vec::new()
-            }
-            Err(e) => {
-                failed("remove", &e);
-                Vec::new()
+        let mut removed = Vec::new();
+        let mut failures = Vec::new();
+        for id in &ours {
+            match self.spawn_teardown(&containers::remove(&docker, id), Io::Capture) {
+                Ok(r) if r.ok() => removed.push(id.clone()),
+                Ok(r) => failures.push(format!("{id} {}", r.describe())),
+                Err(e) => failures.push(format!("{id}: {e}")),
             }
         }
+        if !failures.is_empty() {
+            teardown_note(stderr, "remove", &failures.join("; "), scratch);
+        }
+        if !removed.is_empty() {
+            let _ = writeln!(
+                stderr,
+                "scbench run: removed {} container(s) mounting {}",
+                removed.len(),
+                scratch.display()
+            );
+        }
+        removed
     }
 
     fn probe(&mut self, tool: &str, spec: &CommandSpec) -> Result<String, String> {
@@ -523,6 +535,16 @@ impl Executor<'_> {
         }
         Ok(ran.stdout.trim().to_owned())
     }
+}
+
+/// Reports a docker teardown step that could not `what` the containers.
+fn teardown_note(stderr: &mut dyn Write, what: &str, how: &str, scratch: &Path) {
+    let _ = writeln!(
+        stderr,
+        "scbench run: could not {what} containers ({how}); check `docker ps` for SlopCodeBench \
+         containers mounting {}",
+        scratch.display()
+    );
 }
 
 /// The unit a step belongs to, for an interruption's record and message.

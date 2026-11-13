@@ -11,6 +11,15 @@
 //!
 //! `docker inspect` is formatted to return only ids and mounts, so no
 //! container's environment (which holds the credential) is ever read.
+//!
+//! Containers come and go between the listing and the inspection (SCBench's
+//! own teardown, a concurrent run). `docker inspect` then exits non-zero but
+//! still prints the containers it found, so its partial output is used, and
+//! each attributed container is removed with its own `docker rm`, so one
+//! that is already gone does not hide the others. `docker ps --filter
+//! volume=` cannot narrow the listing: it matches a mount's exact name,
+//! source or destination, and SCBench's mount sources are random
+//! subdirectories of the scratch directory.
 
 use std::path::{Path, PathBuf};
 
@@ -47,9 +56,9 @@ pub(super) fn inspect(docker: &str, ids: &[String]) -> CommandSpec {
     )
 }
 
-/// `docker rm --force <ids...>`.
-pub(super) fn remove(docker: &str, ids: &[String]) -> CommandSpec {
-    spec(docker, &["rm", "--force"], ids)
+/// `docker rm --force <id>`.
+pub(super) fn remove(docker: &str, id: &str) -> CommandSpec {
+    spec(docker, &["rm", "--force", id], &[])
 }
 
 #[derive(Deserialize)]
@@ -58,44 +67,50 @@ struct Mount {
     source: Option<PathBuf>,
 }
 
+/// What [`attributed`] found in `docker inspect`'s output.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Attribution {
+    /// The ids of the containers mounting the scratch directory.
+    pub(super) ours: Vec<String>,
+    /// The 1-based numbers of the lines that were not `<id> <mounts JSON>`
+    /// (only numbers, never the text, which is not ours to print).
+    pub(super) malformed: Vec<usize>,
+}
+
 /// The ids in `inspect_stdout` (as [`inspect`] prints it) whose container has
 /// a mount `Source` under `scratch` or its canonical form (on macOS the
 /// temp directory `/var/folders/...` is `/private/var/folders/...`). The match
-/// is by path component, so `<scratch>x/...` does not match.
-///
-/// # Errors
-///
-/// When a line is not `<id> <mounts JSON>`, naming its line number (never
-/// its text).
-pub(super) fn attributed(inspect_stdout: &str, scratch: &Path) -> Result<Vec<String>, String> {
+/// is by path component, so `<scratch>x/...` does not match. A line that is
+/// not `<id> <mounts JSON>` is skipped and its number recorded, so one bad
+/// line never hides the containers on the others.
+pub(super) fn attributed(inspect_stdout: &str, scratch: &Path) -> Attribution {
     let canonical = std::fs::canonicalize(scratch).ok();
     let under = |source: &Path| {
         source.starts_with(scratch) || canonical.as_deref().is_some_and(|c| source.starts_with(c))
     };
-    let mut ids = Vec::new();
+    let mut found = Attribution::default();
     for (n, line) in inspect_stdout.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let malformed = || {
-            format!(
-                "line {} of the `docker inspect` output is not `<id> <mounts JSON>`",
-                n + 1
-            )
+        let parsed = line.split_once(' ').and_then(|(id, mounts)| {
+            serde_json::from_str::<Option<Vec<Mount>>>(mounts.trim())
+                .ok()
+                .map(|m| (id, m.unwrap_or_default()))
+        });
+        let Some((id, mounts)) = parsed else {
+            found.malformed.push(n + 1);
+            continue;
         };
-        let (id, mounts) = line.split_once(' ').ok_or_else(malformed)?;
-        let mounts: Option<Vec<Mount>> =
-            serde_json::from_str(mounts.trim()).map_err(|_| malformed())?;
         if mounts
-            .unwrap_or_default()
             .iter()
             .any(|m| m.source.as_deref().is_some_and(under))
         {
-            ids.push(id.to_owned());
+            found.ours.push(id.to_owned());
         }
     }
-    Ok(ids)
+    found
 }
 
 #[cfg(test)]
@@ -126,8 +141,11 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(
-            attributed(&out, scratch).expect("parses"),
-            ["ours", "second"]
+            attributed(&out, scratch),
+            Attribution {
+                ours: vec!["ours".to_owned(), "second".to_owned()],
+                malformed: vec![],
+            }
         );
     }
 
@@ -139,19 +157,21 @@ mod tests {
         std::os::unix::fs::symlink(tmp.path(), &link).expect("symlink");
         let canonical = std::fs::canonicalize(tmp.path()).expect("canonical");
         let out = line("ours", &[canonical.join("ws").display().to_string()]);
-        assert_eq!(attributed(&out, &link).expect("parses"), ["ours"]);
+        assert_eq!(attributed(&out, &link).ours, ["ours"]);
     }
 
     #[test]
-    fn a_malformed_line_names_its_number_not_its_text() {
+    fn a_malformed_line_is_skipped_by_number_and_the_rest_still_count() {
         let out = format!(
-            "{}\nsecret-looking-text {{not json",
-            line("ours", &["/x".to_owned()])
+            "no-space-here\n{}\nsecret-looking-text {{not json",
+            line("ours", &["/x/ws".to_owned()])
         );
-        let err = attributed(&out, Path::new("/x")).expect_err("malformed");
-        assert!(err.contains("line 2"), "{err}");
-        assert!(!err.contains("secret-looking-text"), "{err}");
-        let err = attributed("no-space-here", Path::new("/x")).expect_err("malformed");
-        assert!(err.contains("line 1"), "{err}");
+        assert_eq!(
+            attributed(&out, Path::new("/x")),
+            Attribution {
+                ours: vec!["ours".to_owned()],
+                malformed: vec![1, 3],
+            }
+        );
     }
 }

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use common::{ReapGuard, fixture, gone_within, read_pid, wait_for_file};
 use rdm_devtools::process::{Interrupts, run_forwarding};
-use signal_hook::consts::{SIGKILL, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGKILL, SIGTERM};
 
 /// Polls until `path` holds `ready` or `within` elapses.
 fn wait_for_ready(path: &Path, within: Duration) -> bool {
@@ -28,6 +28,17 @@ fn wait_for_ready(path: &Path, within: Duration) -> bool {
 
 #[test]
 fn forwarded_sigterm_stops_child_and_its_group() {
+    forwarded_signal_stops_child_and_its_group(SIGTERM);
+}
+
+#[test]
+fn forwarded_sighup_is_sent_as_sighup() {
+    forwarded_signal_stops_child_and_its_group(SIGHUP);
+}
+
+/// Triggers `sig` once the fixture's grandchild is up and asserts it reached
+/// the child as itself and the group is gone.
+fn forwarded_signal_stops_child_and_its_group(sig: i32) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let pidfile = tmp.path().join("grandchild.pid");
     let interrupts = Interrupts::manual();
@@ -42,7 +53,7 @@ fn forwarded_sigterm_stops_child_and_its_group() {
         let trigger = s.spawn(|| {
             // Bounded: trigger regardless, so the run below always ends.
             let ready = wait_for_file(&pidfile, Duration::from_secs(30));
-            interrupts.trigger(SIGTERM);
+            interrupts.trigger(sig);
             ready
         });
         let result = run_forwarding(&mut cmd, &interrupts, Duration::from_secs(10));
@@ -55,9 +66,9 @@ fn forwarded_sigterm_stops_child_and_its_group() {
     }
     assert!(ready, "the fixture never wrote its grandchild pidfile");
     let forwarded = result.expect("run_forwarding");
-    assert_eq!(forwarded.interrupted, Some(SIGTERM));
-    assert!(!forwarded.killed, "the forwarded SIGTERM should end it");
-    assert_eq!(forwarded.status.signal(), Some(SIGTERM));
+    assert_eq!(forwarded.interrupted, Some(sig));
+    assert!(!forwarded.killed, "the forwarded signal should end it");
+    assert_eq!(forwarded.status.signal(), Some(sig));
     let grandchild = grandchild.expect("grandchild pid");
     assert!(
         gone_within(grandchild, Duration::from_secs(3)),

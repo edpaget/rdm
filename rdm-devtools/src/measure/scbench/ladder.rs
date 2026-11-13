@@ -142,9 +142,15 @@ fn preflight(
 /// # Errors
 ///
 /// When the manifest cannot be loaded, `--out` is used, the `--baseline`
-/// name is invalid, a preflight check fails (`ladder preflight: ...`), or
-/// the run or the report fails (either with a hint that the run's finished
-/// units are reportable with `scbench report --run`).
+/// name is invalid, the signal handling cannot be installed
+/// (`cannot install SIGINT/SIGTERM handling: ...`), a signal arrives during
+/// the preflight (`ladder: interrupted by <SIG> during the preflight; no
+/// slop-code command ran`, which takes precedence over a preflight failure),
+/// a preflight check fails (`ladder preflight: ...`), or the run or the
+/// report fails (either with a hint that the run's finished units are
+/// reportable with `scbench report --run`). The ladder installs the signal
+/// handling once, before the preflight, and the run uses the same one
+/// ([`super::run_with`]), so a signal recorded at any point stops it.
 pub fn run(
     opts: &LadderOptions,
     stdout: &mut dyn Write,
@@ -221,7 +227,7 @@ pub fn run(
         ));
     }
     preflight.map_err(|e| format!("ladder preflight: {e}"))?;
-    super::run(&run_options(false), stdout, stderr).map_err(|e| {
+    super::run_with(&run_options(false), &interrupts, stdout, stderr).map_err(|e| {
         format!(
             "{e}; the finished arm runs are on disk; rdm-measure scbench report --run {} reports them",
             out.display()

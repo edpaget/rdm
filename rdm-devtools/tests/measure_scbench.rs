@@ -401,6 +401,13 @@ project = "bench"
     /// token and `ANTHROPIC_API_KEY` is removed, then `env` applies
     /// (`None` removes a variable).
     fn ladder(&self, out: &Path, extra: &[&str], env: &[(&str, Option<&str>)]) -> Output {
+        self.ladder_command(out, extra, env)
+            .output()
+            .expect("rdm-measure runs")
+    }
+
+    /// The [`Bench::ladder`] command, not yet run.
+    fn ladder_command(&self, out: &Path, extra: &[&str], env: &[(&str, Option<&str>)]) -> Command {
         let mut cmd = Command::new(measure_bin());
         cmd.args(["scbench", "ladder", "--manifest"])
             .arg(&self.manifest)
@@ -420,7 +427,7 @@ project = "bench"
         cmd.env("CLAUDE_CODE_OAUTH_TOKEN", "fake-token")
             .env_remove("ANTHROPIC_API_KEY");
         apply_env(&mut cmd, env);
-        cmd.output().expect("rdm-measure runs")
+        cmd
     }
 
     /// Runs `scbench report --run <run>` with `extra`.
@@ -3019,19 +3026,13 @@ fn scrub_runs_after_slop_code_eval_whatever_its_exit() {
 // its group on any failure.
 
 impl Bench {
-    /// Spawns `scbench run` (with `extra`, `env` applied) in its own process
-    /// group, stdout and stderr to files under the bench root. Returns the
-    /// guard and the two log paths.
-    fn spawn_run(
-        &self,
-        extra: &[&str],
-        env: &[(&str, Option<&str>)],
-    ) -> (common::ChildGuard, PathBuf, PathBuf) {
+    /// Spawns `cmd` (an `rdm-measure` command) in its own process group,
+    /// stdout and stderr to files under the bench root. Returns the guard and
+    /// the two log paths.
+    fn spawn_logged(&self, mut cmd: Command) -> (common::ChildGuard, PathBuf, PathBuf) {
         use std::os::unix::process::CommandExt;
         let out_log = self.root.join("runner.stdout.log");
         let err_log = self.root.join("runner.stderr.log");
-        let mut cmd = self.run_command(&self.out, extra);
-        apply_env(&mut cmd, env);
         cmd.process_group(0)
             .stdin(std::process::Stdio::null())
             .stdout(std::fs::File::create(&out_log).expect("stdout log"))
@@ -3041,23 +3042,50 @@ impl Bench {
     }
 }
 
-/// Waits (30 s) for the fake's readiness file; on timeout, panics with the
-/// runner's stderr (the guards then clean up).
-fn wait_ready(path: &Path, err_log: &Path) -> Value {
-    if !common::wait_for_file(path, std::time::Duration::from_secs(30)) {
+/// Waits (30 s, or until the runner exits) for the fake's readiness file;
+/// otherwise panics with the runner's stderr (the guards then clean up).
+fn wait_ready(path: &Path, err_log: &Path, runner: &mut std::process::Child) -> Value {
+    use std::time::{Duration, Instant};
+    let end = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < end && matches!(runner.try_wait(), Ok(None)) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !path.exists() {
         panic!(
-            "the fake slop-code never became ready; runner stderr:\n{}",
+            "the fake never became ready; runner stderr:\n{}",
             std::fs::read_to_string(err_log).unwrap_or_default()
         );
     }
     json(&std::fs::read_to_string(path).expect("ready file"))
 }
 
-/// Has the fake `uv`'s `slop-code run --no-evaluate` leave a credential-laden
-/// log under the unit's output, write its readiness file, then apply the
-/// `behaviour` keys (`hang`, `grandchild`, `ignore_sigterm`); the fake
-/// `docker` lists no container. Returns the readiness file's path.
+/// Has the fake `uv --version` probe write its readiness file, then take 2 s
+/// to answer, so a test can signal the runner while it waits on the probe.
+/// Returns the readiness file's path.
+fn slow_uv_probe(b: &Bench) -> PathBuf {
+    let ready = b.root.join("ready.json");
+    b.scenario(
+        "uv",
+        &json!({ "default": { "exit": 0 } }),
+        &[(
+            &["--version"],
+            json!({ "ready": ready, "sleepMs": 2000, "stdout": "uv 0.0.0-fake\n" }),
+        )],
+    );
+    ready
+}
+
+/// [`hanging_on`] for the unit's `slop-code run --no-evaluate`.
 fn hanging_run(b: &Bench, behaviour: Value) -> PathBuf {
+    hanging_on(b, "--no-evaluate", behaviour)
+}
+
+/// Has the fake `uv` call whose argv contains `needle` leave a
+/// credential-laden log under the unit's output, write its readiness file,
+/// then apply the `behaviour` keys (`hang`, `grandchild`, `ignore_sigterm`);
+/// every other `uv` call exits 0. The fake `docker` lists no
+/// container. Returns the readiness file's path.
+fn hanging_on(b: &Bench, needle: &str, behaviour: Value) -> PathBuf {
     let ready = b.root.join("ready.json");
     let staged = b.root.join("staged-leaks/infer.log");
     write(
@@ -3077,7 +3105,7 @@ fn hanging_run(b: &Bench, behaviour: Value) -> PathBuf {
         &json!({ "default": { "exit": 0 } }),
         &[
             (&["--version"], json!({ "stdout": "uv 0.0.0-fake\n" })),
-            (&["--no-evaluate"], response),
+            (&[needle], response),
         ],
     );
     b.scenario(
@@ -3097,9 +3125,7 @@ struct Stopped {
 }
 
 /// Spawns `scbench run --arms just-solve` with `extra` and the fake token,
-/// waits for the fake at `ready_path`, runs `before_signal`, sends `signal`
-/// to the runner only, and waits (30 s) for it to exit. Asserts the fake and
-/// any grandchild are gone within 3 s.
+/// then [`interrupt_command`].
 fn interrupt_run(
     b: &Bench,
     ready_path: &Path,
@@ -3107,12 +3133,28 @@ fn interrupt_run(
     signal: rustix::process::Signal,
     before_signal: impl FnOnce(&Value),
 ) -> Stopped {
-    use std::time::{Duration, Instant};
     let mut args = vec!["--arms", "just-solve"];
     args.extend_from_slice(extra);
-    let (mut runner, _out_log, err_log) = b.spawn_run(&args, WITH_TOKEN);
+    let mut cmd = b.run_command(&b.out, &args);
+    apply_env(&mut cmd, WITH_TOKEN);
+    interrupt_command(b, cmd, ready_path, signal, before_signal)
+}
+
+/// Spawns `cmd` ([`Bench::spawn_logged`]), waits for the fake at
+/// `ready_path`, runs `before_signal`, sends `signal` to the runner only,
+/// and waits (30 s) for it to exit. Asserts the fake and any grandchild are
+/// gone within 3 s.
+fn interrupt_command(
+    b: &Bench,
+    cmd: Command,
+    ready_path: &Path,
+    signal: rustix::process::Signal,
+    before_signal: impl FnOnce(&Value),
+) -> Stopped {
+    use std::time::{Duration, Instant};
+    let (mut runner, _out_log, err_log) = b.spawn_logged(cmd);
     let mut reap = common::ReapGuard::default();
-    let ready = wait_ready(ready_path, &err_log);
+    let ready = wait_ready(ready_path, &err_log, runner.child());
     let fake = u32::try_from(ready["pid"].as_u64().expect("fake pid")).expect("pid fits");
     reap.track(fake);
     reap.track_group(fake);
@@ -3364,5 +3406,389 @@ fn interrupt_with_failing_docker_still_scrubs_and_names_the_unit() {
     assert_eq!(
         b.record()["arms"][0]["interrupted"]["removed_containers"],
         json!([])
+    );
+}
+
+/// A bind mount of `source`, as `docker inspect --format '{{json .Mounts}}'`
+/// prints it, after `id`.
+fn mounted(id: &str, source: &str) -> String {
+    format!(
+        "{id} {}",
+        json!([{ "Type": "bind", "Source": source, "Destination": "/workspace" }])
+    )
+}
+
+/// Hangs the fake on the unit's run, then, once it is ready, has the fake
+/// `docker` answer with `responses(<the scratch TMPDIR>)` (tried in order)
+/// and stops the run with SIGTERM.
+fn interrupt_with_docker(
+    b: &Bench,
+    responses: impl FnOnce(&str) -> Vec<(&'static [&'static str], Value)>,
+) -> Stopped {
+    let ready = hanging_run(b, json!({ "hang": true }));
+    interrupt_run(
+        b,
+        &ready,
+        &["--stop-grace-secs", "5"],
+        rustix::process::Signal::TERM,
+        |ready| {
+            let t = ready["tmpdir"].as_str().expect("the fake saw TMPDIR");
+            b.scenario(
+                "docker",
+                &json!({ "default": { "stdout": "99.0.0-fake\n" } }),
+                &responses(t),
+            );
+        },
+    )
+}
+
+/// The `docker rm` calls the run made.
+fn removals(b: &Bench) -> Vec<Vec<String>> {
+    b.argvs("docker")
+        .into_iter()
+        .filter(|a| a.first().is_some_and(|c| c == "rm"))
+        .collect()
+}
+
+#[test]
+fn sighup_is_forwarded_as_sighup() {
+    let b = Bench::new(&Spec::default());
+    let ready = hanging_run(&b, json!({ "grandchild": true, "hang": true }));
+    let s = interrupt_run(
+        &b,
+        &ready,
+        &["--stop-grace-secs", "5"],
+        rustix::process::Signal::HUP,
+        |_| {},
+    );
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    let record = b.record();
+    assert_eq!(slop_code_run_command(&record)["interrupted"], "SIGHUP");
+    assert_eq!(record["arms"][0]["interrupted"]["signal"], "SIGHUP");
+}
+
+#[test]
+fn sigterm_during_eval_tears_down_the_eval_scratch() {
+    let b = Bench::new(&Spec::default());
+    let ready = hanging_on(&b, "--pass-policy", json!({ "hang": true }));
+    let s = interrupt_run(
+        &b,
+        &ready,
+        &["--stop-grace-secs", "5"],
+        rustix::process::Signal::TERM,
+        |ready| {
+            let t = ready["tmpdir"].as_str().expect("the fake saw TMPDIR");
+            let inspect = format!("{}\n", mounted("eval-box", &format!("{t}/ws")));
+            b.scenario(
+                "docker",
+                &json!({ "default": { "stdout": "99.0.0-fake\n" } }),
+                &[
+                    (&["inspect"], json!({ "stdout": inspect })),
+                    (&["ps"], json!({ "stdout": "eval-box\n" })),
+                    (&["--force"], json!({ "exit": 0 })),
+                ],
+            );
+        },
+    );
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr
+            .contains("arm just-solve seed 1: interrupted by SIGTERM during eval"),
+        "{}",
+        s.stderr
+    );
+    let eval_tmpdir = s.ready["tmpdir"].as_str().expect("the fake saw TMPDIR");
+    let record = b.record();
+    let commands = record["commands"].as_array().expect("commands");
+    let slop = |flag: &str| {
+        commands
+            .iter()
+            .find(|c| strs(&c["argv"]).iter().any(|a| a == flag))
+            .cloned()
+            .expect("a slop-code command")
+    };
+    let eval = slop("--pass-policy");
+    assert_eq!(eval["interrupted"], "SIGTERM", "{eval}");
+    assert_eq!(eval["tmpdir"], eval_tmpdir);
+    let run = slop("--no-evaluate");
+    assert!(run.get("interrupted").is_none(), "{run}");
+    assert_ne!(
+        run["tmpdir"], eval_tmpdir,
+        "each spawn gets its own scratch"
+    );
+    let arm = &record["arms"][0];
+    assert_eq!(arm["interrupted"]["step"], "eval");
+    assert_eq!(
+        arm["interrupted"]["removed_containers"],
+        json!(["eval-box"])
+    );
+    assert_eq!(removals(&b), [["rm", "--force", "eval-box"]]);
+    assert!(!Path::new(eval_tmpdir).exists());
+    assert!(!s.stderr.contains(TOKEN));
+    assert_no_token(&b.out);
+    let r = json(&ok(&b.report(&b.out, &["--format", "json"])));
+    assert_eq!(
+        r["skipped_runs"][0]["reason"],
+        "not finished: interrupted by SIGTERM during eval"
+    );
+}
+
+#[test]
+fn sigterm_during_lane_collection_reports_the_interrupt_not_the_tar_failure() {
+    use rdm_core::model::PhaseStatus::Done;
+    let b = Bench::new(&full_lane_spec());
+    let tars = b.root.join("tars");
+    let mut mv = PlanRepo::new(&b.home(), &b.root.join("fixture/mvvault"));
+    mv.add(1, Done, None);
+    let leak = format!("token={TOKEN}\n");
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1", &[("leak.txt", &leak)]);
+    full_lane_bench(
+        &b,
+        &[Checkpoint {
+            problem: "mvvault",
+            name: "checkpoint_1",
+            order: 1,
+            tars: vec![("000001.tar", mv1)],
+        }],
+    );
+    // A fake `tar`, first on the runner's PATH, that is still extracting when
+    // the signal arrives and then fails.
+    let tar_bin = b.root.join("tar-bin");
+    std::fs::create_dir_all(&tar_bin).expect("tar bin");
+    std::os::unix::fs::symlink(common::fixture(), tar_bin.join("tar")).expect("symlink");
+    let ready = b.root.join("tar-ready.json");
+    write(
+        &tar_bin.join("tar.scenario.json"),
+        &json!({
+            "record": b.record_path("tar"),
+            "default": { "ready": ready, "sleepMs": 2000, "stderr": "tar: boom\n", "exit": 2 },
+        })
+        .to_string(),
+    );
+    let path = format!(
+        "{}:{}",
+        tar_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut cmd = b.run_command(&b.out, &["--arms", "full-lane"]);
+    apply_env(&mut cmd, WITH_TOKEN);
+    cmd.env("PATH", path);
+    let s = interrupt_command(&b, cmd, &ready, rustix::process::Signal::TERM, |_| {});
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr.contains(
+            "arm full-lane seed 1: interrupted by SIGTERM during lane (problems mvvault, xjq); \
+             no slop-code command was running"
+        ),
+        "{}",
+        s.stderr
+    );
+    assert!(!s.stderr.contains("extracting"), "{}", s.stderr);
+    let record = b.record();
+    assert_eq!(
+        arm_record(&record, "full-lane")["interrupted"]["step"],
+        "lane"
+    );
+    assert!(
+        !b.argvs("uv").iter().any(|a| a.iter().any(|x| x == "eval")),
+        "eval ran after the interrupt"
+    );
+    assert!(!s.stderr.contains(TOKEN));
+    assert_no_token(&b.out);
+}
+
+#[test]
+fn a_signal_during_a_probe_spawns_nothing_more() {
+    let b = Bench::new(&Spec::default());
+    let ready = slow_uv_probe(&b);
+    let s = interrupt_run(&b, &ready, &[], rustix::process::Signal::TERM, |_| {});
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr.contains(&format!(
+            "interrupted by SIGTERM before `{} version --format",
+            p(&b.bin("docker"))
+        )),
+        "{}",
+        s.stderr
+    );
+    assert!(
+        b.calls("docker").is_none(),
+        "docker was spawned after the signal"
+    );
+    assert!(!spawned_slop_code(&b));
+    assert!(b.record()["arms"][0].get("interrupted").is_none());
+}
+
+#[test]
+fn ladder_signal_during_the_preflight_stops_before_any_run() {
+    let b = Bench::new(&Spec::default());
+    let ready = slow_uv_probe(&b);
+    let cmd = b.ladder_command(&b.out, &["--seeds", "1"], &[]);
+    let s = interrupt_command(&b, cmd, &ready, rustix::process::Signal::TERM, |_| {});
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr.contains(
+            "ladder: interrupted by SIGTERM during the preflight; no slop-code command ran"
+        ),
+        "{}",
+        s.stderr
+    );
+    assert!(!spawned_slop_code(&b));
+    assert!(!b.out.exists(), "--out was created");
+}
+
+#[test]
+fn interrupt_still_removes_ours_when_inspect_misses_a_vanished_container() {
+    let b = Bench::new(&Spec::default());
+    let s = interrupt_with_docker(&b, |t| {
+        vec![
+            (
+                &["inspect"],
+                json!({
+                    "stdout": format!("{}\n", mounted("ours", &format!("{t}/ws"))),
+                    "stderr": "Error: No such object: gone\n",
+                    "exit": 1,
+                }),
+            ),
+            (&["ps"], json!({ "stdout": "gone\nours\n" })),
+            (&["--force"], json!({ "exit": 0 })),
+        ]
+    });
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr.contains(
+            "could not inspect all the listed containers (exited 1; the ones it printed are \
+             still attributed)"
+        ),
+        "{}",
+        s.stderr
+    );
+    assert_eq!(removals(&b), [["rm", "--force", "ours"]]);
+    assert_eq!(
+        b.record()["arms"][0]["interrupted"]["removed_containers"],
+        json!(["ours"])
+    );
+}
+
+#[test]
+fn interrupt_with_failing_inspect_removes_nothing() {
+    let b = Bench::new(&Spec::default());
+    let s = interrupt_with_docker(&b, |_| {
+        vec![
+            (
+                &["inspect"],
+                json!({ "stderr": "daemon gone\n", "exit": 1 }),
+            ),
+            (&["ps"], json!({ "stdout": "ours\n" })),
+        ]
+    });
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr
+            .contains("scbench run: could not inspect containers (exited 1)"),
+        "{}",
+        s.stderr
+    );
+    assert!(removals(&b).is_empty());
+    assert_eq!(
+        b.record()["arms"][0]["interrupted"]["removed_containers"],
+        json!([])
+    );
+}
+
+#[test]
+fn malformed_inspect_line_is_skipped_and_the_rest_removed() {
+    let b = Bench::new(&Spec::default());
+    let s = interrupt_with_docker(&b, |t| {
+        vec![
+            (
+                &["inspect"],
+                json!({
+                    "stdout": format!("garbage-line\n{}\n", mounted("ours", &format!("{t}/ws"))),
+                }),
+            ),
+            (&["ps"], json!({ "stdout": "other\nours\n" })),
+            (&["--force"], json!({ "exit": 0 })),
+        ]
+    });
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr.contains(
+            "could not inspect containers (line(s) 1 of the output were not `<id> <mounts JSON>`"
+        ),
+        "{}",
+        s.stderr
+    );
+    assert!(!s.stderr.contains("garbage-line"), "{}", s.stderr);
+    assert_eq!(removals(&b), [["rm", "--force", "ours"]]);
+}
+
+#[test]
+fn failed_rm_records_no_removed_container() {
+    let b = Bench::new(&Spec::default());
+    let s = interrupt_with_docker(&b, |t| {
+        vec![
+            (
+                &["inspect"],
+                json!({ "stdout": format!("{}\n", mounted("ours", &format!("{t}/ws"))) }),
+            ),
+            (&["ps"], json!({ "stdout": "ours\n" })),
+            (
+                &["--force"],
+                json!({ "stderr": "Error: boom\n", "exit": 1 }),
+            ),
+        ]
+    });
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr
+            .contains("scbench run: could not remove containers (ours exited 1)"),
+        "{}",
+        s.stderr
+    );
+    assert!(
+        s.stderr.contains("removed 0 container(s) this run started"),
+        "{}",
+        s.stderr
+    );
+    assert_eq!(
+        b.record()["arms"][0]["interrupted"]["removed_containers"],
+        json!([])
+    );
+}
+
+#[test]
+fn one_failed_rm_does_not_hide_the_other_removals() {
+    let b = Bench::new(&Spec::default());
+    let s = interrupt_with_docker(&b, |t| {
+        let inspect = format!(
+            "{}\n{}\n",
+            mounted("box-a", &format!("{t}/ws")),
+            mounted("box-b", &format!("{t}/home"))
+        );
+        vec![
+            (&["inspect"], json!({ "stdout": inspect })),
+            (&["ps"], json!({ "stdout": "box-a\nbox-b\n" })),
+            (
+                &["--force", "box-a"],
+                json!({ "stderr": "Error: No such container\n", "exit": 1 }),
+            ),
+            (&["--force"], json!({ "exit": 0 })),
+        ]
+    });
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert_eq!(
+        removals(&b),
+        [["rm", "--force", "box-a"], ["rm", "--force", "box-b"]]
+    );
+    assert!(
+        s.stderr
+            .contains("could not remove containers (box-a exited 1)"),
+        "{}",
+        s.stderr
+    );
+    assert_eq!(
+        b.record()["arms"][0]["interrupted"]["removed_containers"],
+        json!(["box-b"])
     );
 }

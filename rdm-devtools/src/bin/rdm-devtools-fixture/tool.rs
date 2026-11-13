@@ -1,5 +1,6 @@
-//! Generic recorded fake for the argv0 roles `uv` and `docker` (the external
-//! tools `rdm-measure scbench run` drives).
+//! Generic recorded fake for the argv0 roles `uv`, `docker` and `tar` (the
+//! external tools `rdm-measure scbench run` drives; `tar` only when a test
+//! puts it first on the runner's `PATH`).
 //!
 //! Scenario keys: `record` (call log path), `responses` (an array tried in
 //! order; each carries `argvContains` — strings that must all be substrings
@@ -19,6 +20,8 @@
 //! - `ready: "<abs path>"` — then write
 //!   `{ "pid": <own pid>, "grandchild": <pid|null>, "tmpdir": <$TMPDIR|null> }`
 //!   there atomically;
+//! - `sleepMs: <n>` — then sleep `n` milliseconds before printing and
+//!   exiting, so a test can signal the runner while it waits on this call;
 //! - `hang: true` — then sleep until killed instead of exiting.
 
 use std::io::Write;
@@ -112,6 +115,7 @@ pub fn run(role: &str) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    scenario::sleep_ms(chosen.get("sleepMs"));
     if let Some(out) = chosen.get("stdout").and_then(Value::as_str) {
         let _ = std::io::stdout().lock().write_all(out.as_bytes());
     }

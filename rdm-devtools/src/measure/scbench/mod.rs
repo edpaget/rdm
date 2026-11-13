@@ -124,13 +124,38 @@ fn refuse_used_out(out: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs `scbench run`, returning the process exit code.
+/// Runs `scbench run`, returning the process exit code. Installs SIGINT,
+/// SIGTERM and SIGHUP handling for the whole command, then runs
+/// [`run_with`].
 ///
 /// # Errors
 ///
-/// Any failure that stops the run; the binary prints it and exits 1.
+/// When the signal handling cannot be installed
+/// (`cannot install SIGINT/SIGTERM handling: ...`), or any failure
+/// [`run_with`] returns; the binary prints it and exits 1.
 pub fn run(
     opts: &RunOptions,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8, String> {
+    let interrupts = crate::process::Interrupts::install()
+        .map_err(|e| format!("cannot install SIGINT/SIGTERM handling: {e}"))?;
+    run_with(opts, &interrupts, stdout, stderr)
+}
+
+/// Runs `scbench run` under the caller's `interrupts`, so a caller that
+/// installed them earlier (`scbench ladder`) hands on any signal it already
+/// recorded.
+///
+/// # Errors
+///
+/// Any failure that stops the run, including a signal recorded before the
+/// run starts (`interrupted by <SIG> before the run started; ...`, with
+/// nothing spawned and `--out` not created) or during it (see
+/// [`exec::execute`]); the binary prints it and exits 1.
+pub fn run_with(
+    opts: &RunOptions,
+    interrupts: &crate::process::Interrupts,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<u8, String> {
@@ -192,8 +217,14 @@ pub fn run(
         let _ = writeln!(stdout, "{body}");
         return Ok(0);
     }
-    let interrupts = crate::process::Interrupts::install()
-        .map_err(|e| format!("cannot install SIGINT/SIGTERM handling: {e}"))?;
+    if let Some(sig) = interrupts.received() {
+        return Err(format!(
+            "interrupted by {} before the run started; nothing was spawned and --out {} was not \
+             created",
+            exec::signal_name(sig),
+            paths.out_dir.display()
+        ));
+    }
     let plan = exec::execute(
         &manifest,
         &manifest_path,
@@ -202,7 +233,7 @@ pub fn run(
         &seeds,
         template.as_deref(),
         &prompts,
-        &interrupts,
+        interrupts,
         opts.stop_grace,
         stderr,
     )?;

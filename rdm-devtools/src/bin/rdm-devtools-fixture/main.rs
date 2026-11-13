@@ -27,7 +27,7 @@
 //! - `claude` — the paid-dispatch CLI (see `claude.rs`)
 //! - `codex` — the Codex CLI and app-server (see `codex.rs`)
 //! - `rdm` — rdm's skill emission (see `rdm.rs`)
-//! - `uv`, `docker` — the tools `rdm-measure scbench run` drives (see
+//! - `uv`, `docker`, `tar` — the tools `rdm-measure scbench run` drives (see
 //!   `tool.rs`), each reading `<role>.scenario.json` beside its symlink; a
 //!   `uv` response can also hang, ignore SIGTERM, start a grandchild and
 //!   write a readiness file, playing a long `slop-code` run
@@ -94,7 +94,7 @@ fn main() -> ExitCode {
         "claude" => return claude::run(),
         "codex" => return codex::run(),
         "rdm" => return rdm::run(),
-        role @ ("uv" | "docker") => return tool::run(role),
+        role @ ("uv" | "docker" | "tar") => return tool::run(role),
         _ => {}
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
