@@ -2968,3 +2968,44 @@ fn scrub_masks_plan_repo_tar_and_lane_still_extracts() {
         "{lane}"
     );
 }
+
+#[test]
+fn scrub_runs_after_slop_code_eval_whatever_its_exit() {
+    for exit in [0u64, 4] {
+        let b = Bench::new(&Spec::default());
+        let staged = b.root.join("staged-leaks/eval.log");
+        write(
+            &staged,
+            &format!("eval --env CLAUDE_CODE_OAUTH_TOKEN={TOKEN}\n"),
+        );
+        let leaked = b.out.join("just-solve/seed-1/output/p1/eval.log");
+        b.scenario(
+            "uv",
+            &json!({ "default": { "exit": 0 } }),
+            &[
+                (&["--version"], json!({ "stdout": "uv 0.0.0-fake\n" })),
+                (
+                    &["just-solve/seed-1/output"],
+                    json!({ "place": [{ "from": staged, "to": leaked }], "exit": exit }),
+                ),
+            ],
+        );
+        let o = b.run_env(&[], WITH_TOKEN);
+        if exit == 0 {
+            ok(&o);
+        } else {
+            let err = fails(&o);
+            assert!(
+                err.contains("arm just-solve seed 1: eval exited 4"),
+                "stderr: {err}"
+            );
+        }
+        assert!(!stderr(&o).contains(TOKEN));
+        assert_no_token(&b.out);
+        assert_eq!(
+            std::fs::read_to_string(&leaked).expect("eval log"),
+            "eval --env CLAUDE_CODE_OAUTH_TOKEN=***redacted***\n",
+            "exit {exit}"
+        );
+    }
+}
