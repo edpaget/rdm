@@ -1949,6 +1949,70 @@ mod tests {
         assert_eq!(infos.len(), 1 + 3 + 20 + 12 + 20 + 6 + 10);
     }
 
+    /// A checkpoint whose stages are all unattributed: `cost` dollars
+    /// (`None`: unpriced) and `tokens` input tokens; no breakdown at all
+    /// when `tokens` is `None` (no inference record).
+    fn staged(name: &str, cost: Option<f64>, tokens: Option<f64>) -> outputs::CheckpointOutput {
+        use super::super::stages::{Breakdown, Tokens};
+        outputs::CheckpointOutput {
+            name: name.to_owned(),
+            order: 1,
+            passed: true,
+            evaluated: true,
+            quality: None,
+            split: None,
+            regression: None,
+            test_outcomes: BTreeMap::new(),
+            regression_tests: std::collections::BTreeSet::new(),
+            inference: None,
+            scb_check: None,
+            stages: tokens.map(|input| {
+                let recorded = Tokens {
+                    input,
+                    ..Tokens::default()
+                };
+                Breakdown::reconcile(None, cost.unwrap_or(0.0), &recorded, cost.is_some())
+            }),
+        }
+    }
+
+    #[test]
+    fn unit_stage_values_average_over_checkpoints_with_a_breakdown() {
+        let unit = |checkpoints| Unit {
+            seed: Some(1),
+            problems: vec![ProblemOutput {
+                problem: "p".to_owned(),
+                checkpoints,
+            }],
+            lane: None,
+        };
+        // Two priced checkpoints and one without an inference record: the
+        // mean is over the two.
+        let priced = unit_stage_values(&unit(vec![
+            staged("c1", Some(3.0), Some(100.0)),
+            staged("c2", Some(1.0), Some(300.0)),
+            staged("c3", None, None),
+        ]))
+        .expect("breakdowns");
+        assert_eq!(priced[&Stage::Unattributed], (Some(2.0), 200.0));
+        assert_eq!(priced[&Stage::Planning], (Some(0.0), 0.0));
+
+        // One unpriced checkpoint makes every stage's dollars `None` (the
+        // `Option` sum), while its tokens still count toward the mean.
+        let mixed = unit_stage_values(&unit(vec![
+            staged("c1", Some(3.0), Some(100.0)),
+            staged("c2", None, Some(300.0)),
+        ]))
+        .expect("breakdowns");
+        assert_eq!(mixed[&Stage::Unattributed], (None, 200.0));
+        assert_eq!(mixed[&Stage::Planning], (None, 0.0));
+
+        assert_eq!(
+            unit_stage_values(&unit(vec![staged("c3", None, None)])),
+            None
+        );
+    }
+
     fn lift(estimate: f64, ci: Option<(f64, f64)>) -> Delta {
         Delta {
             estimate,

@@ -1947,3 +1947,153 @@ fn rdm_arm_cost_is_split_by_lane_stage_with_the_rest_unattributed() {
     );
     assert!(ok(&report(&run, &[])).contains("No model file is recorded"));
 }
+
+/// The checkpoint's trace: one main-thread turn of `input` input tokens
+/// (`input * 4 / 1e6` dollars at the test model's price) that opens
+/// `planning` (`plan` true) or `code_review`.
+fn one_stage_trace(out: &Path, checkpoint: &str, input: u64, plan: bool) {
+    let call = if plan {
+        (
+            "toolu-plan",
+            "Agent",
+            json!({ "subagent_type": "rdm:rdm-effort-medium", "prompt": "rdm plan create" }),
+        )
+    } else {
+        (
+            "toolu-review",
+            "Workflow",
+            json!({ "name": "rdm:rdm-wf-review-refute-fix" }),
+        )
+    };
+    let line = scbench_support::assistant_line(
+        &format!("msg-{checkpoint}"),
+        "claude-test-1",
+        TraceUsage {
+            input,
+            ..TraceUsage::default()
+        },
+        &[call],
+    );
+    scbench_support::write_trace(
+        out,
+        "mvvault",
+        checkpoint,
+        "session-1",
+        &[TraceFile {
+            path: None,
+            text: line + "\n",
+        }],
+    );
+}
+
+/// An rdm arm over seeds 1 and 2, three checkpoints each. Per seed,
+/// `(planning input, code-review input, recorded cost, recorded input)`:
+///
+/// - seed 1: checkpoint_1 plans 1,000,000 input ($4) of $5 / 1,000,250
+///   recorded; checkpoint_2 reviews 500,000 ($2) of $2 / 500,000;
+/// - seed 2: checkpoint_1 plans 3,000,000 ($12) of $12 / 3,000,000;
+///   checkpoint_2 reviews 1,000,000 ($4) of $6 / 1,000,600;
+/// - checkpoint_3 has no inference record in either seed, but a trace that
+///   would plan 2,000,000 input ($8) if it were read.
+///
+/// So per checkpoint (over the two with a record), seed 1 is planning
+/// $2 / 500,000, code review $1 / 250,000, unattributed $0.5 / 125; seed 2
+/// is planning $6 / 1,500,000, code review $2 / 500,000, unattributed $1 /
+/// 300.
+fn stage_seeds_run(f: &Fixture) -> PathBuf {
+    let checkpoint = |name: &str, order: u32, recorded: Option<(f64, u64)>| {
+        let mut cp = scbench_support::simple("mvvault", name, order);
+        cp.inference = recorded.map(|(cost, input)| Inference {
+            elapsed: 60.0,
+            cost,
+            steps: 3,
+            input,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+        });
+        cp
+    };
+    let unit = |seed: u64, cp1: (f64, u64), cp2: (f64, u64)| UnitSpec {
+        arm: "full-lane",
+        group: Some("rdm"),
+        image: "rdm",
+        seed: Some(seed),
+        finished: true,
+        checkpoints: vec![
+            checkpoint("checkpoint_1", 1, Some(cp1)),
+            checkpoint("checkpoint_2", 2, Some(cp2)),
+            checkpoint("checkpoint_3", 3, None),
+        ],
+        lane: None,
+        interrupted: None,
+    };
+    let run = f.write_run(
+        "stage-seeds",
+        true,
+        &RecordPins::default(),
+        &[
+            unit(1, (5.0, 1_000_250), (2.0, 500_000)),
+            unit(2, (12.0, 3_000_000), (6.0, 1_000_600)),
+        ],
+    );
+    for (seed, plan, review) in [(1, 1_000_000, 500_000), (2, 3_000_000, 1_000_000)] {
+        let out = run.join(format!("full-lane/seed-{seed}/output"));
+        one_stage_trace(&out, "checkpoint_1", plan, true);
+        one_stage_trace(&out, "checkpoint_2", review, false);
+        one_stage_trace(&out, "checkpoint_3", 2_000_000, true);
+    }
+    let model_file = f.root.join("models/test.yaml");
+    scbench_support::write_model_file(&model_file);
+    set_model_file(&run, Some(&model_file));
+    run
+}
+
+#[test]
+fn stage_cost_is_a_per_checkpoint_mean_over_checkpoints_with_a_record_across_seeds() {
+    let f = Fixture::new();
+    let run = stage_seeds_run(&f);
+    let r = report_json(&run, &[]);
+    let fl = arm(&r, "full-lane");
+    let stages = &fl["stage_costs"];
+    for (stage, cost, tokens) in [
+        ("planning", [2.0, 6.0], [500_000.0, 1_500_000.0]),
+        ("plan_review", [0.0, 0.0], [0.0, 0.0]),
+        ("implementation", [0.0, 0.0], [0.0, 0.0]),
+        ("verification", [0.0, 0.0], [0.0, 0.0]),
+        ("code_review", [1.0, 2.0], [250_000.0, 500_000.0]),
+        ("triage", [0.0, 0.0], [0.0, 0.0]),
+        ("other", [0.0, 0.0], [0.0, 0.0]),
+        ("unattributed", [0.5, 1.0], [125.0, 300.0]),
+    ] {
+        let s = &stages[stage];
+        assert_stat(&s["cost_usd_per_checkpoint"], &cost, stage);
+        assert_stat(&s["tokens_per_checkpoint"], &tokens, stage);
+    }
+
+    // Per checkpoint, each stage is a stat over the two seeds; the
+    // checkpoint without a record has no stage figures.
+    let cps = fl["checkpoints"].as_array().expect("checkpoints");
+    let by_name = |name: &str| {
+        cps.iter()
+            .find(|c| c["checkpoint"] == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+    };
+    let cp1 = &by_name("checkpoint_1")["stages"];
+    assert_stat(&cp1["planning"]["cost_usd"], &[4.0, 12.0], "cp1 planning");
+    assert_stat(
+        &cp1["planning"]["tokens"],
+        &[1_000_000.0, 3_000_000.0],
+        "cp1 planning",
+    );
+    assert_stat(&cp1["unattributed"]["cost_usd"], &[1.0, 0.0], "cp1 rest");
+    assert_stat(&cp1["code_review"]["cost_usd"], &[0.0, 0.0], "cp1 review");
+    let cp2 = &by_name("checkpoint_2")["stages"];
+    assert_stat(&cp2["code_review"]["cost_usd"], &[2.0, 4.0], "cp2 review");
+    assert_stat(&cp2["unattributed"]["tokens"], &[0.0, 600.0], "cp2 rest");
+    let cp3 = &by_name("checkpoint_3")["stages"];
+    for stage in ["planning", "unattributed"] {
+        assert_eq!(cp3[stage]["cost_usd"], Value::Null, "cp3 {stage}");
+        assert_eq!(cp3[stage]["tokens"], Value::Null, "cp3 {stage}");
+    }
+}
