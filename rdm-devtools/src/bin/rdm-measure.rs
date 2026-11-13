@@ -159,7 +159,7 @@ struct ScbenchLadderArgs {
     /// run's cost choice.
     #[arg(long, value_name = "N", value_parser = positive_int)]
     seeds: u64,
-    /// The problems to run, a subset of the manifest's [problems] subset;
+    /// The problems to run, a subset of the manifest's `[problems] subset`;
     /// repeatable and comma-separated (default: every subset problem). An
     /// unknown name is refused before anything runs.
     #[arg(long, value_name = "NAME", value_parser = flag_value)]
@@ -267,7 +267,7 @@ struct ScbenchRunArgs {
     /// every arm). They always run in manifest order.
     #[arg(long, value_name = "NAME", value_parser = flag_value)]
     arms: Vec<String>,
-    /// The problems to run, a subset of the manifest's [problems] subset;
+    /// The problems to run, a subset of the manifest's `[problems] subset`;
     /// repeatable and comma-separated (default: every subset problem). An
     /// unknown name is refused before anything runs.
     #[arg(long, value_name = "NAME", value_parser = flag_value)]

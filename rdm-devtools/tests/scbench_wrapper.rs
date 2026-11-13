@@ -356,7 +356,7 @@ fn stops_after_resume_max_with_the_last_exit_status() {
 
 #[test]
 fn a_settled_first_call_does_not_resume() {
-    for status in ["done", "blocked"] {
+    for status in ["done", "blocked", "wont-fix"] {
         let s = Scenario {
             after_call: vec![Some(vec![(1, status)])],
             ..Scenario::default()
@@ -365,7 +365,88 @@ fn a_settled_first_call_does_not_resume() {
         let out = h.run(&scbench_args(), &s);
         assert_eq!(out.status.code(), Some(0), "{status}: {}", stderr(&out));
         assert_eq!(h.calls(), 1, "{status}");
+        assert!(
+            !stderr(&out).contains("resuming"),
+            "{status}: {}",
+            stderr(&out)
+        );
     }
+}
+
+#[test]
+fn a_reviewed_phase_does_not_settle() {
+    let s = Scenario {
+        after_call: vec![Some(vec![(1, "reviewed")]), Some(vec![(1, "done")])],
+        ..Scenario::default()
+    };
+    let h = Harness::new(&s);
+    let out = h.run(&scbench_args(), &s);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(h.calls(), 2);
+    assert!(
+        stderr(&out).contains("claude-rdm: phase 1 is reviewed; resuming (1/6)"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// A scenario whose phase never settles, whose first call exits 7, with
+/// `env` over the defaults.
+fn never_settles_with(env: Vec<(&'static str, &'static str)>) -> Scenario {
+    Scenario {
+        after_call: vec![Some(vec![(1, "in-progress")])],
+        exits: vec![7, 8, 9],
+        env,
+        ..Scenario::default()
+    }
+}
+
+#[test]
+fn an_invalid_resume_max_does_not_resume() {
+    let s = never_settles_with(vec![("RDM_RESUME_MAX", "abc")]);
+    let h = Harness::new(&s);
+    let out = h.run(&scbench_args(), &s);
+    assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
+    assert_eq!(h.calls(), 1);
+    assert!(
+        stderr(&out)
+            .contains("claude-rdm: RDM_RESUME_MAX=abc is not a non-negative integer; not resuming"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_zero_resume_max_does_not_resume() {
+    let s = never_settles_with(vec![("RDM_RESUME_MAX", "0")]);
+    let h = Harness::new(&s);
+    let out = h.run(&scbench_args(), &s);
+    assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
+    assert_eq!(h.calls(), 1);
+    assert!(
+        stderr(&out).contains("claude-rdm: checkpoint not settled after 0 resume(s)"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn arguments_without_a_separator_are_not_resumed() {
+    let s = never_settles_with(Vec::new());
+    let h = Harness::new(&s);
+    let args: Vec<String> = ["--model", "m", "--print", PROMPT]
+        .map(str::to_owned)
+        .to_vec();
+    let out = h.run(&args, &s);
+    assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
+    assert_eq!(h.calls(), 1);
+    assert_eq!(h.argv(1), args);
+    assert!(
+        stderr(&out)
+            .contains("claude-rdm: phase 1 is in-progress; no -- in the arguments, not resuming"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

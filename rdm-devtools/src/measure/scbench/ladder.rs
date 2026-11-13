@@ -144,8 +144,11 @@ fn preflight(
 ///
 /// # Errors
 ///
-/// When the manifest cannot be loaded, `--out` is used, the `--baseline`
-/// name is invalid, the signal handling cannot be installed
+/// When the manifest cannot be loaded, `--problems` names a problem outside
+/// the manifest's `[problems] subset` or selects none
+/// ([`Manifest::select_problems`]; refused before the preflight, with
+/// nothing spawned and `--out` not created), `--out` is used, the
+/// `--baseline` name is invalid, the signal handling cannot be installed
 /// (`cannot install SIGINT/SIGTERM handling: ...`), a signal arrives during
 /// the preflight (`ladder: interrupted by <SIG> during the preflight; no
 /// slop-code command ran`, which takes precedence over a preflight failure),

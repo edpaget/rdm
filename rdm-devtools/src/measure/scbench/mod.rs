@@ -154,9 +154,13 @@ pub fn run(
 ///
 /// # Errors
 ///
-/// Any failure that stops the run, including a signal recorded before the
-/// run starts (`interrupted by <SIG> before the run started; ...`, with
-/// nothing spawned and `--out` not created) or during it (see
+/// Any failure that stops the run, including an `--arms` or `--problems`
+/// selection naming no manifest arm or no `[problems] subset` problem, or
+/// selecting none ([`Manifest::select_arms`], [`Manifest::select_problems`];
+/// `--problems: no problem "<n>" in the manifest's [problems] subset; ...`,
+/// with nothing read or spawned and `--out` not created), a signal recorded
+/// before the run starts (`interrupted by <SIG> before the run started; ...`,
+/// with nothing spawned and `--out` not created) or during it (see
 /// [`exec::execute`]); the binary prints it and exits 1.
 pub fn run_with(
     opts: &RunOptions,
