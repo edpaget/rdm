@@ -92,7 +92,9 @@ pub fn render_template(
 /// `RDM_ROADMAP` ([`lane::ROADMAP`], the roadmap the prompts' `@RDM_ROADMAP@`
 /// name), whose highest-numbered phase the wrapper reads to decide whether a
 /// checkpoint has settled or must be resumed. rdm itself reads no
-/// `RDM_ROADMAP`.
+/// `RDM_ROADMAP`. `RDM_SCBENCH_VERIFY` carries `[rdm] verify`, which the
+/// wrapper sets as the plan repo's `dispatch.verify` on its first call (not
+/// `RDM_DISPATCH_VERIFY`, which would override the plan repo's config).
 pub fn agent_config(
     manifest: &Manifest,
     rdm: &Rdm,
@@ -109,6 +111,7 @@ pub fn agent_config(
         "RDM_ROOT": rdm.plan_root,
         "RDM_PROJECT": rdm.project,
         "RDM_ROADMAP": lane::ROADMAP,
+        "RDM_SCBENCH_VERIFY": rdm.verify,
         "RDM_PLAN_EXPORT_SUBDIR": PLAN_EXPORT_SUBDIR,
         "GIT_AUTHOR_NAME": "rdm-scbench",
         "GIT_AUTHOR_EMAIL": "rdm-scbench@localhost",
@@ -155,6 +158,7 @@ net_cost_limit = 0
 [rdm]
 plan_root = "/rdm-plan"
 project = "bench"
+verify = "pytest -q && ruff check"
 [[arm]]
 name = "a1"
 prompt = "configs/prompts/a1.jinja"
@@ -170,6 +174,10 @@ prompt = "configs/prompts/a1.jinja"
         );
         assert_eq!(config["env"]["RDM_ROADMAP"], json!(lane::ROADMAP));
         assert_eq!(config["env"]["RDM_PROJECT"], json!("bench"));
+        assert_eq!(
+            config["env"]["RDM_SCBENCH_VERIFY"],
+            json!("pytest -q && ruff check")
+        );
     }
 
     #[test]

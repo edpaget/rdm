@@ -41,6 +41,14 @@ name = "just-solve"
 group = "control"
 prompt = "configs/prompts/just-solve.jinja"   # relative to the SCBench checkout
 
+# just-solve-lint (ladder.md): just-solve, with [rdm] verify named in its
+# prompt as the check to run before finishing; stock image, no rdm.
+[[arm]]
+name = "just-solve-lint"
+group = "control"
+prompt = "prompts/just-solve-lint.jinja"   # relative to this manifest
+prompt_from = "manifest"
+
 [[arm]]
 name = "anti_slop"
 group = "control"
@@ -106,3 +114,8 @@ net_cost_limit = 0
 [rdm]
 plan_root = "/rdm-plan"
 project = "bench"
+# The verify gate (ladder.md § "The verify gate"): the wrapper sets it as the
+# plan repo's dispatch.verify for every rdm arm, and every manifest-rendered
+# prompt (@RDM_VERIFY@) names it. The project's tests plus ruff's default
+# rules; never SCBench's own RUFF_CODES.
+verify = '(/workspace/.venv/bin/python -m pytest -q || [ $? -eq 5 ]) && uvx ruff@0.14.1 check --no-cache'

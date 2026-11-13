@@ -94,6 +94,10 @@ pub struct ArmRecord {
     pub image: ArmImage,
     /// The arm's treatment group, which the ablation comparison keys on.
     pub group: ArmGroup,
+    /// The verify command the arm ran under (`[rdm] verify`, which the
+    /// wrapper sets as `dispatch.verify` and manifest-rendered prompts
+    /// name); `null` for an upstream stock control.
+    pub verify: Option<String>,
     /// SCBench's graded directory (the environment's `docker.workdir`), read
     /// for an rdm arm; `null` for a stock arm.
     pub graded_dir: Option<String>,
@@ -760,6 +764,7 @@ pub fn execute(
             seed: a.seed,
             image: a.image,
             group: a.group,
+            verify: a.verify.clone(),
             graded_dir: None,
             agent_config: a.agent_config.clone(),
             run_config: a.run_config.clone(),

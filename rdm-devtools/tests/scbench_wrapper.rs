@@ -12,6 +12,9 @@ use std::process::{Command, Output};
 const TOKEN: &str = "fake-oauth-token-do-not-print";
 /// The prompt SlopCodeBench passes after `--`.
 const PROMPT: &str = "PROMPT";
+/// The `RDM_SCBENCH_VERIFY` the harness sets unless a scenario overrides it:
+/// shell syntax, so a word-splitting wrapper would mangle it.
+const VERIFY: &str = "(/workspace/.venv/bin/python -m pytest -q || [ $? -eq 5 ]) && uvx ruff check";
 
 /// SlopCodeBench's argv for a fresh checkpoint attempt.
 fn scbench_args() -> Vec<String> {
@@ -69,7 +72,11 @@ struct Scenario {
     after_call: Vec<Option<Vec<(u32, &'static str)>>>,
     exits: Vec<i32>,
     env: Vec<(&'static str, &'static str)>,
+    /// Variables removed from the harness's defaults.
+    unset: Vec<&'static str>,
     baseline: Option<&'static str>,
+    /// Creates `$RDM_ROOT/.git` first, as an earlier checkpoint's call did.
+    initialized: bool,
 }
 
 struct Harness {
@@ -100,6 +107,9 @@ impl Harness {
             std::fs::write(root.join(format!("script/exit.{}", i + 1)), e.to_string())
                 .expect("exit script");
         }
+        if s.initialized {
+            std::fs::create_dir_all(root.join("plan/.git")).expect("initialized plan repo");
+        }
         if let Some(b) = s.baseline {
             std::fs::write(root.join("tmp/claude-rdm.baseline"), format!("{b}\n"))
                 .expect("baseline");
@@ -112,6 +122,7 @@ impl Harness {
 r='{r}'
 k=$(( $(cat "$r/count" 2>/dev/null || echo 0) + 1 ))
 echo "$k" >"$r/count"
+echo "claude $k" >>"$r/log/events"
 printf '%s\0' "$@" >"$r/log/claude.$k"
 printf 'CEILING=%s\nFORCE=%s\n' "${{CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}}" \
     "${{FORCE_AUTO_BACKGROUND_TASKS-unset}}" >"$r/log/claude.$k.env"
@@ -131,9 +142,26 @@ exit "$e"
             &format!(
                 r#"#!/bin/sh
 r='{r}'
+log_rdm() {{
+    n=$(( $(cat "$r/rdm-count" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$r/rdm-count"
+    printf '%s\0' "$@" >"$r/log/rdm.$n"
+    echo "rdm $n" >>"$r/log/events"
+}}
 if [ "$1" = --root ] && [ "$3" = init ]; then
+    log_rdm "$@"
     mkdir -p "$2/.git"
     echo "fake rdm: initialized $2"
+    exit 0
+fi
+if [ "$1" = --root ] && [ "$3" = config ] && [ "$4" = set ] && [ "$5" = dispatch.verify ] && [ "$#" -eq 6 ]; then
+    log_rdm "$@"
+    echo "fake rdm: set dispatch.verify"
+    exit 0
+fi
+if [ "$1" = --root ] && [ "$3" = commit ] && [ "$4" = -m ] && [ "$#" -eq 5 ]; then
+    log_rdm "$@"
+    echo "fake rdm: committed"
     exit 0
 fi
 if [ "$*" = "--root $r/plan phase list --roadmap solution --project bench --format json" ]; then
@@ -170,9 +198,13 @@ exit 2
             .env("RDM_ROADMAP", "solution")
             .env("RDM_PLAN_EXPORT_SUBDIR", "projects/-workspace/rdm-plan")
             .env("FORCE_AUTO_BACKGROUND_TASKS", "1")
+            .env("RDM_SCBENCH_VERIFY", VERIFY)
             .env("CLAUDE_CODE_OAUTH_TOKEN", TOKEN);
         for (k, v) in &s.env {
             cmd.env(k, v);
+        }
+        for k in &s.unset {
+            cmd.env_remove(k);
         }
         let out = cmd.output().expect("run claude-rdm.sh");
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -199,6 +231,32 @@ exit 2
         raw.split(|b| *b == 0)
             .filter(|s| !s.is_empty())
             .map(|s| String::from_utf8(s.to_vec()).expect("utf8 arg"))
+            .collect()
+    }
+
+    /// Every fake-rdm call that set up the plan repo (init, config set,
+    /// commit), each as its argv, in call order.
+    fn rdm_setup_calls(&self) -> Vec<Vec<String>> {
+        let n: usize = std::fs::read_to_string(self.root.join("rdm-count"))
+            .map_or(0, |s| s.trim().parse().expect("rdm count"));
+        (1..=n)
+            .map(|k| {
+                let raw =
+                    std::fs::read(self.root.join(format!("log/rdm.{k}"))).expect("rdm argv log");
+                raw.split(|b| *b == 0)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| String::from_utf8(s.to_vec()).expect("utf8 arg"))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The fakes' calls in order, as `claude <k>` / `rdm <k>` lines.
+    fn events(&self) -> Vec<String> {
+        std::fs::read_to_string(self.root.join("log/events"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
             .collect()
     }
 
@@ -483,6 +541,77 @@ fn every_claude_exit_exports_the_plan_repo() {
         assert!(
             into.join(".git").is_dir(),
             "export {k} holds the plan repo's .git"
+        );
+    }
+}
+
+/// `rdm --root <plan> <rest>` as the fake rdm logs it.
+fn rdm_argv(h: &Harness, rest: &[&str]) -> Vec<String> {
+    let mut v = vec![
+        "--root".to_owned(),
+        h.root.join("plan").display().to_string(),
+    ];
+    v.extend(rest.iter().map(|s| (*s).to_owned()));
+    v
+}
+
+#[test]
+fn first_call_sets_the_verify_gate_and_commits_before_claude_runs() {
+    let s = Scenario {
+        after_call: vec![Some(vec![(1, "in-progress")]), Some(vec![(1, "done")])],
+        ..Scenario::default()
+    };
+    let h = Harness::new(&s);
+    ok_status(&h.run(&scbench_args(), &s));
+    assert_eq!(
+        h.rdm_setup_calls(),
+        [
+            rdm_argv(&h, &["init", "--default-project", "bench"]),
+            rdm_argv(&h, &["config", "set", "dispatch.verify", VERIFY]),
+            rdm_argv(&h, &["commit", "-m", "chore(bench): initialize plan repo"]),
+        ]
+    );
+    assert_eq!(
+        h.events(),
+        ["rdm 1", "rdm 2", "rdm 3", "claude 1", "claude 2"],
+        "set up once, before the first claude call, never on a resume"
+    );
+}
+
+#[test]
+fn a_later_call_never_resets_the_verify_gate() {
+    let s = Scenario {
+        initial: Some(vec![(1, "done")]),
+        after_call: vec![Some(vec![(1, "done"), (2, "done")])],
+        initialized: true,
+        ..Scenario::default()
+    };
+    let h = Harness::new(&s);
+    ok_status(&h.run(&scbench_args(), &s));
+    assert_eq!(h.rdm_setup_calls(), Vec::<Vec<String>>::new());
+    assert_eq!(h.events(), ["claude 1"]);
+}
+
+#[test]
+fn without_a_verify_command_the_wrapper_only_inits_and_commits() {
+    for (env, unset) in [
+        (vec![("RDM_SCBENCH_VERIFY", "")], vec![]),
+        (vec![], vec!["RDM_SCBENCH_VERIFY"]),
+    ] {
+        let s = Scenario {
+            after_call: vec![Some(vec![(1, "done")])],
+            env,
+            unset,
+            ..Scenario::default()
+        };
+        let h = Harness::new(&s);
+        ok_status(&h.run(&scbench_args(), &s));
+        assert_eq!(
+            h.rdm_setup_calls(),
+            [
+                rdm_argv(&h, &["init", "--default-project", "bench"]),
+                rdm_argv(&h, &["commit", "-m", "chore(bench): initialize plan repo"]),
+            ]
         );
     }
 }

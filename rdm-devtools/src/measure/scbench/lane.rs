@@ -18,6 +18,7 @@ use rdm_core::model::PhaseStatus;
 use serde::{Deserialize, Serialize};
 
 use super::exec::Ran;
+use super::manifest::Rdm;
 use super::plan::CommandSpec;
 use super::rdm_image::PLAN_EXPORT_SUBDIR;
 
@@ -30,12 +31,14 @@ pub const CHECKPOINT_FILE: &str = "checkpoint.yaml";
 /// directory (`<checkpoint>/agent/workspace/projects/-workspace/...`).
 pub const AGENT_WORKSPACE: &str = "agent/workspace";
 
-/// Fills an rdm prompt template's `@RDM_ROADMAP@` ([`ROADMAP`]) and
-/// `@RDM_PROJECT@` (`project`), leaving SCBench's Jinja untouched.
-pub fn render_prompt(template: &str, project: &str) -> String {
+/// Fills an rdm prompt template's `@RDM_ROADMAP@` ([`ROADMAP`]),
+/// `@RDM_PROJECT@` (`rdm.project`) and `@RDM_VERIFY@` (`rdm.verify`),
+/// leaving SCBench's Jinja untouched.
+pub fn render_prompt(template: &str, rdm: &Rdm) -> String {
     template
         .replace("@RDM_ROADMAP@", ROADMAP)
-        .replace("@RDM_PROJECT@", project)
+        .replace("@RDM_PROJECT@", &rdm.project)
+        .replace("@RDM_VERIFY@", &rdm.verify)
 }
 
 /// One phase of [`ROADMAP`], as a checkpoint's plan repo records it.
@@ -381,13 +384,20 @@ mod tests {
     }
 
     #[test]
-    fn render_prompt_fills_both_placeholders() {
+    fn render_prompt_fills_every_placeholder() {
+        let rdm = Rdm {
+            plan_root: "/rdm-plan".to_owned(),
+            project: "bench".to_owned(),
+            verify: "pytest -q && ruff check".to_owned(),
+        };
         assert_eq!(
             render_prompt(
-                "rdm:dispatch-phase @RDM_ROADMAP@ N --project @RDM_PROJECT@ {{ spec }}",
-                "bench"
+                "rdm:dispatch-phase @RDM_ROADMAP@ N --project @RDM_PROJECT@ \
+                 run `@RDM_VERIFY@` {{ spec }}",
+                &rdm
             ),
-            "rdm:dispatch-phase solution N --project bench {{ spec }}"
+            "rdm:dispatch-phase solution N --project bench \
+             run `pytest -q && ruff check` {{ spec }}"
         );
     }
 

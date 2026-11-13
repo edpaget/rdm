@@ -1,5 +1,5 @@
 {#- rdm's full-lane arm for SlopCodeBench (manifest arm "full-lane", image = "rdm").
-    rdm-measure replaces @RDM_ROADMAP@ / @RDM_PROJECT@ before SlopCodeBench renders
+    rdm-measure replaces @RDM_ROADMAP@ / @RDM_PROJECT@ / @RDM_VERIFY@ before SlopCodeBench renders
     `spec` and `is_continuation`. Each checkpoint becomes one phase of one roadmap,
     driven by the shipped plugin's rdm:dispatch-phase and landed by rdm:land.
     See bench/scbench/README.md § "Full-lane arm". -#}
@@ -14,12 +14,11 @@ Rules for this whole session:
 This is the first checkpoint. Set up, then record the specification as phase 1:
 1. If this directory is not a git repository, run `git init -b main`. Add a `.gitignore` containing `.venv/` and `__pycache__/`.
 2. Use a virtual environment at `.venv` here, install `pytest` into it, and ensure that a `requirements.txt` lists the program's dependencies.
-3. Write `CLAUDE.md` with a `## Checks` section whose only line is `<absolute path of this directory>/.venv/bin/python -m pytest -q` (`rdm:land` re-runs it before landing).
+3. Write `CLAUDE.md` with a `## Checks` section whose only line is `@RDM_VERIFY@` (`rdm:land` re-runs it before landing).
 4. Commit everything present to `main`: `git add -A && git commit -m "chore: initial workspace"`.
-5. Point rdm's verify gate at the same command: `rdm config set dispatch.verify "$PWD/.venv/bin/python -m pytest -q"`.
-6. Create the roadmap: `rdm roadmap create @RDM_ROADMAP@ --title "SlopCodeBench solution" --no-edit --project @RDM_PROJECT@`, with a body whose `## Intent` says: implement the specification checkpoint by checkpoint as maintainable Python, with tests under `tests/` that the verify command runs.
-7. Write the specification below verbatim to `/tmp/checkpoint-spec.md`, followed by `## Acceptance Criteria` with `- [ ] The program satisfies every requirement and example in the specification above.` and `- [ ] Tests under tests/ cover those examples and pass under the verify command.`. Then run `rdm phase create checkpoint-1 --title "Checkpoint 1" --number 1 --no-edit --roadmap @RDM_ROADMAP@ --project @RDM_PROJECT@ < /tmp/checkpoint-spec.md`. Phase N is 1.
-8. `rdm commit -m "docs(plan): checkpoint 1"`.
+5. Create the roadmap: `rdm roadmap create @RDM_ROADMAP@ --title "SlopCodeBench solution" --no-edit --project @RDM_PROJECT@`, with a body whose `## Intent` says: implement the specification checkpoint by checkpoint as maintainable Python, with tests under `tests/` that the verify command runs.
+6. Write the specification below verbatim to `/tmp/checkpoint-spec.md`, followed by `## Acceptance Criteria` with `- [ ] The program satisfies every requirement and example in the specification above.` and `- [ ] Tests under tests/ cover those examples and pass under the verify command.`. Then run `rdm phase create checkpoint-1 --title "Checkpoint 1" --number 1 --no-edit --roadmap @RDM_ROADMAP@ --project @RDM_PROJECT@ < /tmp/checkpoint-spec.md`. Phase N is 1.
+7. `rdm commit -m "docs(plan): checkpoint 1"`.
 {% else %}
 This is a continuation checkpoint: the specification below extends the earlier ones. Keep using the same virtual environment, and update `requirements.txt` with any new dependencies.
 1. Run `rdm phase list --roadmap @RDM_ROADMAP@ --project @RDM_PROJECT@ --format json`. Phase N is one more than the highest `number` there. Do not touch earlier phases.

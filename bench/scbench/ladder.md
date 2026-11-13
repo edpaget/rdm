@@ -19,10 +19,11 @@ Arms run in this order.
 | arm | `group` | image | prompt | shipped entrypoints | limits (step / cost / net cost) |
 |---|---|---|---|---|---|
 | `just-solve` | `control` | stock | upstream `configs/prompts/just-solve.jinja` | none | `[agent]`: 100 / 0 / 0 |
+| `just-solve-lint` | `control` | stock | `prompts/just-solve-lint.jinja` | none | `[agent]` |
 | `anti_slop` | `control` | stock | upstream `configs/prompts/anti_slop.jinja` | none | `[agent]` |
 | `plan_first` | `control` | stock | upstream `configs/prompts/plan_first.jinja` | none | `[agent]` |
 | `plan-and-test` | `control` | stock | upstream `configs/prompts/plan-and-test.jinja` | none | `[agent]` |
-| `tracked` | `rdm` | rdm | `prompts/tracked.jinja` | rdm CLI: `config set`, `roadmap create`, `phase create`, `phase list`, `phase show`, `phase update --status done`, `commit` | 1000 / 0 / 0 |
+| `tracked` | `rdm` | rdm | `prompts/tracked.jinja` | rdm CLI: `roadmap create`, `phase create`, `phase list`, `phase show`, `phase update --status done`, `commit` | 1000 / 0 / 0 |
 | `planned` | `rdm` | rdm | `prompts/planned.jinja` | the `tracked` CLI commands, plus `rdm:dispatch-phase --plan-only`, `rdm plan list` / `plan show` and `rdm worktree remove` | 1000 / 0 / 0 |
 | `full-lane` | `rdm` | rdm | `prompts/full-lane.jinja` | the `tracked` setup commands, plus `rdm:dispatch-phase` and `rdm:land` | 1000 / 0 / 0 |
 
@@ -31,10 +32,17 @@ SCBench (`af5a9cbc`). They use the same template contract as `just-solve` and
 `anti_slop`. `plan-and-test` tells the agent to save its plan as
 `<PART N>.md` in the working directory.
 
+`just-solve-lint` is upstream's `just-solve` prompt with two changes: it puts
+the virtual environment at `.venv` with `pytest` installed, and it tells the
+agent to run the bench's verify command (see "The verify gate") before
+finishing and fix the code until it exits 0. It runs in the stock image and
+uses no rdm.
+
 The three rdm rungs share their setup word for word. On the first
 checkpoint, each one runs `git init`, creates `.venv`, writes `CLAUDE.md`
-with a `## Checks` command, sets `dispatch.verify` and creates the roadmap
-`solution`. Each checkpoint then becomes one phase, created from the
+with the bench's verify command under `## Checks` and creates the roadmap
+`solution`. The agent does not set `dispatch.verify`: the bench sets it to the
+same command before the agent starts (see "The verify gate"). Each checkpoint then becomes one phase, created from the
 checkpoint's spec plus the same two acceptance criteria. So the plan repo
 and every phase body are the same across the rdm rungs. Only the way phase
 N is driven differs:
@@ -58,6 +66,48 @@ N is driven differs:
 A `done` write needs no gate. rdm's `reviewed` gate is opt-in, and the bench
 plan repo does not enable it. `done` is never gated.
 
+## The verify gate
+
+Every rdm arm runs under one verify command, `[rdm] verify` in
+`manifest.toml`:
+
+```
+(/workspace/.venv/bin/python -m pytest -q || [ $? -eq 5 ]) && uvx ruff@0.14.1 check --no-cache
+```
+
+The bench sets it, not the agent. The rdm image's wrapper (`agent/claude-rdm.sh`)
+reads it from `RDM_SCBENCH_VERIFY` in the rdm agent config and, on its first
+call in a container, runs `rdm config set dispatch.verify` with it right after
+`rdm init`, then commits both as the plan repo's first commit. A later
+checkpoint or resume never overwrites it. Every manifest-rendered prompt names
+the same command through `@RDM_VERIFY@`: the rdm rungs write it under
+`## Checks` in `CLAUDE.md`, which `rdm:land` re-runs, and `just-solve-lint`
+names it as the check to run before finishing. The dry-run plan and the run
+record carry it per arm as `verify` (`null` for the upstream-prompt controls).
+
+What each part does:
+
+- `/workspace/.venv/bin/python -m pytest -q` runs the project's tests through
+  the primary checkout's venv, by absolute path. `full-lane` runs the gate in
+  an item worktree under `/workspace__worktrees/`, which has no `.venv`.
+  `/workspace` is the environment's graded directory.
+- `|| [ $? -eq 5 ]` lets pytest's exit 5 ("no tests collected") pass. Every
+  other pytest failure still fails the gate. rdm runs the command with
+  `sh -c`.
+- `uvx ruff@0.14.1 check` lints with **ruff's default rule set**: no
+  `--select`, no config. The environment image ships `uv`/`uvx` and no ruff,
+  so `uvx` fetches it on first use, in the stock and the rdm image alike.
+  `0.14.1` is pinned for reproducibility; it is the ruff release the pinned
+  SCBench locks, but the rules differ.
+- `--no-cache` keeps ruff from writing `.ruff_cache/` into the graded
+  directory.
+
+It is a gate a real rdm user would plausibly configure: tests plus a linter's
+defaults. It deliberately does **not** use SCBench's own lint rule list
+(`RUFF_CODES` in SCBench's `metrics/languages/python/constants.py`). That
+list is how the grader counts lint errors, and it stays hidden from every
+arm, so a lint gain measures the process, not obedience to the grader's rules.
+
 ## What each comparison attributes
 
 - **control → `tracked`**: the tracking structure. That covers one roadmap,
@@ -66,6 +116,10 @@ plan repo does not enable it. `done` is never gated.
 - **`tracked` → `planned`**: rdm's planner and its plan review. Both rungs
   implement in the main session on `main`. `planned` adds only the plan-only
   pass and the worktree cleanup.
+- **`just-solve` → `just-solve-lint`**: what running the tests plus a linter
+  before finishing buys, with no rdm. Compare it with control → `tracked`,
+  whose rungs run the same command as their gate, to separate the linter's
+  effect from rdm's process.
 - **`just-solve` → `plan_first` / `plan-and-test`**: any planning at all,
   using upstream's own prompts. Compare this with `tracked` → `planned` to
   separate the value of "planning" from the value of rdm's reviewed plan.
@@ -147,3 +201,5 @@ prompts. Only a live run shows:
 - that `rdm worktree remove` succeeds after a plan-only pass in the container
 - that 1000 steps suits `tracked` and `planned`
 - that the upstream controls behave in Claude Code as they do upstream
+- that `uvx` can fetch ruff inside the container
+- that the agent follows `just-solve-lint`'s check line

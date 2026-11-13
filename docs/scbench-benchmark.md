@@ -77,9 +77,9 @@ The counts are:
 
 Agent cost and time scale with checkpoint runs. The per-problem checkpoint
 counts come from the manifest's `[problems] checkpoints`, pinned with the
-problem set's SHA. The committed manifest has 7 arms and the subset mvvault
+problem set's SHA. The committed manifest has 8 arms and the subset mvvault
 (6 checkpoints) and xjq (5), so 11 checkpoints per arm and seed. At 3 seeds
-that is 7 × 3 × 11 = **231 checkpoint runs** in 7 × 3 × 2 = **42 problem
+that is 8 × 3 × 11 = **264 checkpoint runs** in 8 × 3 × 2 = **48 problem
 sessions**.
 
 `scbench ladder --dry-run` prints exactly these numbers for the manifest and

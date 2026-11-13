@@ -253,7 +253,8 @@ inside SCBench's `output/` trees. It holds:
 - the observed `uv`, Docker and `claude` versions
 - the model file's source, installed path and SHA-256
 - one entry per unit (arm and seed) in run order, with its `seed`, `group`,
-  generated configs and run directory, and `finished`: the time its eval
+  `verify` (the verify command the arm ran under, `[rdm] verify`; `null` for
+  an upstream-prompt control), generated configs and run directory, and `finished`: the time its eval
   exited 0, `null` until then
 - for an rdm arm, each checkpoint's copied plan repo and lane
   classification (`lane`, see "Full-lane arm")
@@ -468,7 +469,9 @@ rdm treatment. The report compares runs by `group`. An arm without `group`
 takes it from `image`: `rdm` for the rdm image, `control` for the stock one.
 `group = "rdm"` on a stock-image arm is refused. The committed manifest sets
 `group` on every arm. The dry-run plan and the run record carry each arm's
-resolved `group`. [`ladder.md`](ladder.md) lists every rung, the shipped
+resolved `group`. The `just-solve-lint` control is `just-solve` with the
+rdm arms' verify command named as the check to run before finishing.
+[`ladder.md`](ladder.md) lists every rung, the shipped
 entrypoints it uses, what each comparison attributes, and the rungs that were
 dropped and why.
 
@@ -522,13 +525,23 @@ its worktrees are created by the running uid. The Docker test
 `rdm-devtools/tests/scbench_image_git.rs` proves this, and skips when Docker,
 `slop-code:python3.12` or an `rdm-scbench-payload` image is absent.
 
-**Checks.** On the first checkpoint the agent sets
-`rdm config set dispatch.verify "<workspace>/.venv/bin/python -m pytest -q"`
-over its own tests. It also writes the same command under `## Checks` in
-`CLAUDE.md`, because `rdm:land` aborts when none of its discovery sources
-names a check. The command uses the primary checkout's absolute venv path,
-because a worktree has no `.venv`. The agent never sees SCBench's hidden
-tests.
+**Checks.** The bench sets the verify gate, not the agent. The manifest's
+`[rdm] verify` reaches the wrapper as `RDM_SCBENCH_VERIFY`, and on its first
+call in a container the wrapper runs
+`rdm config set dispatch.verify "$RDM_SCBENCH_VERIFY"` right after
+`rdm init`, then commits the plan repo, so a later checkpoint, a resume or an
+agent's `rdm commit` never drops or overwrites it. The agent writes the same
+command (the prompt's `@RDM_VERIFY@`) under `## Checks` in `CLAUDE.md`,
+because `rdm:land` aborts when none of its discovery sources names a check.
+The committed command is
+`(/workspace/.venv/bin/python -m pytest -q || [ $? -eq 5 ]) && uvx ruff@0.14.1 check --no-cache`:
+the agent's own tests through the primary checkout's venv by absolute path,
+because a worktree has no `.venv`; pytest's exit 5 (no tests collected)
+passes; and ruff with its **default** rules, fetched by `uvx`. It never uses
+SCBench's own lint rule list (`RUFF_CODES`), so the grader's rules stay hidden
+from every arm. The agent never sees SCBench's hidden tests either. The
+`just-solve-lint` control names the same command as its pre-finish check.
+See [`ladder.md`](ladder.md) § "The verify gate".
 
 **Limits.** An arm's `step_limit`, `cost_limit` and `net_cost_limit` override
 `[agent]`'s for that arm only, and an arm that omits one inherits it. The

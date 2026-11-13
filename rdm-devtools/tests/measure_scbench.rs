@@ -18,11 +18,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use measure_support::{fails, json, measure_bin, ok, repo_root, stderr};
+use rdm_devtools::measure::scbench::manifest::Manifest;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// The `full-lane` stand-in arm's limits, distinct from every `[agent]` value.
 const FULL_LANE_LIMITS: &str = "step_limit = 4321\ncost_limit = 12.5\nnet_cost_limit = 25\n";
+
+/// The `[rdm] verify` every stand-in manifest carries.
+const STAND_IN_VERIFY: &str = "pytest -q && ruff check";
 
 /// Values a stand-in manifest is written with.
 struct Spec {
@@ -222,6 +226,7 @@ prompt = "configs/prompts/anti_slop.jinja"
 [rdm]
 plan_root = "{plan_root}"
 project = "bench"
+verify = "{STAND_IN_VERIFY}"
 "#,
             scbench_repo = root.join("src/slop-code-bench").display(),
             problems_repo = root.join("src/scb-problems").display(),
@@ -573,6 +578,13 @@ const LADDER: &[Rung] = &[
         limits: CONTROL_LIMITS,
     },
     Rung {
+        name: "just-solve-lint",
+        group: "control",
+        image: "stock",
+        template: Template::Rdm,
+        limits: CONTROL_LIMITS,
+    },
+    Rung {
         name: "anti_slop",
         group: "control",
         image: "stock",
@@ -629,11 +641,20 @@ fn committed_ladder_arms_construct_their_invocations() {
         .collect();
     let want: Vec<_> = LADDER.iter().map(|r| r.name).collect();
     assert_eq!(names, want);
+    let committed = Manifest::load(&repo_root().join("bench/scbench/manifest.toml"))
+        .expect("committed manifest");
+    let verify = committed.rdm_table().expect("[rdm]").verify.clone();
 
     for (arm, rung) in arms.iter().zip(LADDER) {
         let ctx = rung.name;
         assert_eq!(arm["group"], rung.group, "{ctx}");
         assert_eq!(arm["image"], rung.image, "{ctx}");
+        let gated = rung.image == "rdm" || matches!(rung.template, Template::Rdm);
+        assert_eq!(
+            arm["verify"],
+            if gated { json!(verify) } else { Value::Null },
+            "{ctx}"
+        );
         let run_yaml = out.join(rung.name).join("seed-1/run.yaml");
         assert_eq!(
             strs(&arm["run"]["args"]),
@@ -668,6 +689,7 @@ fn committed_ladder_arms_construct_their_invocations() {
                 let prompt = arm["prompt"].as_str().expect("rendered prompt");
                 assert!(!prompt.trim().is_empty(), "{ctx}");
                 assert!(!prompt.contains("@RDM_"), "{ctx}: {prompt}");
+                assert!(prompt.contains(&verify), "{ctx}: {prompt}");
             }
         }
         let agent = &arm["agent_config"];
@@ -679,6 +701,7 @@ fn committed_ladder_arms_construct_their_invocations() {
                 "{ctx}"
             );
             assert!(arm["plan_repos_dir"].is_string(), "{ctx}");
+            assert_eq!(agent["env"]["RDM_SCBENCH_VERIFY"], json!(verify), "{ctx}");
         } else {
             assert_eq!(agent["binary"], "claude", "{ctx}");
             assert_eq!(arm["plan_repos_dir"], Value::Null, "{ctx}");
@@ -705,12 +728,13 @@ fn run_record_carries_each_arms_group() {
     });
     ok(&b.run(&[]));
     let record = b.record();
-    for (name, group) in [
-        ("just-solve", "control"),
-        ("anti_slop", "control"),
-        ("just-solve-rdm", "rdm"),
+    for (name, group, verify) in [
+        ("just-solve", "control", Value::Null),
+        ("anti_slop", "control", Value::Null),
+        ("just-solve-rdm", "rdm", json!(STAND_IN_VERIFY)),
     ] {
         assert_eq!(arm_record(&record, name)["group"], group, "{name}");
+        assert_eq!(arm_record(&record, name)["verify"], verify, "{name}");
     }
 }
 
@@ -1482,6 +1506,47 @@ fn committed_arm_prompt(name: &str) -> String {
     arm["prompt"].as_str().expect("rendered prompt").to_owned()
 }
 
+/// The committed manifest's `[rdm] verify`.
+fn committed_verify() -> String {
+    Manifest::load(&repo_root().join("bench/scbench/manifest.toml"))
+        .expect("committed manifest")
+        .rdm_table()
+        .expect("[rdm]")
+        .verify
+        .clone()
+}
+
+#[test]
+fn just_solve_lint_prompt_names_the_rdm_gate_on_every_checkpoint() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let plan = committed_plan(&tmp.path().join("cache"), &tmp.path().join("out"));
+    let arm = plan["plan"]["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .find(|a| a["name"] == "just-solve-lint")
+        .cloned()
+        .expect("committed just-solve-lint");
+    assert_eq!(arm["image"], "stock");
+    assert_eq!(arm["group"], "control");
+    assert_eq!(arm["agent_config"]["binary"], "claude");
+    let template = arm["prompt"].as_str().expect("rendered prompt");
+    let check = format!(
+        "Before you finish, run `{}` from this directory",
+        committed_verify()
+    );
+    let first = jinja(template, false);
+    let cont = jinja(template, true);
+    has(&first, &check);
+    has(&first, "virtual environment at `.venv`");
+    has(&first, "install `pytest`");
+    has(&cont, &check);
+    for text in [&first, &cont] {
+        has(text, "SPEC-SENTINEL");
+        lacks(text, "rdm");
+    }
+}
+
 /// Renders `template` as SCBench's `render_prompt` does, with Jinja.
 fn jinja(template: &str, is_continuation: bool) -> String {
     let mut env = minijinja::Environment::new();
@@ -1512,13 +1577,20 @@ fn lacks(text: &str, not: &str) {
 fn assert_checkpoint_setup(first: &str, cont: &str) {
     for want in [
         "git init -b main",
-        "rdm config set dispatch.verify",
         "rdm roadmap create solution",
         "rdm phase create checkpoint-1 ",
         "--number 1 ",
     ] {
         has(first, want);
     }
+    has(
+        first,
+        &format!(
+            "`## Checks` section whose only line is `{}`",
+            committed_verify()
+        ),
+    );
+    lacks(first, "rdm config set");
     lacks(first, "rdm phase list");
 
     has(

@@ -120,6 +120,10 @@ pub struct ArmPlan {
     pub image: ArmImage,
     /// The arm's treatment group ([`super::manifest::Arm::group`]).
     pub group: ArmGroup,
+    /// The verify command the arm runs under
+    /// ([`super::manifest::Arm::verify`]); `None` for an upstream stock
+    /// control.
+    pub verify: Option<String>,
     /// `<out>/<arm>/agent.yaml`.
     pub agent_config_path: PathBuf,
     /// The agent config written there.
@@ -325,7 +329,7 @@ pub fn build_plan(
             let (prompt_path, prompt) = match (prompts.get(&arm.name), &manifest.rdm) {
                 (Some(raw), Some(rdm)) if manifest.manifest_prompt_source(arm).is_some() => (
                     Some(dir.join("prompt.jinja")),
-                    Some(lane::render_prompt(raw, &rdm.project)),
+                    Some(lane::render_prompt(raw, rdm)),
                 ),
                 _ => (None, None),
             };
@@ -372,6 +376,7 @@ pub fn build_plan(
                 seed,
                 image: arm.image,
                 group: arm.group(),
+                verify: arm.verify(manifest.rdm.as_ref()).map(str::to_owned),
                 docker_template_path,
                 docker_template,
                 prompt_path,

@@ -4,7 +4,11 @@
 #
 # Init. On the first call in a container it initializes the plan repo at
 # $RDM_ROOT, so each problem (one container) starts with a fresh plan repo
-# that its later checkpoints reuse.
+# that its later checkpoints reuse. When $RDM_SCBENCH_VERIFY is set (the
+# manifest's [rdm] verify) it also sets that command as the plan repo's
+# dispatch.verify, then commits init's files and the gate as the plan repo's
+# first commit. Only the first call does this, so a later checkpoint or a
+# resume never overwrites the gate.
 #
 # Ceiling. Claude Code's print mode stops background tasks (subagents,
 # Workflows) 10 minutes after the last turn. Unless the caller set it, the
@@ -45,6 +49,10 @@ export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CLAUDE_CODE_PRINT_BG_WAIT_CEILING
 
 if [ ! -d "$RDM_ROOT/.git" ]; then
     rdm --root "$RDM_ROOT" init --default-project "$RDM_PROJECT" >&2
+    if [ -n "${RDM_SCBENCH_VERIFY:-}" ]; then
+        rdm --root "$RDM_ROOT" config set dispatch.verify "$RDM_SCBENCH_VERIFY" >&2
+    fi
+    rdm --root "$RDM_ROOT" commit -m "chore(bench): initialize plan repo" >&2
 fi
 
 # Tars the plan repo to the next export name; never fails the wrapper.

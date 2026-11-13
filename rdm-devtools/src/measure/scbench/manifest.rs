@@ -120,7 +120,7 @@ pub enum PromptFrom {
     #[default]
     Scbench,
     /// rdm's own template beside the manifest: the runner fills its
-    /// `@RDM_ROADMAP@`/`@RDM_PROJECT@` placeholders and writes it to
+    /// `@RDM_ROADMAP@`/`@RDM_PROJECT@`/`@RDM_VERIFY@` placeholders and writes it to
     /// `<out>/<arm>/prompt.jinja` (see [`super::lane::render_prompt`]).
     Manifest,
 }
@@ -162,6 +162,18 @@ impl Arm {
     /// stock one.
     pub fn group(&self) -> ArmGroup {
         group_for(self.group, self.image)
+    }
+
+    /// The verify command this arm runs under: `rdm.verify` when the arm
+    /// runs in the rdm image (the wrapper sets the gate) or its prompt is
+    /// rendered from the manifest (the prompt names the command); `None`
+    /// for an upstream-prompt stock control.
+    pub fn verify<'a>(&self, rdm: Option<&'a Rdm>) -> Option<&'a str> {
+        if self.image == ArmImage::Rdm || self.prompt_from == PromptFrom::Manifest {
+            rdm.map(|r| r.verify.as_str())
+        } else {
+            None
+        }
     }
 }
 
@@ -218,6 +230,10 @@ pub struct Rdm {
     pub plan_root: String,
     /// The plan repo's default project (`[a-z0-9-]+`).
     pub project: String,
+    /// The verify gate command (a non-empty single line): the wrapper sets
+    /// it as the plan repo's `dispatch.verify`, and every manifest-rendered
+    /// prompt names it (see [`Arm::verify`]).
+    pub verify: String,
 }
 
 impl Manifest {
@@ -472,6 +488,15 @@ impl Manifest {
                     rdm.project
                 ));
             }
+            if rdm.verify.trim().is_empty() {
+                return Err("rdm.verify must be a non-empty command".to_owned());
+            }
+            if rdm.verify.contains(['\n', '\r']) {
+                return Err(format!(
+                    "rdm.verify must be a single line, got {:?}",
+                    rdm.verify
+                ));
+            }
         }
         Ok(())
     }
@@ -602,7 +627,8 @@ prompt = "configs/prompts/anti_slop.jinja"
         );
     }
 
-    const RDM: &str = "\n[rdm]\nplan_root = \"/rdm-plan\"\nproject = \"bench\"\n";
+    const RDM: &str =
+        "\n[rdm]\nplan_root = \"/rdm-plan\"\nproject = \"bench\"\nverify = \"pytest -q\"\n";
 
     fn with_rdm_arm(t: &str) -> String {
         format!("{t}\n[[arm]]\nname = \"r\"\nprompt = \"p.jinja\"\nimage = \"rdm\"\n")
@@ -622,6 +648,48 @@ prompt = "configs/prompts/anti_slop.jinja"
         let rdm = m.rdm_table().expect("rdm table");
         assert_eq!(rdm.plan_root, "/rdm-plan");
         assert_eq!(rdm.project, "bench");
+        assert_eq!(rdm.verify, "pytest -q");
+    }
+
+    #[test]
+    fn empty_rdm_verify_fails() {
+        fails_naming(
+            &format!("{}{}", RDM.replace("\"pytest -q\"", "\"  \""), text()),
+            "rdm.verify",
+        );
+    }
+
+    #[test]
+    fn multi_line_rdm_verify_fails() {
+        fails_naming(
+            &format!(
+                "{}{}",
+                RDM.replace("\"pytest -q\"", "\"pytest -q\\nruff check\""),
+                text()
+            ),
+            "rdm.verify",
+        );
+    }
+
+    #[test]
+    fn missing_rdm_verify_fails() {
+        fails_naming(
+            &format!("{}{}", RDM.replace("verify = \"pytest -q\"\n", ""), text()),
+            "verify",
+        );
+    }
+
+    #[test]
+    fn arm_verify_is_the_bench_gate_for_rdm_image_and_manifest_prompt_arms_only() {
+        let m = parse(&with_manifest_prompt_arm(
+            &with_rdm_arm(&format!("{RDM}{}", text())),
+            "",
+        ))
+        .expect("valid");
+        let rdm = m.rdm.as_ref();
+        assert_eq!(m.arms[0].verify(rdm), None, "upstream stock control");
+        assert_eq!(m.arms[2].verify(rdm), Some("pytest -q"), "rdm image");
+        assert_eq!(m.arms[3].verify(rdm), Some("pytest -q"), "manifest prompt");
     }
 
     #[test]
