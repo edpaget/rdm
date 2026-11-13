@@ -444,6 +444,16 @@ result. There is no bench-side copy or merge. rdm puts the item worktrees at
 directory. The graded tree also gains `.git/`, `.gitignore` and `CLAUDE.md`.
 None of these is Python, so the erosion metrics never read them.
 
+**Plan repo trust.** The image creates `plan_root` as root, and SCBench runs
+the container as the host uid, so the build runs `rdm-plan-root-setup`
+(`agent/plan-root-setup.sh`), which also writes
+`git config --system --add safe.directory <plan_root>`. git then trusts the
+plan repo for whatever uid the container runs as, and the agent never needs a
+`safe.directory` of its own. `/workspace__worktrees` needs no entry, because
+its worktrees are created by the running uid. The Docker test
+`rdm-devtools/tests/scbench_image_git.rs` proves this, and skips when Docker,
+`slop-code:python3.12` or an `rdm-scbench-payload` image is absent.
+
 **Checks.** On the first checkpoint the agent sets
 `rdm config set dispatch.verify "<workspace>/.venv/bin/python -m pytest -q"`
 over its own tests. It also writes the same command under `## Checks` in

@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     install -D -m 0755 target/release/rdm /out/opt/rdm/bin/rdm
 RUN test -n "$RDM_SHA" && \
     install -m 0755 bench/scbench/agent/claude-rdm.sh /out/opt/rdm/bin/claude-rdm && \
+    install -m 0755 bench/scbench/agent/plan-root-setup.sh /out/opt/rdm/bin/rdm-plan-root-setup && \
     cp -R plugins/rdm /out/opt/rdm/plugin && \
     printf '%s\n' "$RDM_SHA" > /out/opt/rdm/RDM_SHA
 

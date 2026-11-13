@@ -25,13 +25,13 @@ RUN npm install -g @anthropic-ai/claude-code@@CLAUDE_CODE_VERSION@ @musistudio/c
 COPY --from=@RDM_PAYLOAD_IMAGE@ /opt/rdm /opt/rdm
 ENV PATH="/opt/rdm/bin:$PATH"
 
-# --- rdm: the plan root, outside the graded workspace, writable by any uid --
-# /workspace__worktrees is where rdm puts the primary checkout's worktrees
-# (rdm-git's worktree::worktree_path: <parent>/<repo-name>__worktrees/<item>);
-# `/` is root-owned and the container runs as the host uid, so it is made here.
-# It sits beside the graded /workspace, never inside it.
+# --- rdm: the plan root, outside the graded workspace ----------------------
+# Writable by any uid and trusted by git for any uid (a system safe.directory):
+# the container runs as the host uid, which owns nothing made here. It also
+# makes /workspace__worktrees beside the graded /workspace. See
+# bench/scbench/agent/plan-root-setup.sh.
 USER root
-RUN mkdir -p @RDM_PLAN_ROOT@ /workspace__worktrees && chmod 1777 @RDM_PLAN_ROOT@ /workspace__worktrees
+RUN /opt/rdm/bin/rdm-plan-root-setup @RDM_PLAN_ROOT@
 USER agent
 
 # --- Make the agent home usable by any runtime uid ---------------------------

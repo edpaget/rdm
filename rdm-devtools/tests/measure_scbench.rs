@@ -1280,7 +1280,10 @@ fn rdm_arm_plan_repo_is_outside_graded_dir() {
     assert_eq!(plan_root, "/rdm-plan");
     assert!(!Path::new(plan_root).starts_with(graded));
     let template = std::fs::read_to_string(arm_dir.join("docker.j2")).expect("docker.j2");
-    assert!(template.contains("mkdir -p /rdm-plan"), "{template}");
+    assert!(
+        template.contains("RUN /opt/rdm/bin/rdm-plan-root-setup /rdm-plan"),
+        "{template}"
+    );
 }
 
 #[test]

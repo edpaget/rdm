@@ -3,7 +3,8 @@
 //!
 //! The image is two layers. The payload image (`bench/scbench/agent/Dockerfile`,
 //! context = the rdm checkout under test) holds `/opt/rdm`: the Linux `rdm`
-//! binary, `plugins/rdm`, the [`WRAPPER`] and the [`SHA_FILE`]. SCBench's
+//! binary, `plugins/rdm`, the [`WRAPPER`], the [`PLAN_ROOT_SETUP`] script and the
+//! [`SHA_FILE`]. SCBench's
 //! agent image is then built from `bench/scbench/agent/docker.j2`, which
 //! copies `/opt/rdm` out of the payload with `COPY --from`. Everything here is
 //! a `ClaudeCodeConfig` field (`docker_template`, `version`, `binary`,
@@ -31,6 +32,9 @@ pub const RDM_BIN: &str = "/opt/rdm/bin/rdm";
 pub const PLUGIN_DIR: &str = "/opt/rdm/plugin";
 /// The agent binary: initializes the plan repo, then runs `claude`.
 pub const WRAPPER: &str = "/opt/rdm/bin/claude-rdm";
+/// Run as root at agent-image build time: makes the plan root writable by any
+/// uid and trusted by git for any uid (a system `safe.directory`).
+pub const PLAN_ROOT_SETUP: &str = "/opt/rdm/bin/rdm-plan-root-setup";
 /// The payload Dockerfile, relative to the manifest's directory.
 pub const DOCKERFILE: &str = "agent/Dockerfile";
 /// The unrendered agent template, relative to the manifest's directory.
@@ -172,12 +176,12 @@ prompt = "configs/prompts/a1.jinja"
     fn render_template_fills_placeholders_and_keeps_base_image() {
         let t = "FROM {{ base_image }}\nRUN npm i x@@CLAUDE_CODE_VERSION@\n\
                  COPY --from=@RDM_PAYLOAD_IMAGE@ /opt/rdm /opt/rdm\n\
-                 RUN mkdir -p @RDM_PLAN_ROOT@ && chmod 1777 @RDM_PLAN_ROOT@\n";
+                 RUN /opt/rdm/bin/rdm-plan-root-setup @RDM_PLAN_ROOT@\n";
         assert_eq!(
             render_template(t, "2.1.322", "S", "/rdm-plan"),
             "FROM {{ base_image }}\nRUN npm i x@2.1.322\n\
              COPY --from=rdm-scbench-payload:S /opt/rdm /opt/rdm\n\
-             RUN mkdir -p /rdm-plan && chmod 1777 /rdm-plan\n"
+             RUN /opt/rdm/bin/rdm-plan-root-setup /rdm-plan\n"
         );
     }
 }
