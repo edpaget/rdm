@@ -5,16 +5,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::containers;
 use super::environment;
 use super::lane::{self, LaneRecord};
 use super::manifest::{ArmGroup, ArmImage, Manifest};
 use super::plan::{self, CommandSpec, Paths, RunPlan, Tools};
 use super::redact;
+use crate::process::{self, Interrupts};
 
 /// The run record's schema version: 2 records one [`ArmRecord`] per arm and
 /// seed. A record without `schema` (phases 1-4) has one per arm, at seed 1.
@@ -102,6 +105,26 @@ pub struct ArmRecord {
     /// RFC 3339 time at which the unit's eval exited 0; `null` until then, so
     /// a report skips a unit that never finished.
     pub finished: Option<String>,
+    /// Set when a signal stopped the run during this unit; left out of the
+    /// record otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<Interruption>,
+}
+
+/// How a signal stopped a unit.
+#[derive(Debug, Serialize)]
+pub struct Interruption {
+    /// `SIGINT`, `SIGTERM` or `SIGHUP`.
+    pub signal: String,
+    /// The step it arrived in: `run`, `lane` or `eval`.
+    pub step: String,
+    /// RFC 3339 time the interruption was recorded.
+    pub at: String,
+    /// Whether `slop-code` outlived the grace period and was killed.
+    pub killed: bool,
+    /// The containers removed because they mounted the step's scratch
+    /// directory.
+    pub removed_containers: Vec<String>,
 }
 
 /// One spawned command.
@@ -119,6 +142,16 @@ pub struct CommandRecord {
     pub started: String,
     /// RFC 3339 finish time.
     pub finished: String,
+    /// The signal forwarded to it, when the run was interrupted while it ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<String>,
+    /// Whether it outlived the grace period and was killed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub killed: bool,
+    /// For a `slop-code` run or eval, the scratch directory given to it as
+    /// `TMPDIR`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmpdir: Option<PathBuf>,
 }
 
 /// How a spawned command's stdio is wired.
@@ -136,9 +169,23 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-struct Executor {
+/// `SIGINT`, `SIGTERM`, `SIGHUP`, or `signal <n>` for any other.
+pub(super) fn signal_name(sig: i32) -> String {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    match sig {
+        SIGINT => "SIGINT".to_owned(),
+        SIGTERM => "SIGTERM".to_owned(),
+        SIGHUP => "SIGHUP".to_owned(),
+        n => format!("signal {n}"),
+    }
+}
+
+struct Executor<'a> {
     record: RunRecord,
     path: PathBuf,
+    interrupts: &'a Interrupts,
+    stop_grace: Duration,
+    docker: String,
 }
 
 /// The outcome of one spawn.
@@ -148,6 +195,11 @@ pub(super) struct Ran {
     /// Captured stdout (empty unless [`Io::Capture`]).
     pub(super) stdout: String,
     spawn_error: Option<String>,
+    /// The signal forwarded to a `slop-code` spawn, when one arrived.
+    pub(super) interrupted: Option<i32>,
+    /// Whether that spawn outlived the grace period and was killed.
+    pub(super) killed: bool,
+    grace: Duration,
 }
 
 impl Ran {
@@ -161,17 +213,48 @@ impl Ran {
         self.spawn_error.is_some()
     }
 
-    /// `exited <n>`, `was killed by a signal` or `failed to spawn: <e>`.
+    /// `exited <n>`, `was killed by a signal`, `failed to spawn: <e>`, or
+    /// for an interrupted spawn `was stopped by SIGTERM` / `was killed after
+    /// the <n>s grace`.
     pub(super) fn describe(&self) -> String {
         match (&self.spawn_error, self.exit) {
             (Some(e), _) => format!("failed to spawn: {e}"),
+            (None, _) if self.killed => {
+                format!("was killed after the {}s grace", self.grace.as_secs())
+            }
+            (None, _) if self.interrupted.is_some() => format!(
+                "was stopped by {}",
+                signal_name(self.interrupted.unwrap_or_default())
+            ),
             (None, Some(code)) => format!("exited {code}"),
             (None, None) => "was killed by a signal".to_owned(),
         }
     }
+
+    fn spawned(exit: Option<i32>, stdout: String) -> Self {
+        Self {
+            exit,
+            stdout,
+            spawn_error: None,
+            interrupted: None,
+            killed: false,
+            grace: Duration::ZERO,
+        }
+    }
+
+    fn spawn_failed_with(e: &std::io::Error) -> Self {
+        Self {
+            exit: None,
+            stdout: String::new(),
+            spawn_error: Some(e.to_string()),
+            interrupted: None,
+            killed: false,
+            grace: Duration::ZERO,
+        }
+    }
 }
 
-impl Executor {
+impl Executor<'_> {
     fn save(&self) -> Result<(), String> {
         let body = serde_json::to_string_pretty(&self.record).map_err(|e| e.to_string())?;
         let tmp = self.path.with_extension("json.tmp");
@@ -181,11 +264,252 @@ impl Executor {
             .map_err(|e| format!("cannot write {}: {e}", self.path.display()))
     }
 
+    /// Spawns `spec`, unless a signal has arrived: then it spawns nothing and
+    /// fails `interrupted by <SIG> before `<argv>``. That stops probes,
+    /// provisioning and the lane's git and tar steps once the run is being
+    /// stopped.
     fn spawn(&mut self, spec: &CommandSpec, io: Io) -> Result<Ran, String> {
+        if let Some(sig) = self.interrupts.received() {
+            return Err(format!(
+                "interrupted by {} before `{}`",
+                signal_name(sig),
+                spec.argv().join(" ")
+            ));
+        }
+        self.spawn_teardown(spec, io)
+    }
+
+    /// [`Executor::spawn`] without the signal check, for the docker calls
+    /// that tear an interrupted step down.
+    fn spawn_teardown(&mut self, spec: &CommandSpec, io: Io) -> Result<Ran, String> {
         let (ran, record) = spawn_command(spec, io);
         self.record.commands.push(record);
         self.save()?;
         Ok(ran)
+    }
+
+    /// Spawns a `slop-code` run or eval in its own process group with stdin
+    /// at `/dev/null`, inherited stdout/stderr and `TMPDIR` at `scratch`,
+    /// forwarding a signal to it ([`process::run_forwarding`]), and records
+    /// it.
+    fn spawn_slop_code(&mut self, spec: &CommandSpec, scratch: &Path) -> Result<Ran, String> {
+        let mut cmd = command(spec);
+        cmd.stdin(Stdio::null()).env("TMPDIR", scratch);
+        let started = now();
+        let ran = match process::run_forwarding(&mut cmd, self.interrupts, self.stop_grace) {
+            Ok(f) => Ran {
+                interrupted: f.interrupted,
+                killed: f.killed,
+                grace: self.stop_grace,
+                ..Ran::spawned(f.status.code(), String::new())
+            },
+            Err(e) => Ran {
+                interrupted: self.interrupts.received(),
+                ..Ran::spawn_failed_with(&e)
+            },
+        };
+        self.record.commands.push(CommandRecord {
+            argv: spec.argv(),
+            cwd: spec.cwd.clone(),
+            env: spec.env.clone(),
+            exit: ran.exit,
+            started,
+            finished: now(),
+            interrupted: ran.interrupted.map(signal_name),
+            killed: ran.killed,
+            tmpdir: Some(scratch.to_path_buf()),
+        });
+        self.save()?;
+        Ok(ran)
+    }
+
+    /// Runs one `slop-code` step (`run` or `eval`) of `stop`'s unit: refuses
+    /// to start once a signal has arrived; spawns it with a fresh scratch
+    /// `TMPDIR`; when it was interrupted, removes the containers mounting the
+    /// scratch; scrubs the unit's `seed-<n>` directory whatever happened;
+    /// removes the scratch; then records and returns an interruption as the
+    /// error.
+    fn slop_code_step(
+        &mut self,
+        stop: &Stop<'_>,
+        step: &str,
+        spec: &CommandSpec,
+        secret: Option<&redact::Secret>,
+        stderr: &mut dyn Write,
+    ) -> Result<Ran, String> {
+        if let Some(sig) = self.interrupts.received() {
+            return Err(self.interrupted(stop, step, sig, None));
+        }
+        let base = std::env::temp_dir();
+        let scratch = tempfile::Builder::new()
+            .prefix("scb")
+            .rand_bytes(6)
+            .tempdir_in(&base)
+            .map_err(|e| {
+                format!(
+                    "arm {}: cannot create a scratch directory under {}: {e}",
+                    stop.unit,
+                    base.display()
+                )
+            })?;
+        let ran = self.spawn_slop_code(spec, scratch.path());
+        let interrupted = match &ran {
+            Ok(r) => r.interrupted,
+            Err(_) => self.interrupts.received(),
+        };
+        let removed = if interrupted.is_some() {
+            self.teardown_containers(scratch.path(), stderr)
+        } else {
+            Vec::new()
+        };
+        redact::scrub_tree(stop.seed_dir, secret, "scbench run", stderr);
+        let path = scratch.path().to_path_buf();
+        if let Err(e) = scratch.close() {
+            redact::scrub_tree(&path, secret, "scbench run", stderr);
+            let _ = writeln!(
+                stderr,
+                "scbench run: could not remove scratch dir {} ({}); remove it by hand",
+                path.display(),
+                e.kind()
+            );
+        }
+        let ran = ran?;
+        if let Some(sig) = interrupted {
+            let killed = ran.killed;
+            return Err(self.interrupted(stop, step, sig, Some((killed, removed))));
+        }
+        Ok(ran)
+    }
+
+    /// Records that `sig` stopped `stop`'s unit during `step` and returns the
+    /// error naming the unit. `slop` is `None` when no `slop-code` command
+    /// was running, else whether it was killed and the containers removed.
+    fn interrupted(
+        &mut self,
+        stop: &Stop<'_>,
+        step: &str,
+        sig: i32,
+        slop: Option<(bool, Vec<String>)>,
+    ) -> String {
+        let signal = signal_name(sig);
+        let what = match &slop {
+            None => "no slop-code command was running".to_owned(),
+            Some((killed, removed)) => {
+                let how = if *killed {
+                    format!(
+                        "did not exit within the {}s grace and was killed",
+                        self.stop_grace.as_secs()
+                    )
+                } else {
+                    "exited on the signal".to_owned()
+                };
+                format!(
+                    "slop-code {how}; removed {} container(s) this run started",
+                    removed.len()
+                )
+            }
+        };
+        let (killed, removed_containers) = slop.unwrap_or_default();
+        self.record.arms[stop.index].interrupted = Some(Interruption {
+            signal: signal.clone(),
+            step: step.to_owned(),
+            at: now(),
+            killed,
+            removed_containers,
+        });
+        let mut message = format!(
+            "arm {}: interrupted by {signal} during {step} (problems {}); {what}; the partial \
+             output stays under {}; rdm-measure scbench report --run {} lists the unit as not \
+             finished",
+            stop.unit,
+            stop.problems.join(", "),
+            stop.seed_dir.display(),
+            stop.out.display()
+        );
+        if let Err(e) = self.save() {
+            message.push_str(&format!("; the run record could not be updated: {e}"));
+        }
+        message
+    }
+
+    /// Removes the containers that mount `scratch` (see [`containers`]) and
+    /// returns their ids. A docker failure is reported on `stderr` and the
+    /// teardown carries on; it never fails the caller.
+    fn teardown_containers(&mut self, scratch: &Path, stderr: &mut dyn Write) -> Vec<String> {
+        let docker = self.docker.clone();
+        let mut failed = |what: &str, how: &str| {
+            let _ = writeln!(
+                stderr,
+                "scbench run: could not {what} containers ({how}); check `docker ps` for \
+                 SlopCodeBench containers mounting {}",
+                scratch.display()
+            );
+        };
+        let listed = match self.spawn_teardown(&containers::list(&docker), Io::Capture) {
+            Ok(r) if r.ok() => r
+                .stdout
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            Ok(r) => {
+                failed("list", &r.describe());
+                return Vec::new();
+            }
+            Err(e) => {
+                failed("list", &e);
+                return Vec::new();
+            }
+        };
+        let ours = if listed.is_empty() {
+            Vec::new()
+        } else {
+            let inspected =
+                match self.spawn_teardown(&containers::inspect(&docker, &listed), Io::Capture) {
+                    Ok(r) if r.ok() => r.stdout,
+                    Ok(r) => {
+                        failed("inspect", &r.describe());
+                        return Vec::new();
+                    }
+                    Err(e) => {
+                        failed("inspect", &e);
+                        return Vec::new();
+                    }
+                };
+            match containers::attributed(&inspected, scratch) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    failed("inspect", &e);
+                    return Vec::new();
+                }
+            }
+        };
+        if ours.is_empty() {
+            let _ = writeln!(
+                stderr,
+                "scbench run: no container mounted the scratch directory {}; none removed",
+                scratch.display()
+            );
+            return Vec::new();
+        }
+        match self.spawn_teardown(&containers::remove(&docker, &ours), Io::Capture) {
+            Ok(r) if r.ok() => {
+                let _ = writeln!(
+                    stderr,
+                    "scbench run: removed {} container(s) mounting {}",
+                    ours.len(),
+                    scratch.display()
+                );
+                ours
+            }
+            Ok(r) => {
+                failed("remove", &r.describe());
+                Vec::new()
+            }
+            Err(e) => {
+                failed("remove", &e);
+                Vec::new()
+            }
+        }
     }
 
     fn probe(&mut self, tool: &str, spec: &CommandSpec) -> Result<String, String> {
@@ -201,14 +525,35 @@ impl Executor {
     }
 }
 
-/// Spawns `spec` with `io` and waits for it, returning the outcome and its
-/// record.
-pub(super) fn spawn_command(spec: &CommandSpec, io: Io) -> (Ran, CommandRecord) {
+/// The unit a step belongs to, for an interruption's record and message.
+struct Stop<'a> {
+    /// The unit's index in [`RunRecord::arms`].
+    index: usize,
+    /// `<arm> seed <n>`.
+    unit: &'a str,
+    /// The unit's `seed-<n>` directory.
+    seed_dir: &'a Path,
+    /// The manifest's problem subset (one `slop-code run` drives all of it).
+    problems: &'a [String],
+    /// The run's `--out`.
+    out: &'a Path,
+}
+
+/// The [`Command`] for `spec`: program, arguments, extra environment and
+/// working directory; stdio untouched.
+fn command(spec: &CommandSpec) -> Command {
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args).envs(&spec.env);
     if let Some(cwd) = &spec.cwd {
         cmd.current_dir(cwd);
     }
+    cmd
+}
+
+/// Spawns `spec` with `io` and waits for it, returning the outcome and its
+/// record.
+pub(super) fn spawn_command(spec: &CommandSpec, io: Io) -> (Ran, CommandRecord) {
+    let mut cmd = command(spec);
     match io {
         Io::Capture => {
             cmd.stdin(Stdio::null()).stdout(Stdio::piped());
@@ -229,16 +574,8 @@ pub(super) fn spawn_command(spec: &CommandSpec, io: Io) -> (Ran, CommandRecord) 
         Io::Quiet | Io::Inherit => cmd.status().map(|s| (s.code(), String::new())),
     };
     let ran = match result {
-        Ok((exit, stdout)) => Ran {
-            exit,
-            stdout,
-            spawn_error: None,
-        },
-        Err(e) => Ran {
-            exit: None,
-            stdout: String::new(),
-            spawn_error: Some(e.to_string()),
-        },
+        Ok((exit, stdout)) => Ran::spawned(exit, stdout),
+        Err(e) => Ran::spawn_failed_with(&e),
     };
     let record = CommandRecord {
         argv: spec.argv(),
@@ -247,6 +584,9 @@ pub(super) fn spawn_command(spec: &CommandSpec, io: Io) -> (Ran, CommandRecord) 
         exit: ran.exit,
         started,
         finished: now(),
+        interrupted: None,
+        killed: false,
+        tmpdir: None,
     };
     (ran, record)
 }
@@ -318,12 +658,22 @@ pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 /// scrub comes before the plan repos are copied out, so their copies are
 /// made from clean tars.
 ///
+/// Each `slop-code` run and eval runs in its own process group, with stdin at
+/// `/dev/null` and `TMPDIR` at a fresh scratch directory
+/// ([`process::run_forwarding`]). When `interrupts` records a signal, it is
+/// forwarded to that group; after `stop_grace` the group is killed; the
+/// containers mounting the scratch directory, and only those, are removed
+/// ([`containers`]); the unit is scrubbed; the interruption is recorded on
+/// the unit ([`ArmRecord::interrupted`]) and returned as the error. A signal
+/// between steps spawns nothing more and is recorded the same way.
+///
 /// # Errors
 ///
 /// When a probe, provisioning step, arm command or plan-repo extraction
 /// fails, an rdm arm's plan root lies in SCBench's graded directory, or a
 /// file cannot be written. An arm failure reads
-/// `arm <name> seed <n>: <run|eval> exited <code>`.
+/// `arm <name> seed <n>: <run|eval> exited <code>`; an interruption reads
+/// `arm <name> seed <n>: interrupted by <SIG> during <run|lane|eval> ...`.
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     manifest: &Manifest,
@@ -333,6 +683,8 @@ pub fn execute(
     seeds: &[u64],
     template: Option<&str>,
     prompts: &BTreeMap<String, String>,
+    interrupts: &Interrupts,
+    stop_grace: Duration,
     stderr: &mut dyn Write,
 ) -> Result<RunPlan, String> {
     let secret = redact::Secret::for_provider(&manifest.agent.provider);
@@ -353,6 +705,9 @@ pub fn execute(
             commands: Vec::new(),
         },
         path: out_dir.join(plan::RECORD_FILE),
+        interrupts,
+        stop_grace,
+        docker: tools.docker.clone(),
     };
     ex.save()?;
 
@@ -382,6 +737,7 @@ pub fn execute(
             run_dir: a.run_dir.clone(),
             lane: None,
             finished: None,
+            interrupted: None,
         })
         .collect();
     ex.save()?;
@@ -460,21 +816,33 @@ pub fn execute(
         }
         write_json(&arm.run_config_path, &arm.run_config)?;
         let seed_dir = arm.run_dir.parent().unwrap_or(&arm.run_dir);
-        let ran = ex.spawn(&arm.run, Io::Inherit);
-        redact::scrub_tree(seed_dir, secret.as_ref(), "scbench run", stderr);
-        let ran = ran?;
+        let stop = Stop {
+            index: i,
+            unit: &unit,
+            seed_dir,
+            problems: &manifest.problems.subset,
+            out: out_dir,
+        };
+        let ran = ex.slop_code_step(&stop, "run", &arm.run, secret.as_ref(), stderr)?;
         if !ran.ok() {
             return Err(format!("arm {unit}: run {}", ran.describe()));
         }
         if let (Some(dir), Some(rdm)) = (&arm.plan_repos_dir, &manifest.rdm) {
-            let record = lane::collect(
+            let collected = lane::collect(
                 &arm.name,
                 &manifest.problems.subset,
                 &arm.run_dir,
                 dir,
                 &rdm.project,
                 &mut |spec| ex.spawn(spec, Io::Quiet),
-            )?;
+            );
+            // A signal during the lane's git and tar steps makes them fail;
+            // report the interruption, not that failure.
+            if let Some(sig) = interrupts.received() {
+                redact::scrub_tree(seed_dir, secret.as_ref(), "scbench run", stderr);
+                return Err(ex.interrupted(&stop, "lane", sig, None));
+            }
+            let record = collected?;
             let (landed, total) = record.landed();
             ex.record.arms[i].lane = Some(record);
             ex.save()?;
@@ -483,9 +851,7 @@ pub fn execute(
                 "scbench run: {unit}: {landed}/{total} checkpoints landed"
             );
         }
-        let ran = ex.spawn(&arm.eval, Io::Inherit);
-        redact::scrub_tree(seed_dir, secret.as_ref(), "scbench run", stderr);
-        let ran = ran?;
+        let ran = ex.slop_code_step(&stop, "eval", &arm.eval, secret.as_ref(), stderr)?;
         if !ran.ok() {
             return Err(format!("arm {unit}: eval {}", ran.describe()));
         }

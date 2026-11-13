@@ -49,11 +49,11 @@ SCBench checkout.
   - **Subscription** (the manifest's `provider = "claude_code_oauth"`): run
     `claude setup-token` and export the token as `CLAUDE_CODE_OAUTH_TOKEN`.
     Or keep it in 1Password and run every subcommand through
-    `bench/scbench/run.sh <subcommand> ...`, which loads it with `op run`
+    `bench/scbench/run.sh <subcommand> ...`, which reads it with `op read`
     from `op://rdm-dev/claude-token/credential` (override with
-    `SCBENCH_CLAUDE_TOKEN_REF`) into the run's environment and masks it in
-    the live output. The token still reaches disk in SlopCodeBench's logs;
-    see "Credential scrub" below.
+    `SCBENCH_CLAUDE_TOKEN_REF`) into the runner's environment only, then
+    `exec`s the built `rdm-measure`. The token still reaches disk in
+    SlopCodeBench's logs; see "Credential scrub" below.
   - **API key**: set `provider = "anthropic"` in the manifest and export
     `ANTHROPIC_API_KEY`. Do not pair `anthropic` with
     `CLAUDE_CODE_OAUTH_TOKEN`; SCBench would pass the token as an API key.
@@ -75,9 +75,8 @@ archives (the exported plan repos) are masked at the value's length, so they
 still extract. Symlinks are not followed, and an unset or empty credential
 changes nothing.
 
-Not covered: a run stopped by an interrupt (until the interrupt teardown
-lands), and a value inside a zlib-compressed git object within a plan-repo
-tar. A `cannot scrub the credential from <path>` line on stderr means that
+Not covered: a value inside a zlib-compressed git object within a
+plan-repo tar. A `cannot scrub the credential from <path>` line on stderr means that
 file could not be read or rewritten and may still hold the credential:
 delete it by hand.
 
@@ -152,6 +151,49 @@ one `slop-code` problem run each) and `checkpoint_runs`
 It stops at the first failing step with a non-zero exit. A unit failure is
 reported as `error: arm <name> seed <n>: <run|eval> exited <code>`. Units that
 already finished stay on disk.
+
+### Stopping a run
+
+**How to stop.** Press Ctrl-C in the run's terminal, or send `kill -INT` or
+`kill -TERM` to the `rdm-measure` pid (under `run.sh` that is `run.sh`'s own
+pid, since it `exec`s the runner). The same applies to `scbench ladder`. Do
+not use `kill -9`, and do not signal `slop-code` itself: only the runner
+knows what to clean up.
+
+**What happens.** Each `slop-code` command runs in its own process group,
+with `TMPDIR` set to a fresh scratch directory. On SIGINT, SIGTERM or SIGHUP
+the runner:
+
+1. forwards the same signal to `slop-code`'s whole process group (SCBench's
+   worker processes included);
+2. waits up to 10 s (`--stop-grace-secs N`; `0` kills at once), then kills the
+   group;
+3. removes the Docker containers that mount this run's scratch directory,
+   and only those: every container SCBench starts bind-mounts directories
+   under it, so another run's containers, even from the same images, are
+   left alone;
+4. scrubs the unit's `seed-<n>` directory of the credential, as after every
+   `slop-code` call;
+5. exits 1 with
+   `error: arm <name> seed <n>: interrupted by <SIG> during <run|lane|eval> (problems ...)`,
+   saying whether `slop-code` exited on the signal or was killed after the
+   grace, and how many containers were removed.
+
+A signal between steps (probes, provisioning, the lane's copy of the plan
+repos) starts nothing more and is reported the same way.
+
+**What is left behind.** The partial `<out>/<arm>/seed-<n>/`, scrubbed; an
+`interrupted` entry on that unit in `rdm-scbench-run.json` (signal, step,
+time, whether it was killed, the removed container ids); and in
+`scbench report --run <out>` a skipped-run line
+`not finished: interrupted by <SIG> during <step>`. Finished units report as
+usual. `--out` cannot be reused for a new run; choose a fresh directory.
+
+**What is not covered.** `kill -9` of the runner (nothing can clean up); a
+stop during `ladder`'s `image check` container; and a container whose mounts
+do not lie under the scratch directory. When the runner cannot list, inspect
+or remove containers, or none mounted the scratch directory, it says so on
+stderr: check `docker ps` for SlopCodeBench containers.
 
 ### Run, then evaluate
 

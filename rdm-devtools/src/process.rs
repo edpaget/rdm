@@ -42,6 +42,21 @@
 //! a later SIGINT/SIGTERM in the same process no longer terminates it by
 //! default. The `rdm-smoke` entrypoint exits right after its single run, so
 //! this does not affect it; long-lived library callers should be aware of it.
+//! The same holds for [`Interrupts`]: dropping it unregisters its actions,
+//! but the handler stays installed.
+//!
+//! # Forwarding runs
+//!
+//! [`run_forwarding`] is for a long child the operator watches and may stop:
+//! it leaves stdio to the caller and, instead of killing the child as soon as
+//! a signal arrives, passes the signal on. The caller installs an
+//! [`Interrupts`] (SIGINT, SIGTERM and SIGHUP) once for its whole lifetime.
+//! The child is spawned in a fresh process group; the first signal the
+//! [`Interrupts`] records is sent, as itself, to that whole group, and a
+//! grace deadline starts. A child still running when the deadline passes is
+//! counted as killed. Then, on every path, success included, the group is
+//! swept with `SIGKILL` while the child is still unreaped (observed with
+//! `WNOWAIT`, as above), and the child is reaped.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -57,7 +72,7 @@ use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
 use signal_hook::SigId;
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
 /// Default wall-clock limit for a run: two minutes.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -379,10 +394,10 @@ impl std::error::Error for RunError {
 struct SignalGuard(Vec<SigId>);
 
 impl SignalGuard {
-    fn install(flag: &Arc<AtomicUsize>) -> io::Result<Self> {
+    fn install(flag: &Arc<AtomicUsize>, signals: &[i32]) -> io::Result<Self> {
         let mut ids = Vec::new();
-        for sig in [SIGINT, SIGTERM] {
-            // A negative signal number never occurs for these constants.
+        for &sig in signals {
+            // A negative signal number never occurs for the signal constants.
             let value = usize::try_from(sig).unwrap_or(0);
             match signal_hook::flag::register_usize(sig, Arc::clone(flag), value) {
                 Ok(id) => ids.push(id),
@@ -413,6 +428,151 @@ fn interrupted(flag: &AtomicUsize) -> Option<i32> {
     }
 }
 
+/// Records the first SIGINT, SIGTERM or SIGHUP the process receives, for
+/// [`run_forwarding`] and for a caller that checks between its own steps.
+///
+/// Installing one stops those signals from terminating the process by
+/// default; dropping it unregisters its actions (see the module docs).
+pub struct Interrupts {
+    flag: Arc<AtomicUsize>,
+    _guard: Option<SignalGuard>,
+}
+
+impl fmt::Debug for Interrupts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Interrupts")
+            .field("received", &self.received())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Interrupts {
+    /// Registers SIGINT, SIGTERM and SIGHUP; each stores its own number.
+    ///
+    /// # Errors
+    ///
+    /// When a signal action cannot be registered (none stays registered).
+    pub fn install() -> io::Result<Self> {
+        let flag = Arc::new(AtomicUsize::new(0));
+        let guard = SignalGuard::install(&flag, &[SIGINT, SIGTERM, SIGHUP])?;
+        Ok(Self {
+            flag,
+            _guard: Some(guard),
+        })
+    }
+
+    /// The signal received, if any (the last one stored).
+    pub fn received(&self) -> Option<i32> {
+        interrupted(&self.flag)
+    }
+
+    /// An [`Interrupts`] with no handler, fed only by [`Interrupts::trigger`].
+    /// Test seam only, like [`Teardown`]: it lets the forwarding loop be
+    /// tested without raising a process-wide signal.
+    #[doc(hidden)]
+    pub fn manual() -> Self {
+        Self {
+            flag: Arc::new(AtomicUsize::new(0)),
+            _guard: None,
+        }
+    }
+
+    /// Records `sig` as if it had been received. Test seam only.
+    #[doc(hidden)]
+    pub fn trigger(&self, sig: i32) {
+        self.flag
+            .store(usize::try_from(sig).unwrap_or(0), Ordering::SeqCst);
+    }
+}
+
+/// The outcome of a [`run_forwarding`] run.
+#[derive(Debug)]
+pub struct Forwarded {
+    /// The child's exit status.
+    pub status: ExitStatus,
+    /// The signal that was forwarded to the child's group, if one arrived.
+    pub interrupted: Option<i32>,
+    /// Whether the child was still running when the grace period ended, so
+    /// the group sweep killed it.
+    pub killed: bool,
+}
+
+/// The rustix signal to forward for `sig` (SIGTERM for anything else).
+fn forwardable(sig: i32) -> Signal {
+    match sig {
+        SIGINT => Signal::INT,
+        SIGHUP => Signal::HUP,
+        _ => Signal::TERM,
+    }
+}
+
+/// Spawns `cmd` in a fresh process group and waits for it, forwarding the
+/// first signal `interrupts` records to the whole group, then allowing
+/// `grace` before the group is killed. Stdio is the caller's to set.
+///
+/// See "Forwarding runs" in the [module documentation](self) for the order.
+/// A `grace` of zero kills the group as soon as the signal arrives.
+///
+/// # Errors
+///
+/// When the program cannot be spawned (nothing is running then), or when
+/// polling, killing or reaping the child fails (the child has been swept
+/// and, where possible, reaped).
+pub fn run_forwarding(
+    cmd: &mut Command,
+    interrupts: &Interrupts,
+    grace: Duration,
+) -> io::Result<Forwarded> {
+    cmd.process_group(0);
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    let pgid = i32::try_from(pid).ok().and_then(Pid::from_raw);
+    let mut interrupted = None;
+    let mut deadline = None;
+    let mut killed = false;
+    let outcome = loop {
+        match exited_unreaped(pid) {
+            Ok(true) => break Ok(()),
+            Ok(false) => {}
+            Err(e) => break Err(e),
+        }
+        if interrupted.is_none()
+            && let Some(sig) = interrupts.received()
+        {
+            interrupted = Some(sig);
+            deadline = Some(Instant::now() + grace);
+            if let Some(pgid) = pgid {
+                // A failure here (the group already gone) is settled by the
+                // sweep below.
+                let _ = kill_process_group(pgid, forwardable(sig));
+            }
+        }
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            killed = !exited_unreaped(pid).unwrap_or(false);
+            break Ok(());
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
+    // A signal that arrived just as the child exited on its own still marks
+    // the run as interrupted, so the caller tears down what it started.
+    let interrupted = interrupted.or_else(|| interrupts.received());
+
+    // Sweep the group on every path while the child is unreaped, so its pid
+    // still names its own group.
+    let exited = exited_unreaped(pid).unwrap_or(false);
+    let kill_err = terminate(&mut child, pid, exited, Teardown::Correct);
+    let reaped = child.wait();
+    outcome?;
+    if let Some(e) = kill_err {
+        return Err(e);
+    }
+    Ok(Forwarded {
+        status: reaped?,
+        interrupted,
+        killed,
+    })
+}
+
 /// Runs `spec` with `hooks`, bounded by the spec's timeout and stdout cap.
 ///
 /// See the [module documentation](self) for the ordering guarantees.
@@ -434,7 +594,7 @@ fn interrupted(flag: &AtomicUsize) -> Option<i32> {
 ///   outcome.
 pub fn run_bounded(spec: &ProcessSpec, hooks: Hooks<'_>) -> Result<RunOutput, RunError> {
     let flag = Arc::new(AtomicUsize::new(0));
-    let guard = SignalGuard::install(&flag).map_err(RunError::Signals)?;
+    let guard = SignalGuard::install(&flag, &[SIGINT, SIGTERM]).map_err(RunError::Signals)?;
     let Hooks {
         prepare,
         cleanup,
@@ -899,7 +1059,8 @@ impl Session {
     /// As for [`Session::spawn`].
     pub fn spawn_with_line_cap(spec: &ProcessSpec, line_cap: usize) -> Result<Self, SessionError> {
         let flag = Arc::new(AtomicUsize::new(0));
-        let guard = SignalGuard::install(&flag).map_err(SessionError::Signals)?;
+        let guard =
+            SignalGuard::install(&flag, &[SIGINT, SIGTERM]).map_err(SessionError::Signals)?;
         let mut child =
             spec.command(Stdio::piped())
                 .spawn()

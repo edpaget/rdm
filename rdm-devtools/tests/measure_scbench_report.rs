@@ -47,6 +47,9 @@ struct UnitSpec {
     finished: bool,
     checkpoints: Vec<Checkpoint>,
     lane: Option<Value>,
+    /// `(signal, step)` of an interruption that stopped the unit; its run
+    /// directory then also holds a truncated `evaluation.json`.
+    interrupted: Option<(&'static str, &'static str)>,
 }
 
 /// A temp tree holding the stand-in rdm checkout's `bench/scbench/` (the
@@ -98,6 +101,12 @@ impl Fixture {
             for c in &u.checkpoints {
                 scbench_support::write(&run_dir, c);
             }
+            if u.interrupted.is_some() {
+                // The half-written evaluation an interrupted eval leaves.
+                let eval = run_dir.join("mvvault/checkpoint_1/evaluation.json");
+                std::fs::create_dir_all(eval.parent().expect("parent")).expect("mkdir");
+                std::fs::write(&eval, "{\"pass").expect("truncated evaluation");
+            }
             let mut arm = json!({
                 "name": u.arm,
                 "image": u.image,
@@ -109,6 +118,15 @@ impl Fixture {
             });
             if let Some(g) = u.group {
                 arm["group"] = json!(g);
+            }
+            if let Some((signal, step)) = u.interrupted {
+                arm["interrupted"] = json!({
+                    "signal": signal,
+                    "step": step,
+                    "at": "2026-01-01T00:30:00.000Z",
+                    "killed": false,
+                    "removed_containers": ["c1"],
+                });
             }
             if schema2 {
                 arm["seed"] = json!(u.seed);
@@ -295,6 +313,7 @@ fn main_units(shift: Shift) -> Vec<UnitSpec> {
                 finished: true,
                 checkpoints: unit_checkpoints(a, s, shift),
                 lane: (image == "rdm").then(|| lane(s)),
+                interrupted: None,
             });
         }
     }
@@ -540,6 +559,7 @@ fn report_pass_follows_the_pass_policy() {
                 failing,
             ],
             lane: None,
+            interrupted: None,
         }],
     );
     let r = report_json(&run, &[]);
@@ -576,6 +596,7 @@ fn report_pass_rate_counts_unreached_checkpoints_as_failures() {
         finished: true,
         checkpoints,
         lane: None,
+        interrupted: None,
     };
     let run = f.write_run(
         "unreached",
@@ -647,6 +668,42 @@ fn report_skips_unfinished_runs() {
 }
 
 #[test]
+fn report_lists_an_interrupted_unit_as_not_finished() {
+    let f = Fixture::new();
+    let mut units = main_units(Shift::default());
+    let interrupted = units
+        .iter_mut()
+        .find(|u| u.arm == "full-lane" && u.seed == Some(3))
+        .expect("unit");
+    interrupted.finished = false;
+    interrupted.interrupted = Some(("SIGTERM", "run"));
+    // One checkpoint's inference files only, beside the truncated evaluation.
+    interrupted.checkpoints.truncate(1);
+    for c in &mut interrupted.checkpoints {
+        c.eval = None;
+        c.quality = None;
+    }
+    let run = f.write_run("a", true, &RecordPins::default(), &units);
+    let o = report(&run, &["--format", "json"]);
+    assert_eq!(o.status.code(), Some(0));
+    let r = json(&ok(&o));
+    assert_eq!(
+        r["skipped_runs"],
+        json!([{
+            "arm": "full-lane",
+            "seed": 3,
+            "reason": "not finished: interrupted by SIGTERM during run",
+        }])
+    );
+    assert_eq!(arm(&r, "full-lane")["seeds"], json!([1, 2]));
+    let md = ok(&report(&run, &[]));
+    assert!(
+        md.contains("## Skipped runs\n\n- full-lane seed 3: not finished: interrupted by SIGTERM during run\n"),
+        "{md}"
+    );
+}
+
+#[test]
 fn report_reads_a_phase_1_to_4_record() {
     let f = Fixture::new();
     let units: Vec<UnitSpec> = [
@@ -662,6 +719,7 @@ fn report_reads_a_phase_1_to_4_record() {
         finished: true,
         checkpoints: unit_checkpoints(a, 2, Shift::default()),
         lane: None,
+        interrupted: None,
     })
     .collect();
     let run = f.write_run("old", false, &RecordPins::default(), &units);
@@ -908,6 +966,7 @@ fn baseline_comparison_flags_differing_pins() {
         finished: true,
         checkpoints: unit_checkpoints(0, 1, Shift::default()),
         lane: None,
+        interrupted: None,
     });
     let c = f.write_run("c", true, &pins, &units);
     let o = report(&c, &["--baseline", "first", "--format", "json"]);

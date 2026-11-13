@@ -22,13 +22,18 @@
 //!
 //! The run then probes `uv`, Docker and `claude` again itself, as every
 //! `scbench run` does, so its record carries the observed versions.
+//!
+//! SIGINT, SIGTERM and SIGHUP are intercepted from before the preflight: a
+//! signal during it stops the ladder before any `slop-code` command, and one
+//! during the run stops it as `scbench run` does ([`super::exec::execute`]).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::exec::{Io, spawn_command};
+use super::exec::{Io, signal_name, spawn_command};
 use super::image::{self, ImageOptions};
 use super::manifest::{ArmImage, Manifest};
 use super::plan::{self, CommandSpec, Probes, Tools};
@@ -53,6 +58,9 @@ pub struct LadderOptions {
     /// Print the projection, preflight and plan; spawn nothing and create
     /// nothing.
     pub dry_run: bool,
+    /// How long a stopped run waits for `slop-code` to exit
+    /// ([`RunOptions::stop_grace`]).
+    pub stop_grace: Duration,
 }
 
 /// The environment variable SCBench's provider `provider` reads its
@@ -170,6 +178,7 @@ pub fn run(
         arms: None,
         seeds: opts.seeds,
         dry_run,
+        stop_grace: opts.stop_grace,
     };
 
     if opts.dry_run {
@@ -195,15 +204,23 @@ pub fn run(
         return Ok(0);
     }
 
-    preflight(
+    let interrupts = crate::process::Interrupts::install()
+        .map_err(|e| format!("cannot install SIGINT/SIGTERM handling: {e}"))?;
+    let preflight = preflight(
         &manifest,
         &manifest_path,
         opts,
         &probes,
         image_check,
         stderr,
-    )
-    .map_err(|e| format!("ladder preflight: {e}"))?;
+    );
+    if let Some(sig) = interrupts.received() {
+        return Err(format!(
+            "ladder: interrupted by {} during the preflight; no slop-code command ran",
+            signal_name(sig)
+        ));
+    }
+    preflight.map_err(|e| format!("ladder preflight: {e}"))?;
     super::run(&run_options(false), stdout, stderr).map_err(|e| {
         format!(
             "{e}; the finished arm runs are on disk; rdm-measure scbench report --run {} reports them",

@@ -139,6 +139,9 @@ over the given seeds, then the report.
    Because runs go seed-major (every arm for seed 1, then seed 2), the
    finished seeds cover every arm. If the run finishes but the report step fails, the
    error says so and ends with the same `scbench report --run` hint.
+   To stop a run yourself, press Ctrl-C or send `kill -INT`/`kill -TERM` to
+   the `rdm-measure` pid; `bench/scbench/README.md` § "Stopping a run" says
+   what it cleans up and what it leaves behind.
 6. **Re-run into a fresh `--out`.** The report reads one run directory, so a
    re-run is never merged with an earlier one.
 

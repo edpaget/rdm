@@ -9,6 +9,17 @@
 //! (parent directories created) before the fake exits, so a test can leave
 //! output where the real tool would. Each record line also carries
 //! `scbench`: the `SCBENCH_PROBLEMS_PATH` and `SCBENCH_HOME` the call saw.
+//!
+//! Optional keys that make a response a long `slop-code` run:
+//!
+//! - `ignore_sigterm: true` — SIGTERM only sets a flag; registered as soon
+//!   as the response is chosen, so the readiness file never precedes it;
+//! - `grandchild: true` — after `place`, start a long-lived `sleep`
+//!   grandchild in this process's group;
+//! - `ready: "<abs path>"` — then write
+//!   `{ "pid": <own pid>, "grandchild": <pid|null>, "tmpdir": <$TMPDIR|null> }`
+//!   there atomically;
+//! - `hang: true` — then sleep until killed instead of exiting.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -50,6 +61,14 @@ pub fn run(role: &str) -> ExitCode {
         eprintln!("fake {role}: no scenario response for `{joined}`");
         return ExitCode::from(2);
     }
+    let flag_on = |key: &str| chosen.get(key).and_then(Value::as_bool) == Some(true);
+    if flag_on("ignore_sigterm") {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if signal_hook::flag::register(signal_hook::consts::SIGTERM, flag).is_err() {
+            eprintln!("fake {role}: cannot register a SIGTERM handler");
+            return ExitCode::from(2);
+        }
+    }
     for item in chosen
         .get("place")
         .and_then(Value::as_array)
@@ -73,11 +92,34 @@ pub fn run(role: &str) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    let grandchild = if flag_on("grandchild") {
+        let Some(pid) = crate::start_grandchild() else {
+            eprintln!("fake {role}: cannot start a grandchild");
+            return ExitCode::from(2);
+        };
+        Some(pid)
+    } else {
+        None
+    };
+    if let Some(ready) = chosen.get("ready").and_then(Value::as_str) {
+        let body = json!({
+            "pid": std::process::id(),
+            "grandchild": grandchild,
+            "tmpdir": pick("TMPDIR"),
+        });
+        if !crate::write_atomically(ready, body.to_string().as_bytes()) {
+            eprintln!("fake {role}: cannot write the readiness file {ready}");
+            return ExitCode::from(2);
+        }
+    }
     if let Some(out) = chosen.get("stdout").and_then(Value::as_str) {
         let _ = std::io::stdout().lock().write_all(out.as_bytes());
     }
     if let Some(err) = chosen.get("stderr").and_then(Value::as_str) {
         let _ = std::io::stderr().lock().write_all(err.as_bytes());
+    }
+    if flag_on("hang") {
+        crate::sleep_forever();
     }
     let code = chosen.get("exit").and_then(Value::as_u64).unwrap_or(0);
     ExitCode::from(u8::try_from(code).unwrap_or(1))

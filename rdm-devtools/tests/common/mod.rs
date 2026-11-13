@@ -3,9 +3,10 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
-use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
 
 /// Path of the fixture executable, resolved by Cargo.
 pub fn fixture() -> &'static str {
@@ -97,10 +98,11 @@ pub fn check_teardown(marker: &Path, pids: &[u32]) -> Result<(), String> {
     Ok(())
 }
 
-/// Kills every tracked pid on drop, so a failing assertion never leaks a
-/// process. Pids confirmed gone should be released with [`ReapGuard::clear`].
+/// Kills every tracked pid (and every tracked process group) on drop, so a
+/// failing assertion never leaks a process. Pids confirmed gone should be
+/// released with [`ReapGuard::clear`].
 #[derive(Default)]
-pub struct ReapGuard(pub Vec<u32>);
+pub struct ReapGuard(pub Vec<u32>, pub Vec<u32>);
 
 impl ReapGuard {
     /// Tracks one more pid.
@@ -108,18 +110,81 @@ impl ReapGuard {
         self.0.push(raw);
     }
 
-    /// Stops tracking all pids (they were confirmed gone).
-    pub fn clear(&mut self) {
-        self.0.clear();
+    /// Tracks one more process group, by its leader's pid.
+    pub fn track_group(&mut self, pgid: u32) {
+        self.1.push(pgid);
     }
 
-    /// Kills and forgets every tracked pid now.
+    /// Stops tracking all pids and groups (they were confirmed gone).
+    pub fn clear(&mut self) {
+        self.0.clear();
+        self.1.clear();
+    }
+
+    /// Kills and forgets every tracked pid and group now.
     pub fn kill_all(&mut self) {
         for raw in self.0.drain(..) {
             if let Some(p) = pid(raw) {
                 let _ = kill_process(p, Signal::KILL);
             }
         }
+        for raw in self.1.drain(..) {
+            if let Some(p) = pid(raw) {
+                let _ = kill_process_group(p, Signal::KILL);
+            }
+        }
+    }
+}
+
+/// Owns a spawned child that leads its own process group (spawned with
+/// `process_group(0)`). On drop, if the child has not been reaped yet, its
+/// whole group is sent `SIGKILL`, then the child is reaped, so a failing
+/// assertion never leaves it running or unreaped. A child already reaped is
+/// not signalled, since its pid may have been reused.
+pub struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    /// Guards `child`.
+    pub fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    /// The guarded child.
+    pub fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("guarded child")
+    }
+
+    /// The child's pid.
+    pub fn id(&self) -> u32 {
+        self.0.as_ref().expect("guarded child").id()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            if matches!(child.try_wait(), Ok(None))
+                && let Some(p) = pid(child.id())
+            {
+                let _ = kill_process_group(p, Signal::KILL);
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Polls `child` every 20 ms until it exits or `within` elapses; returns its
+/// status, or `None` when it is still running.
+pub fn exit_within(child: &mut Child, within: Duration) -> Option<ExitStatus> {
+    let end = Instant::now() + within;
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        if Instant::now() >= end {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

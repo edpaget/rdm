@@ -304,6 +304,15 @@ struct ArmView {
     run_dir: PathBuf,
     lane: Option<LaneView>,
     finished: Option<String>,
+    interrupted: Option<InterruptionView>,
+}
+
+/// Why an interrupted unit stopped (`exec::Interruption`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct InterruptionView {
+    signal: Option<String>,
+    step: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -622,7 +631,13 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
             skipped.push(Skipped {
                 arm: a.name.clone(),
                 seed: a.seed,
-                reason: if schema2 {
+                reason: if let (true, Some(i)) = (schema2, &a.interrupted) {
+                    format!(
+                        "not finished: interrupted by {} during {}",
+                        i.signal.as_deref().unwrap_or("a signal"),
+                        i.step.as_deref().unwrap_or("an unknown step")
+                    )
+                } else if schema2 {
                     "not finished".to_owned()
                 } else {
                     format!("no run directory {}", a.run_dir.display())

@@ -3009,3 +3009,360 @@ fn scrub_runs_after_slop_code_eval_whatever_its_exit() {
         );
     }
 }
+
+// --- Interrupt teardown ------------------------------------------------------
+//
+// The runner is spawned in its own process group with its output in files
+// (never pipes, so a leaked descendant cannot block the test), and the only
+// signal the test sends goes to the runner's pid. Every pid the fake reports
+// is tracked as soon as it is read, and the runner's guard kills and reaps
+// its group on any failure.
+
+impl Bench {
+    /// Spawns `scbench run` (with `extra`, `env` applied) in its own process
+    /// group, stdout and stderr to files under the bench root. Returns the
+    /// guard and the two log paths.
+    fn spawn_run(
+        &self,
+        extra: &[&str],
+        env: &[(&str, Option<&str>)],
+    ) -> (common::ChildGuard, PathBuf, PathBuf) {
+        use std::os::unix::process::CommandExt;
+        let out_log = self.root.join("runner.stdout.log");
+        let err_log = self.root.join("runner.stderr.log");
+        let mut cmd = self.run_command(&self.out, extra);
+        apply_env(&mut cmd, env);
+        cmd.process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::fs::File::create(&out_log).expect("stdout log"))
+            .stderr(std::fs::File::create(&err_log).expect("stderr log"));
+        let child = cmd.spawn().expect("rdm-measure spawns");
+        (common::ChildGuard::new(child), out_log, err_log)
+    }
+}
+
+/// Waits (30 s) for the fake's readiness file; on timeout, panics with the
+/// runner's stderr (the guards then clean up).
+fn wait_ready(path: &Path, err_log: &Path) -> Value {
+    if !common::wait_for_file(path, std::time::Duration::from_secs(30)) {
+        panic!(
+            "the fake slop-code never became ready; runner stderr:\n{}",
+            std::fs::read_to_string(err_log).unwrap_or_default()
+        );
+    }
+    json(&std::fs::read_to_string(path).expect("ready file"))
+}
+
+/// Has the fake `uv`'s `slop-code run --no-evaluate` leave a credential-laden
+/// log under the unit's output, write its readiness file, then apply the
+/// `behaviour` keys (`hang`, `grandchild`, `ignore_sigterm`); the fake
+/// `docker` lists no container. Returns the readiness file's path.
+fn hanging_run(b: &Bench, behaviour: Value) -> PathBuf {
+    let ready = b.root.join("ready.json");
+    let staged = b.root.join("staged-leaks/infer.log");
+    write(
+        &staged,
+        &format!("exec: docker exec --env CLAUDE_CODE_OAUTH_TOKEN={TOKEN} box\n"),
+    );
+    let leaked = b.out.join("just-solve/seed-1/output/p1/infer.log");
+    let mut response = json!({
+        "place": [{ "from": staged, "to": leaked }],
+        "ready": ready,
+    });
+    if let (Some(r), Value::Object(more)) = (response.as_object_mut(), behaviour) {
+        r.extend(more);
+    }
+    b.scenario(
+        "uv",
+        &json!({ "default": { "exit": 0 } }),
+        &[
+            (&["--version"], json!({ "stdout": "uv 0.0.0-fake\n" })),
+            (&["--no-evaluate"], response),
+        ],
+    );
+    b.scenario(
+        "docker",
+        &json!({ "default": { "stdout": "99.0.0-fake\n" } }),
+        &[(&["ps"], json!({ "stdout": "" }))],
+    );
+    ready
+}
+
+/// How an interrupted run ended.
+struct Stopped {
+    status: std::process::ExitStatus,
+    stderr: String,
+    ready: Value,
+    since_signal: std::time::Duration,
+}
+
+/// Spawns `scbench run --arms just-solve` with `extra` and the fake token,
+/// waits for the fake at `ready_path`, runs `before_signal`, sends `signal`
+/// to the runner only, and waits (30 s) for it to exit. Asserts the fake and
+/// any grandchild are gone within 3 s.
+fn interrupt_run(
+    b: &Bench,
+    ready_path: &Path,
+    extra: &[&str],
+    signal: rustix::process::Signal,
+    before_signal: impl FnOnce(&Value),
+) -> Stopped {
+    use std::time::{Duration, Instant};
+    let mut args = vec!["--arms", "just-solve"];
+    args.extend_from_slice(extra);
+    let (mut runner, _out_log, err_log) = b.spawn_run(&args, WITH_TOKEN);
+    let mut reap = common::ReapGuard::default();
+    let ready = wait_ready(ready_path, &err_log);
+    let fake = u32::try_from(ready["pid"].as_u64().expect("fake pid")).expect("pid fits");
+    reap.track(fake);
+    reap.track_group(fake);
+    let grandchild = ready["grandchild"]
+        .as_u64()
+        .map(|g| u32::try_from(g).expect("pid fits"));
+    if let Some(g) = grandchild {
+        reap.track(g);
+    }
+    before_signal(&ready);
+    let pid = i32::try_from(runner.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .expect("runner pid");
+    rustix::process::kill_process(pid, signal).expect("signal the runner");
+    let at = Instant::now();
+    let status = common::exit_within(runner.child(), Duration::from_secs(30));
+    let since_signal = at.elapsed();
+    let stderr = std::fs::read_to_string(&err_log).unwrap_or_default();
+    let status = status.unwrap_or_else(|| panic!("the runner did not exit; stderr:\n{stderr}"));
+    assert!(
+        common::gone_within(fake, Duration::from_secs(3)),
+        "the fake slop-code {fake} survived; stderr:\n{stderr}"
+    );
+    if let Some(g) = grandchild {
+        assert!(
+            common::gone_within(g, Duration::from_secs(3)),
+            "the grandchild {g} survived; stderr:\n{stderr}"
+        );
+    }
+    reap.clear();
+    Stopped {
+        status,
+        stderr,
+        ready,
+        since_signal,
+    }
+}
+
+/// The record's `slop-code run --no-evaluate` command. It is not the last
+/// command: the docker teardown calls are recorded after it.
+fn slop_code_run_command(record: &Value) -> Value {
+    record["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .rev()
+        .find(|c| {
+            let argv = strs(&c["argv"]);
+            argv.iter().any(|a| a == "slop-code") && argv.iter().any(|a| a == "--no-evaluate")
+        })
+        .cloned()
+        .expect("a slop-code run command")
+}
+
+#[test]
+fn sigterm_stops_slop_code_and_its_grandchild() {
+    let b = Bench::new(&Spec::default());
+    let ready = hanging_run(&b, json!({ "grandchild": true, "hang": true }));
+    let s = interrupt_run(
+        &b,
+        &ready,
+        &["--stop-grace-secs", "5"],
+        rustix::process::Signal::TERM,
+        |_| {},
+    );
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    let record = b.record();
+    let cmd = slop_code_run_command(&record);
+    assert_eq!(cmd["interrupted"], "SIGTERM", "{cmd}");
+    assert!(cmd.get("killed").is_none(), "{cmd}");
+    let tmpdir = s.ready["tmpdir"].as_str().expect("the fake saw TMPDIR");
+    assert_eq!(cmd["tmpdir"], tmpdir);
+    let name = Path::new(tmpdir)
+        .file_name()
+        .expect("scratch name")
+        .to_string_lossy()
+        .into_owned();
+    assert!(name.starts_with("scb"), "{tmpdir}");
+    assert!(!Path::new(tmpdir).exists(), "scratch {tmpdir} left behind");
+    assert!(!s.stderr.contains(TOKEN));
+    assert_no_token(&b.out);
+
+    let r = json(&ok(&b.report(&b.out, &["--format", "json"])));
+    assert_eq!(
+        r["skipped_runs"],
+        json!([{
+            "arm": "just-solve",
+            "seed": 1,
+            "reason": "not finished: interrupted by SIGTERM during run",
+        }])
+    );
+}
+
+#[test]
+fn sigint_is_forwarded_as_sigint() {
+    let b = Bench::new(&Spec::default());
+    let ready = hanging_run(&b, json!({ "grandchild": true, "hang": true }));
+    let s = interrupt_run(
+        &b,
+        &ready,
+        &["--stop-grace-secs", "5"],
+        rustix::process::Signal::INT,
+        |_| {},
+    );
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr
+            .contains("arm just-solve seed 1: interrupted by SIGINT during run"),
+        "{}",
+        s.stderr
+    );
+    let record = b.record();
+    assert_eq!(slop_code_run_command(&record)["interrupted"], "SIGINT");
+    assert_eq!(record["arms"][0]["interrupted"]["signal"], "SIGINT");
+}
+
+#[test]
+fn slop_code_ignoring_sigterm_is_killed_after_the_grace() {
+    let b = Bench::new(&Spec::default());
+    let ready = hanging_run(&b, json!({ "ignore_sigterm": true, "hang": true }));
+    let s = interrupt_run(
+        &b,
+        &ready,
+        &["--stop-grace-secs", "1"],
+        rustix::process::Signal::TERM,
+        |_| {},
+    );
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr.contains(
+            "arm just-solve seed 1: interrupted by SIGTERM during run (problems mvvault, xjq)"
+        ),
+        "{}",
+        s.stderr
+    );
+    assert!(
+        s.stderr
+            .contains("did not exit within the 1s grace and was killed"),
+        "{}",
+        s.stderr
+    );
+    assert!(
+        s.since_signal >= std::time::Duration::from_secs(1),
+        "exited {:?} after the signal, inside the grace",
+        s.since_signal
+    );
+    let record = b.record();
+    assert_eq!(slop_code_run_command(&record)["killed"], true);
+    let arm = &record["arms"][0];
+    assert_eq!(arm["interrupted"]["signal"], "SIGTERM");
+    assert_eq!(arm["interrupted"]["step"], "run");
+    assert_eq!(arm["interrupted"]["killed"], true);
+    assert!(arm["finished"].is_null(), "{arm}");
+    assert_no_token(&b.out);
+}
+
+#[test]
+fn interrupt_removes_only_this_runs_containers() {
+    let b = Bench::new(&Spec::default());
+    let ready = hanging_run(&b, json!({ "hang": true }));
+    let s = interrupt_run(
+        &b,
+        &ready,
+        &["--stop-grace-secs", "5"],
+        rustix::process::Signal::TERM,
+        |ready| {
+            let t = ready["tmpdir"].as_str().expect("the fake saw TMPDIR");
+            let mounts = |source: &str| json!([{ "Type": "bind", "Source": source, "Destination": "/workspace" }]);
+            let inspect = [
+                format!("ours-agent {}", mounts(&format!("{t}/tmpws"))),
+                format!("other-run {}", mounts("/private/tmp/scbOTHER/tmpws")),
+                format!("sibling {}", mounts(&format!("{t}x/ws"))),
+                "nomounts []".to_owned(),
+            ]
+            .join("\n");
+            // `--format` contains `rm`, so `inspect` is matched first.
+            b.scenario(
+                "docker",
+                &json!({ "default": { "stdout": "99.0.0-fake\n" } }),
+                &[
+                    (&["inspect"], json!({ "stdout": format!("{inspect}\n") })),
+                    (
+                        &["ps"],
+                        json!({ "stdout": "ours-agent\nother-run\nsibling\nnomounts\n" }),
+                    ),
+                    (&["--force"], json!({ "exit": 0 })),
+                ],
+            );
+        },
+    );
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    let removals: Vec<Vec<String>> = b
+        .argvs("docker")
+        .into_iter()
+        .filter(|a| a.first().is_some_and(|c| c == "rm"))
+        .collect();
+    assert_eq!(removals, [["rm", "--force", "ours-agent"]]);
+    let inspected = b
+        .argvs("docker")
+        .into_iter()
+        .find(|a| a.first().is_some_and(|c| c == "inspect"))
+        .expect("an inspect call");
+    for id in ["ours-agent", "other-run", "sibling", "nomounts"] {
+        assert!(inspected.iter().any(|a| a == id), "{inspected:?}");
+    }
+    assert_eq!(
+        b.record()["arms"][0]["interrupted"]["removed_containers"],
+        json!(["ours-agent"])
+    );
+    assert!(
+        s.stderr.contains("removed 1 container(s) this run started"),
+        "{}",
+        s.stderr
+    );
+}
+
+#[test]
+fn interrupt_with_failing_docker_still_scrubs_and_names_the_unit() {
+    let b = Bench::new(&Spec::default());
+    let ready = hanging_run(&b, json!({ "hang": true }));
+    b.scenario(
+        "docker",
+        &json!({ "default": { "stdout": "99.0.0-fake\n" } }),
+        &[(&["ps"], json!({ "stderr": "cannot connect\n", "exit": 1 }))],
+    );
+    let s = interrupt_run(
+        &b,
+        &ready,
+        &["--stop-grace-secs", "5"],
+        rustix::process::Signal::TERM,
+        |_| {},
+    );
+    assert_eq!(s.status.code(), Some(1), "stderr:\n{}", s.stderr);
+    assert!(
+        s.stderr
+            .contains("scbench run: could not list containers (exited 1)"),
+        "{}",
+        s.stderr
+    );
+    assert!(
+        s.stderr
+            .contains("arm just-solve seed 1: interrupted by SIGTERM during run"),
+        "{}",
+        s.stderr
+    );
+    assert!(!s.stderr.contains(TOKEN));
+    assert_no_token(&b.out);
+    assert_eq!(
+        b.record()["arms"][0]["interrupted"]["removed_containers"],
+        json!([])
+    );
+}

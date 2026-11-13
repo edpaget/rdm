@@ -32,7 +32,12 @@
 //!    classifies the checkpoint ([`lane`]); then runs
 //!    `uv run slop-code --seed <n> eval`. After each `slop-code` run and
 //!    eval, whatever its exit status, the unit's `seed-<n>` directory is
-//!    scrubbed of the provider's credential ([`redact`]).
+//!    scrubbed of the provider's credential ([`redact`]). Each `slop-code`
+//!    command runs in its own process group with `TMPDIR` at a fresh scratch
+//!    directory. On SIGINT, SIGTERM or SIGHUP the runner forwards the signal
+//!    to that group, kills the group after `--stop-grace-secs`, removes the
+//!    containers mounting the scratch directory ([`containers`]), scrubs the
+//!    unit, records the interruption on it and exits 1 naming the unit.
 //!
 //! The run record `<out>/rdm-scbench-run.json` ([`exec::RunRecord`]) is
 //! rewritten after every command, so a failed run still records the command
@@ -55,6 +60,7 @@
 //! in it. Neither runs an agent or makes a paid call.
 
 pub mod baseline;
+pub mod containers;
 pub mod environment;
 pub mod exec;
 pub mod image;
@@ -71,6 +77,7 @@ pub mod stats;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -94,6 +101,9 @@ pub struct RunOptions {
     pub seeds: u64,
     /// Print the plan; spawn nothing and create nothing.
     pub dry_run: bool,
+    /// How long a stopped run waits for `slop-code` to exit after forwarding
+    /// the signal, before killing its process group.
+    pub stop_grace: Duration,
 }
 
 /// Refuses an `--out` that exists and is not empty.
@@ -182,6 +192,8 @@ pub fn run(
         let _ = writeln!(stdout, "{body}");
         return Ok(0);
     }
+    let interrupts = crate::process::Interrupts::install()
+        .map_err(|e| format!("cannot install SIGINT/SIGTERM handling: {e}"))?;
     let plan = exec::execute(
         &manifest,
         &manifest_path,
@@ -190,6 +202,8 @@ pub fn run(
         &seeds,
         template.as_deref(),
         &prompts,
+        &interrupts,
+        opts.stop_grace,
         stderr,
     )?;
     let _ = writeln!(

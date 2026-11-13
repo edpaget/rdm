@@ -14,6 +14,8 @@
 //!   pidfile, then exit with `code` at once, leaving the grandchild behind
 //! - `print-env <VAR>...` — print `VAR=value` (or `VAR unset`) per name, exit 0
 //! - `ready-then-sleep` — print `ready`, then sleep until killed
+//! - `ignore-sigterm-then-sleep` — ignore SIGTERM (the handler only sets a
+//!   flag), then print `ready`, then sleep until killed
 //! - `cat <path>` — print the bytes of `path` and exit 0 (exit 4 if unreadable)
 //! - `stderr-exit <text> <code>` — write `text` to stderr and exit with `code`
 //!   at once, without reading stdin or writing stdout
@@ -26,7 +28,9 @@
 //! - `codex` — the Codex CLI and app-server (see `codex.rs`)
 //! - `rdm` — rdm's skill emission (see `rdm.rs`)
 //! - `uv`, `docker` — the tools `rdm-measure scbench run` drives (see
-//!   `tool.rs`), each reading `<role>.scenario.json` beside its symlink
+//!   `tool.rs`), each reading `<role>.scenario.json` beside its symlink; a
+//!   `uv` response can also hang, ignore SIGTERM, start a grandchild and
+//!   write a readiness file, playing a long `slop-code` run
 
 mod claude;
 mod codex;
@@ -38,33 +42,39 @@ use std::io::Write;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-fn sleep_forever() -> ! {
+pub(crate) fn sleep_forever() -> ! {
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }
 }
 
-/// Starts a long-lived `sleep` grandchild in this process's group and writes
-/// its pid to `pidfile` atomically. Returns whether both steps succeeded.
-fn spawn_grandchild(pidfile: &str) -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
+/// Starts a long-lived `sleep` grandchild in this process's group and
+/// returns its pid, or `None` when it cannot be started.
+pub(crate) fn start_grandchild() -> Option<u32> {
+    let exe = std::env::current_exe().ok()?;
     // Inherits this process's group; stdio detached so a leaked grandchild
     // never holds the runner's pipes.
-    let Ok(grandchild) = Command::new(exe)
+    let grandchild = Command::new(exe)
         .arg("sleep")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-    else {
-        return false;
-    };
-    let tmp = format!("{pidfile}.tmp");
-    let written = std::fs::File::create(&tmp)
-        .and_then(|mut f| f.write_all(grandchild.id().to_string().as_bytes()));
-    written.is_ok() && std::fs::rename(&tmp, pidfile).is_ok()
+        .ok()?;
+    Some(grandchild.id())
+}
+
+/// Writes `bytes` to `path` atomically: `<path>.tmp`, then a rename.
+pub(crate) fn write_atomically(path: &str, bytes: &[u8]) -> bool {
+    let tmp = format!("{path}.tmp");
+    let written = std::fs::File::create(&tmp).and_then(|mut f| f.write_all(bytes));
+    written.is_ok() && std::fs::rename(&tmp, path).is_ok()
+}
+
+/// Starts a [`start_grandchild`] grandchild and writes its pid to `pidfile`
+/// atomically. Returns whether both steps succeeded.
+fn spawn_grandchild(pidfile: &str) -> bool {
+    start_grandchild().is_some_and(|pid| write_atomically(pidfile, pid.to_string().as_bytes()))
 }
 
 /// The argv0 basename this invocation was started under.
@@ -165,6 +175,15 @@ fn main() -> ExitCode {
             ExitCode::from(code)
         }
         "ready-then-sleep" => {
+            let _ = writeln!(stdout, "ready");
+            let _ = stdout.flush();
+            sleep_forever()
+        }
+        "ignore-sigterm-then-sleep" => {
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if signal_hook::flag::register(signal_hook::consts::SIGTERM, flag).is_err() {
+                return ExitCode::from(2);
+            }
             let _ = writeln!(stdout, "ready");
             let _ = stdout.flush();
             sleep_forever()

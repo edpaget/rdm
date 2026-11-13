@@ -21,10 +21,10 @@
 //! rdm-measure scbench run --out DIR [--manifest PATH] [--cache-dir DIR]
 //!                         [--arms NAME,...] [--seeds N]
 //!                         [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
-//!                         [--dry-run]
+//!                         [--stop-grace-secs N] [--dry-run]
 //! rdm-measure scbench ladder --out DIR --seeds N [--manifest PATH] [--cache-dir DIR]
 //!                            [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
-//!                            [--baseline NAME] [--dry-run]
+//!                            [--stop-grace-secs N] [--baseline NAME] [--dry-run]
 //! rdm-measure scbench report --run DIR [--baseline NAME] [--save-baseline NAME]
 //!                            [--format markdown|json]
 //! rdm-measure scbench image build [--manifest PATH] [--cache-dir DIR]
@@ -40,6 +40,10 @@
 //! agents in Docker (arms x seeds x problems x checkpoints). So does
 //! `scbench ladder` without `--dry-run`, over every manifest arm; its
 //! `--dry-run` prints the projected run count. See docs/scbench-benchmark.md.
+//!
+//! Stop a `scbench run` or `ladder` with Ctrl-C or `kill -INT`/`-TERM` on
+//! its pid: it forwards the signal to `slop-code`, removes the containers it
+//! started and exits 1 naming the unit (bench/scbench/README.md).
 //!
 //! `scbench image build` makes no paid call but is slow: it runs a release
 //! build of rdm and builds SCBench's base and agent images.
@@ -163,6 +167,11 @@ struct ScbenchLadderArgs {
     /// The host `claude` executable (version probe only).
     #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "claude")]
     claude_bin: String,
+    /// How long a stopped run waits for slop-code to exit after forwarding
+    /// SIGINT/SIGTERM/SIGHUP to it, before killing its process group (0 kills
+    /// it at once).
+    #[arg(long, value_name = "N", default_value = "10")]
+    stop_grace_secs: u64,
     /// Render the report beside this saved baseline.
     #[arg(long, value_name = "NAME", value_parser = flag_value)]
     baseline: Option<String>,
@@ -264,6 +273,11 @@ struct ScbenchRunArgs {
     /// The host `claude` executable (version probe only).
     #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "claude")]
     claude_bin: String,
+    /// How long a stopped run waits for slop-code to exit after forwarding
+    /// SIGINT/SIGTERM/SIGHUP to it, before killing its process group (0 kills
+    /// it at once).
+    #[arg(long, value_name = "N", default_value = "10")]
+    stop_grace_secs: u64,
     /// Print the plan as JSON; spawn nothing and create nothing.
     #[arg(long)]
     dry_run: bool,
@@ -731,6 +745,7 @@ fn scbench_ladder_cmd(a: &ScbenchLadderArgs) -> Result<ExitCode, String> {
         seeds: a.seeds,
         baseline: a.baseline.clone(),
         dry_run: a.dry_run,
+        stop_grace: Duration::from_secs(a.stop_grace_secs),
     };
     let code = scbench::ladder::run(&options, &mut std::io::stdout(), &mut std::io::stderr())?;
     Ok(ExitCode::from(code))
@@ -776,6 +791,7 @@ fn scbench_cmd(a: &ScbenchArgs) -> Result<ExitCode, String> {
         arms: (!r.arms.is_empty()).then(|| comma_split(&r.arms)),
         seeds: r.seeds,
         dry_run: r.dry_run,
+        stop_grace: Duration::from_secs(r.stop_grace_secs),
     };
     let code = scbench::run(&options, &mut std::io::stdout(), &mut std::io::stderr())?;
     Ok(ExitCode::from(code))
