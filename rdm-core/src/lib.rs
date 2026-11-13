@@ -91,11 +91,11 @@ pub use transcript::{
     EntryKind, MemoryTranscriptSource, ModelRow, ReportScope, ReportWarning, SessionLocation,
     SessionReport, SourceKind, SourceReport, TranscriptEntry, TranscriptError, TranscriptPath,
     TranscriptSource, UnanchoredEntry, UnanchoredKind, UsageSummary, WarningScope,
-    WorkflowRunLocation, WorkflowRunReport, locate_session, locate_workflow_run, reap_session,
-    reap_workflow_run,
+    WorkflowRunLocation, WorkflowRunReport, list_sessions, locate_session, locate_workflow_run,
+    reap_session, reap_workflow_run,
 };
 pub use usage::{
-    ModelUsage, ParsedTranscript, RequestUsage, TokenUsage, UsageLedger, UsageWarning,
+    ModelUsage, ParsedTranscript, RequestUsage, TokenUsage, ToolUse, UsageLedger, UsageWarning,
     parse_transcript,
 };
 pub use worktree::{ReviewSource, ReviewSourceRequest, resolve_review_source};

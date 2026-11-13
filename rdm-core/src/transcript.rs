@@ -21,7 +21,8 @@
 //!
 //! A worktree gets its own project-slug directory, so a session is located by
 //! walking every slug ([`locate_session`]), never by deriving a slug from a
-//! working directory.
+//! working directory. [`list_sessions`] lists every session of the tree the
+//! same way.
 //!
 //! # Spend sources and anchors
 //!
@@ -35,7 +36,8 @@
 //!   nested subagent (its `toolUseId` names a `tool_use` in its parent's
 //!   transcript) follows `parentAgentId` through the sibling `.meta.json`
 //!   files to the first ancestor that is anchored. The walk stops on a cycle
-//!   or a missing parent.
+//!   or a missing parent. The id of the `tool_use` the walk reached is kept
+//!   as [`SourceReport::anchor_tool_use_id`].
 //! - **workflow_agent**: an agent of a Workflow run, anchored to the
 //!   main-transcript `tool_result` line whose `toolUseResult.runId` names the
 //!   run. Its label comes from the sidecar's `workflowProgress[]`.
@@ -506,6 +508,64 @@ pub fn locate_session<S: TranscriptSource + ?Sized>(
     })
 }
 
+/// Every session in the projects tree, in project-slug then session-id order.
+///
+/// A session is present in a slug when `<slug>/<uuid>.jsonl` or
+/// `<slug>/<uuid>/` exists, as for [`locate_session`]; the uuid is the name
+/// without its `.jsonl`. A uuid present under several slugs is listed once
+/// per slug, and each location carries no warnings.
+///
+/// # Errors
+///
+/// [`TranscriptError::Io`] when a directory cannot be listed.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::transcript::{MemoryTranscriptSource, list_sessions};
+///
+/// let src = MemoryTranscriptSource::new()
+///     .with_file("-proj/s2.jsonl", "")
+///     .with_file("-proj/s2/subagents/agent-a.jsonl", "")
+///     .with_file("-proj/s1/workflows/wf_r.json", "{}")
+///     .with_file("-other/s3.jsonl", "");
+/// let found: Vec<(String, String)> = list_sessions(&src)?
+///     .into_iter()
+///     .map(|l| (l.project_slug, l.session_id))
+///     .collect();
+/// assert_eq!(found, [
+///     ("-other".to_owned(), "s3".to_owned()),
+///     ("-proj".to_owned(), "s1".to_owned()),
+///     ("-proj".to_owned(), "s2".to_owned()),
+/// ]);
+/// # Ok::<(), rdm_core::transcript::TranscriptError>(())
+/// ```
+pub fn list_sessions<S: TranscriptSource + ?Sized>(
+    src: &S,
+) -> Result<Vec<SessionLocation>, TranscriptError> {
+    let mut out = Vec::new();
+    for slug in slugs(src)? {
+        let ids: BTreeSet<String> = src
+            .list(&child(&TranscriptPath::root(), &slug))?
+            .into_iter()
+            .filter_map(|e| match e.kind {
+                EntryKind::Dir => Some(e.name),
+                EntryKind::File => e
+                    .name
+                    .strip_suffix(".jsonl")
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned),
+            })
+            .collect();
+        out.extend(ids.into_iter().map(|session_id| SessionLocation {
+            session_id,
+            project_slug: slug.clone(),
+            warnings: Vec::new(),
+        }));
+    }
+    Ok(out)
+}
+
 /// `run_id` with the `wf_` prefix added when it is missing.
 fn normalize_run_id(run_id: &str) -> String {
     if run_id.starts_with(WORKFLOW_RUN_PREFIX) {
@@ -711,6 +771,12 @@ pub struct SourceReport {
     pub workflow_name: Option<String>,
     /// The main-transcript timestamp this source is anchored to.
     pub anchor: Option<DateTime<Utc>>,
+    /// For an anchored `Agent` subagent, the id of the main-transcript
+    /// `tool_use` block it is anchored to: its own `toolUseId`, or for a
+    /// nested subagent the `toolUseId` of the ancestor the `parentAgentId`
+    /// walk reached. `None` for every other source. Not serialized.
+    #[serde(skip)]
+    pub anchor_tool_use_id: Option<String>,
     /// `false` when no anchor was found; the source is still counted.
     pub anchored: bool,
     /// The Workflow agent's `workflowProgress[]` `state` was `"error"`.
@@ -1003,22 +1069,23 @@ impl AgentMeta {
 }
 
 /// Follows `parentAgentId` from `id` until an ancestor's `toolUseId` is in
-/// the main transcript. Stops on a cycle or a missing parent.
+/// the main transcript, returning that `tool_use`'s timestamp and id. Stops
+/// on a cycle or a missing parent.
 fn agent_anchor(
     id: &str,
     metas: &BTreeMap<String, AgentMeta>,
     index: &MainIndex,
-) -> Option<DateTime<Utc>> {
+) -> Option<(DateTime<Utc>, String)> {
     let mut seen = BTreeSet::new();
     let mut current = id;
     while seen.insert(current) {
         let meta = metas.get(current)?;
-        if let Some(ts) = meta
+        if let Some((tool_use_id, ts)) = meta
             .tool_use_id
             .as_ref()
-            .and_then(|t| index.tool_uses.get(t))
+            .and_then(|t| Some((t, index.tool_uses.get(t)?)))
         {
-            return Some(*ts);
+            return Some((*ts, tool_use_id.clone()));
         }
         current = meta.parent_agent_id.as_deref()?;
     }
@@ -1055,6 +1122,7 @@ fn blank_source(kind: SourceKind, id: &str, label: String) -> SourceReport {
         run_id: None,
         workflow_name: None,
         anchor: None,
+        anchor_tool_use_id: None,
         anchored: false,
         errored: false,
         cached: false,
@@ -1214,7 +1282,10 @@ pub fn reap_session<S: TranscriptSource + ?Sized>(
             report.parent_agent_id = m.parent_agent_id.clone();
             report.spawn_depth = m.spawn_depth;
         }
-        report.anchor = agent_anchor(id, &metas, &index);
+        if let Some((ts, tool_use_id)) = agent_anchor(id, &metas, &index) {
+            report.anchor = Some(ts);
+            report.anchor_tool_use_id = Some(tool_use_id);
+        }
         report.anchored = report.anchor.is_some();
         let mut p = Pending::new(
             report,
@@ -1624,6 +1695,33 @@ mod tests {
     }
 
     #[test]
+    fn list_sessions_finds_transcripts_and_session_dirs_under_every_slug() {
+        let src = MemoryTranscriptSource::new()
+            .with_file("-b/s1.jsonl", "")
+            .with_file("-b/s1/subagents/agent-a.jsonl", "")
+            .with_file("-b/s0/workflows/wf_r.json", "{}")
+            .with_file("-b/notes.txt", "")
+            .with_file("-b/.jsonl", "")
+            .with_file("-a/s1.jsonl", "")
+            .with_file("top.jsonl", "");
+        let found: Vec<(String, String, usize)> = list_sessions(&src)
+            .unwrap_or_else(|e| panic!("list: {e}"))
+            .into_iter()
+            .map(|l| (l.project_slug, l.session_id, l.warnings.len()))
+            .collect();
+        let want: Vec<(String, String, usize)> = [("-a", "s1"), ("-b", "s0"), ("-b", "s1")]
+            .into_iter()
+            .map(|(slug, id)| (slug.to_owned(), id.to_owned(), 0))
+            .collect();
+        assert_eq!(found, want);
+        assert!(
+            list_sessions(&MemoryTranscriptSource::new())
+                .unwrap_or_else(|e| panic!("list: {e}"))
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn locate_finds_session_under_worktree_slug() {
         let src = MemoryTranscriptSource::new()
             .with_file("-proj/other.jsonl", "")
@@ -1723,6 +1821,7 @@ mod tests {
         let report = reap(&src);
         let a = source(&report, "a");
         assert_eq!(a.anchor, Some(ts("2026-01-01T00:05:00Z")));
+        assert_eq!(a.anchor_tool_use_id.as_deref(), Some("tu-a"));
         assert!(a.anchored);
         assert_eq!(a.label, "Plan the thing");
         assert_eq!(a.agent_type.as_deref(), Some("general-purpose"));
@@ -1767,6 +1866,14 @@ mod tests {
             source(&report, "leaf").parent_agent_id.as_deref(),
             Some("mid")
         );
+        for id in ["root", "mid", "leaf"] {
+            assert_eq!(
+                source(&report, id).anchor_tool_use_id.as_deref(),
+                Some("tu-root"),
+                "{id}"
+            );
+        }
+        assert_eq!(source(&report, S).anchor_tool_use_id, None);
     }
 
     #[test]
@@ -1812,6 +1919,7 @@ mod tests {
             ]
         );
         assert!(!source(&report, "orphan").anchored);
+        assert_eq!(source(&report, "orphan").anchor_tool_use_id, None);
         assert_eq!(report.totals.usage.output, 10 + 100 + 1000 + 10000);
     }
 

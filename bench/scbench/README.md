@@ -433,11 +433,15 @@ checkpoint and its share of the arm's recorded cost. Control arms have none.
 The split comes from the Claude Code trace files SCBench copies to
 `<checkpoint>/agent/workspace/projects/` (`agent/stdout.jsonl` cannot be
 used: it repeats one event per content block with a stale output count and
-never shows workflow agents). The rule, defined once in
-`rdm-devtools/src/measure/scbench/stages.rs`:
+never shows workflow agents). The trace tree is read by `rdm-core`'s
+transcript reader (`rdm_core::transcript`), so which files make up a
+session, how a request's tokens split into classes and how requests are
+deduplicated are the same rules `rdm cost` uses. The rule on top of it,
+defined once in `rdm-devtools/src/measure/scbench/stages.rs`:
 
-- Every assistant message counts once (deduplicated by `message.id`, last
-  line wins).
+- Every request counts once (deduplicated by `requestId`, its last line's
+  usage winning, and the first source in core's canonical order owning a
+  request seen in several files).
 - A main-thread message counts toward the most recently opened stage, a
   dispatching turn toward the stage it opens. An `rdm-effort-*` `Agent`
   opens `planning` when its prompt contains `plan create`, `triage` after a
@@ -448,10 +452,12 @@ never shows workflow agents). The rule, defined once in
   `rdm verify run`: a fallback verification counts toward the stage that was
   open, and the main thread's triage of review comments before the first
   fix dispatch counts as `code_review`.
-- A subagent takes its spawning `Agent` call's stage (another subagent type
-  from the main thread is `other`; one spawned inside a subagent inherits
-  its stage); a workflow agent takes its run's workflow. One that cannot be
-  traced to a call or a run is `unattributed`.
+- A subagent takes the stage of the main-thread `Agent` call core anchors
+  it to (another subagent type from the main thread is `other`; one spawned
+  inside a subagent is anchored through its `parentAgentId` chain and so
+  inherits its top-level ancestor's stage); a workflow agent takes its run's
+  workflow. One that cannot be traced to a call or a run (no readable meta
+  file, no run sidecar) is `unattributed`.
 
 Dollars are each message's tokens at the run's model-file prices (recorded
 as `model_file.source`), with a 1-hour cache write at 2x input; with no

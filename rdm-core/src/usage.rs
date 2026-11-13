@@ -45,6 +45,12 @@
 //! - **The model is the raw `message.model` string**, unnormalized
 //!   (`<synthetic>` included). A missing or non-string model is keyed
 //!   [`UNKNOWN_MODEL`].
+//! - **A request keeps the `tool_use` blocks of all its lines.** A request
+//!   streams one content block per line, so its calls are spread over its
+//!   lines; [`RequestUsage::tool_uses`] collects every `tool_use` block of
+//!   `message.content` across them, in line order, a repeated block `id`
+//!   once.
+//!   An all-zero request is excluded together with its calls.
 //!
 //! # Time windows
 //!
@@ -192,6 +198,31 @@ impl<'a> Sum<&'a TokenUsage> for TokenUsage {
     }
 }
 
+/// One `tool_use` content block of a request: a tool call the model made.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::usage::parse_transcript;
+///
+/// let raw = concat!(
+///     r#"{"type":"assistant","requestId":"r1","message":{"content":[{"type":"text","text":"ok"}],"usage":{"output_tokens":1}}}"#, "\n",
+///     r#"{"type":"assistant","requestId":"r1","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}],"usage":{"output_tokens":9}}}"#, "\n",
+/// );
+/// let calls = &parse_transcript(raw).requests[0].tool_uses;
+/// assert_eq!((calls[0].id.as_str(), calls[0].name.as_str()), ("tu1", "Bash"));
+/// assert_eq!(calls[0].input["command"], "ls");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolUse {
+    /// The block's `id`, which a subagent's `toolUseId` names.
+    pub id: String,
+    /// The tool called (`Agent`, `Bash`, ...); empty when missing.
+    pub name: String,
+    /// The block's `input`, as written; `null` when missing.
+    pub input: Value,
+}
+
 /// One deduped request from a transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestUsage {
@@ -205,6 +236,9 @@ pub struct RequestUsage {
     pub timestamp: Option<DateTime<Utc>>,
     /// The usage of the request's last line.
     pub usage: TokenUsage,
+    /// The `tool_use` blocks of all the request's lines, in line order; a
+    /// block `id` repeated on a later line is kept once.
+    pub tool_uses: Vec<ToolUse>,
 }
 
 /// A report about a transcript that parsing tolerated. It is not an error:
@@ -241,6 +275,29 @@ pub struct ParsedTranscript {
     pub requests: Vec<RequestUsage>,
     /// Everything the parse tolerated, in the order it was found.
     pub warnings: Vec<UsageWarning>,
+}
+
+/// The `tool_use` blocks of an assistant line's `message.content`.
+fn tool_uses_of(message: Option<&Value>) -> impl Iterator<Item = ToolUse> + '_ {
+    message
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .map(|b| ToolUse {
+            id: b
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            name: b
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            input: b.get("input").cloned().unwrap_or(Value::Null),
+        })
 }
 
 fn int_field(obj: &Value, key: &str) -> u64 {
@@ -320,11 +377,12 @@ pub fn parse_transcript(raw: &str) -> ParsedTranscript {
             .and_then(Value::as_str)
             .unwrap_or(UNKNOWN_MODEL)
             .to_owned();
-        match index.get(request_id) {
+        let slot = match index.get(request_id) {
             Some(&i) => {
                 let slot = &mut requests[i];
                 slot.usage = usage;
                 slot.model = model;
+                slot
             }
             None => {
                 let timestamp = entry
@@ -338,7 +396,15 @@ pub fn parse_transcript(raw: &str) -> ParsedTranscript {
                     model,
                     timestamp,
                     usage,
+                    tool_uses: Vec::new(),
                 });
+                let last = requests.len() - 1;
+                &mut requests[last]
+            }
+        };
+        for call in tool_uses_of(message) {
+            if call.id.is_empty() || !slot.tool_uses.iter().any(|t| t.id == call.id) {
+                slot.tool_uses.push(call);
             }
         }
     }
@@ -746,6 +812,7 @@ mod tests {
                     cache_read: 100,
                     ..TokenUsage::default()
                 },
+                tool_uses: Vec::new(),
             });
         }
         let total = ledger.total();
@@ -795,6 +862,42 @@ mod tests {
         assert_eq!(parsed.requests[0].usage.output, 9);
         assert_eq!(parsed.requests[1].timestamp, None);
         assert_eq!(parsed.requests[2].timestamp, None);
+    }
+
+    #[test]
+    fn a_request_keeps_the_tool_uses_of_all_its_lines_in_order() {
+        let raw = lines(&[
+            r#"{"type":"assistant","requestId":"r1","message":{"content":[{"type":"thinking","thinking":"t"}],"usage":{"output_tokens":1}}}"#,
+            r#"{"type":"assistant","requestId":"r1","message":{"content":[{"type":"tool_use","id":"a","name":"Agent","input":{"prompt":"p"}}],"usage":{"output_tokens":2}}}"#,
+            r#"{"type":"assistant","requestId":"r2","message":{"content":[{"type":"tool_use","id":"c","name":"Skill"}],"usage":{"output_tokens":3}}}"#,
+            r#"{"type":"assistant","requestId":"r1","message":{"content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"a","name":"Agent","input":{"prompt":"p"}}],"usage":{"output_tokens":4}}}"#,
+            r#"{"type":"assistant","requestId":"r3","message":{"content":[{"type":"tool_use","id":"z","name":"Bash"}],"usage":{"output_tokens":0}}}"#,
+        ]);
+        let parsed = parse_transcript(&raw);
+        let calls: Vec<(&str, Vec<(&str, &str)>)> = parsed
+            .requests
+            .iter()
+            .map(|r| {
+                (
+                    r.request_id.as_str(),
+                    r.tool_uses
+                        .iter()
+                        .map(|t| (t.id.as_str(), t.name.as_str()))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                ("r1", vec![("a", "Agent"), ("b", "Bash")]),
+                ("r2", vec![("c", "Skill")]),
+            ],
+            "every line's calls, in line order, a repeated id once; the all-zero r3 is dropped with its call"
+        );
+        assert_eq!(parsed.requests[0].usage.output, 4, "the last line's usage");
+        assert_eq!(parsed.requests[0].tool_uses[1].input["command"], "ls");
+        assert_eq!(parsed.requests[1].tool_uses[0].input, Value::Null);
     }
 
     #[test]

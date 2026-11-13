@@ -6,30 +6,26 @@
 //! The checkpoint's stream ([`super::outputs::STREAM_FILE`]) cannot
 //! attribute cost: it repeats one event per content block with a stale
 //! `output_tokens`, and never shows workflow agents. Its final `result` stays
-//! the recorded total. The trace files under [`PROJECTS_DIR`] hold every
-//! assistant message with its final usage:
-//!
-//! - `<project>/<session>.jsonl`: a main transcript;
-//! - `<project>/<session>/subagents/agent-<id>.jsonl`, with
-//!   `agent-<id>.meta.json` naming the spawning `Agent` call (`toolUseId`);
-//! - `<project>/<session>/subagents/workflows/<runId>/agent-<id>.jsonl`: one
-//!   workflow agent of run `<runId>`;
-//! - `<project>/<session>/workflows/<runId>.json`: the run's `workflowName`.
-//!
-//! Only `assistant` lines with a `message.id` and `message.usage` count, and
-//! a message counts once across the checkpoint: the last line with its id
-//! wins, both its usage and its stage. Lines that are not JSON or not
-//! assistant messages are skipped. A meta or workflow JSON that exists but
-//! does not parse is an error naming it.
+//! the recorded total. The trace files under [`PROJECTS_DIR`] are a Claude
+//! Code projects tree holding every request with its final usage, and
+//! reading them is [`rdm_core::transcript`]'s job: every session it lists
+//! ([`rdm_core::transcript::list_sessions`]) is reaped with
+//! [`rdm_core::transcript::reap_session`]. Which files make up a session,
+//! how requests are deduped (by `requestId`, the first source in canonical
+//! order owning a request), how a request's tokens split into classes, and
+//! which subagent hangs off which main-thread `tool_use` are therefore core's
+//! rules, the same ones `rdm cost` uses; whatever core tolerates and cannot
+//! place (an unreadable meta file, a run without a sidecar) reaches this
+//! module as a source without an anchor or a workflow name.
 //!
 //! # The attribution rule
 //!
 //! Stages are [`Stage::ALL`]: planning, plan review, implementation,
 //! verification, code review, triage, other, and unattributed.
 //!
-//! 1. **Main thread.** Each main transcript is read in file order with a
-//!    current stage that starts as `other`. Each `tool_use` in a line moves
-//!    it:
+//! 1. **Main thread.** The main source's requests are read in order with a
+//!    current stage that starts as `other`. Each `tool_use` of a request
+//!    moves it:
 //!    - `Agent` whose `subagent_type`, after a `<plugin>:` prefix, starts
 //!      with `rdm-effort-`: its role stage, `planning` when its `prompt`
 //!      contains `plan create` (the dispatch-phase planner brief), else
@@ -43,29 +39,30 @@
 //!      `other`;
 //!    - any other `tool_use` leaves it unchanged.
 //!
-//!    A line counts toward the stage current after its own `tool_use`s, so a
-//!    dispatching turn counts toward the stage it opens, and every turn
+//!    A request counts toward the stage current after its own `tool_use`s,
+//!    so a dispatching turn counts toward the stage it opens, and every turn
 //!    between openers (reading results, persisting, status writes, triage
 //!    replies) counts toward the stage most recently opened.
-//! 2. **Agent subagents** take the stage recorded for their meta's
-//!    `toolUseId`: an `rdm-effort-*` call's role stage; any other subagent
-//!    type dispatched from the main thread, `other`; an `Agent` called
-//!    inside a subagent or workflow agent, that agent's stage. A missing
-//!    meta, or a `toolUseId` no transcript called, is `unattributed`.
+//! 2. **Agent subagents** take the stage of the main-thread `Agent` call
+//!    core anchors them to ([`SourceReport::anchor_tool_use_id`]): an
+//!    `rdm-effort-*` call's role stage; any other subagent type, `other`. A
+//!    nested subagent is anchored through its `parentAgentId` chain, so it
+//!    takes its top-level ancestor's stage. A subagent core cannot anchor (no
+//!    readable meta, a `toolUseId` the main thread never called, a parent
+//!    below a workflow agent) is `unattributed`.
 //! 3. **Workflow agents** take their run's `workflowName`, mapped as in 1. A
-//!    run without a readable `workflows/<runId>.json` naming it is
-//!    `unattributed`.
+//!    run without a readable sidecar naming it is `unattributed`.
 //!
 //! # Dollars and the remainder
 //!
-//! No trace records a per-message cost, so a message's dollars are its
-//! tokens times the run's model-file prices ([`Pricing`]); a message whose
+//! No trace records a per-request cost, so a request's dollars are its
+//! tokens times the run's model-file prices ([`Pricing`]); a request whose
 //! model the file does not name gets tokens but no dollars. Against the
 //! checkpoint's recorded totals ([`Breakdown::reconcile`]) every named
 //! stage keeps what it was attributed and `unattributed` takes the rest:
 //! recorded cost minus the named stages' dollars, recorded tokens minus
 //! their tokens. That picks up models no trace shows (Claude Code's own
-//! haiku side calls), unpriced models, unplaceable messages and any trace
+//! haiku side calls), unpriced models, unplaceable requests and any trace
 //! the export missed. It is signed and never clamped: a negative remainder
 //! means the traces hold usage the final result does not. Without a model
 //! file every stage's dollars are `None`; without a trace directory the
@@ -74,6 +71,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use rdm_core::transcript::{SessionReport, SourceKind, SourceReport, list_sessions, reap_session};
+use rdm_core::usage::{RequestUsage, TokenUsage, ToolUse};
+use rdm_transcript::FsTranscriptSource;
 use serde::{Deserialize, Serialize};
 
 /// Where SCBench copies Claude Code's `~/.claude/projects`, under a
@@ -170,83 +170,16 @@ impl Tokens {
     }
 }
 
-/// One message's usage, its cache writes split by duration.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Usage {
-    /// `input_tokens`.
-    pub input: f64,
-    /// `output_tokens`.
-    pub output: f64,
-    /// `cache_read_input_tokens`.
-    pub cache_read: f64,
-    /// 5-minute cache writes: `cache_creation_input_tokens` less the 1-hour
-    /// ones.
-    pub cache_write_5m: f64,
-    /// `cache_creation.ephemeral_1h_input_tokens`, 0 when not split.
-    pub cache_write_1h: f64,
-}
-
-impl Usage {
-    /// The usage as token classes.
-    pub fn tokens(&self) -> Tokens {
+impl From<&TokenUsage> for Tokens {
+    #[allow(clippy::cast_precision_loss)]
+    fn from(u: &TokenUsage) -> Self {
         Tokens {
-            input: self.input,
-            output: self.output,
-            cache_read: self.cache_read,
-            cache_write: self.cache_write_5m + self.cache_write_1h,
+            input: u.input as f64,
+            output: u.output as f64,
+            cache_read: u.cache_read as f64,
+            cache_write: u.cache_write() as f64,
         }
     }
-}
-
-/// One `tool_use` block.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ToolUse {
-    /// The block's `id`.
-    pub id: String,
-    /// The tool (`Agent`, `Workflow`, `Bash`, `Skill`, ...).
-    pub name: String,
-    /// Its `input`.
-    pub input: serde_json::Value,
-}
-
-/// One assistant line of a transcript.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Message {
-    /// `message.id`; a line without one changes stages but never counts.
-    pub id: Option<String>,
-    /// `message.model`.
-    pub model: Option<String>,
-    /// `message.usage`; a line without one never counts.
-    pub usage: Option<Usage>,
-    /// The line's `tool_use` blocks, in order.
-    pub tool_uses: Vec<ToolUse>,
-}
-
-/// Which kind of transcript a file is.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Origin {
-    /// A main-thread `<session>.jsonl`.
-    Main,
-    /// An `Agent` subagent, with its meta's `toolUseId` (`None` without a
-    /// readable meta).
-    Subagent {
-        /// The spawning `Agent` call's id.
-        tool_use_id: Option<String>,
-    },
-    /// A workflow agent, with its run's `workflowName` (`None` without one).
-    Workflow {
-        /// The run's workflow name.
-        name: Option<String>,
-    },
-}
-
-/// One trace file, parsed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Transcript {
-    /// Its kind.
-    pub origin: Origin,
-    /// Its assistant lines, in file order.
-    pub messages: Vec<Message>,
 }
 
 /// The last `:`-separated segment of `s` (`rdm:rdm-effort-medium` ->
@@ -275,105 +208,73 @@ fn is_rdm_effort(t: &ToolUse) -> bool {
     bare(input_str(t, "subagent_type")).starts_with("rdm-effort-")
 }
 
-/// Every counted message with its stage, by the module's rule: one entry per
-/// `message.id`, the last line with that id winning, in id order.
-pub fn attribute(transcripts: &[Transcript]) -> Vec<(Stage, &Message)> {
-    // The stage of every `Agent` call, by its tool_use id.
+/// Every request `report` counts, with its stage by the module's rule: the
+/// main source's requests first, in order, then every other source's.
+pub fn attribute(report: &SessionReport) -> Vec<(Stage, &RequestUsage)> {
+    // The stage of every main-thread `Agent` call, by its tool_use id.
     let mut agent_stage: HashMap<&str, Stage> = HashMap::new();
-    // Per transcript: the stage of each main-thread line, or the whole
-    // transcript's stage once resolved.
-    let mut line_stages: Vec<Vec<Stage>> = vec![Vec::new(); transcripts.len()];
-    let mut whole: Vec<Option<Stage>> = vec![None; transcripts.len()];
-    for (i, t) in transcripts.iter().enumerate() {
-        match &t.origin {
-            Origin::Main => {
-                let mut current = Stage::Other;
-                let mut reviewed = false;
-                for m in &t.messages {
-                    for tu in &m.tool_uses {
-                        match tu.name.as_str() {
-                            "Agent" if is_rdm_effort(tu) => {
-                                let stage = if input_str(tu, "prompt").contains("plan create") {
-                                    Stage::Planning
-                                } else if reviewed {
-                                    Stage::Triage
-                                } else {
-                                    Stage::Implementation
-                                };
-                                agent_stage.insert(&tu.id, stage);
-                                current = stage;
-                            }
-                            "Agent" => {
-                                agent_stage.insert(&tu.id, Stage::Other);
-                            }
-                            "Workflow" => {
-                                let stage = workflow_stage(input_str(tu, "name"));
-                                if stage == Stage::CodeReview {
-                                    reviewed = true;
-                                }
-                                current = stage;
-                            }
-                            "Bash" if input_str(tu, "command").contains("verify run") => {
-                                current = Stage::Verification;
-                            }
-                            "Skill"
-                                if matches!(bare(input_str(tu, "skill")), "land" | "rdm-land") =>
-                            {
-                                current = Stage::Other;
-                            }
-                            _ => {}
+    let mut out = Vec::new();
+    for source in report.sources.iter().filter(|s| s.kind == SourceKind::Main) {
+        let mut current = Stage::Other;
+        let mut reviewed = false;
+        for request in &source.requests {
+            for tu in &request.tool_uses {
+                match tu.name.as_str() {
+                    "Agent" if is_rdm_effort(tu) => {
+                        let stage = if input_str(tu, "prompt").contains("plan create") {
+                            Stage::Planning
+                        } else if reviewed {
+                            Stage::Triage
+                        } else {
+                            Stage::Implementation
+                        };
+                        agent_stage.insert(&tu.id, stage);
+                        current = stage;
+                    }
+                    "Agent" => {
+                        agent_stage.insert(&tu.id, Stage::Other);
+                    }
+                    "Workflow" => {
+                        let stage = workflow_stage(input_str(tu, "name"));
+                        if stage == Stage::CodeReview {
+                            reviewed = true;
                         }
+                        current = stage;
                     }
-                    line_stages[i].push(current);
+                    "Bash" if input_str(tu, "command").contains("verify run") => {
+                        current = Stage::Verification;
+                    }
+                    "Skill" if matches!(bare(input_str(tu, "skill")), "land" | "rdm-land") => {
+                        current = Stage::Other;
+                    }
+                    _ => {}
                 }
             }
-            Origin::Workflow { name } => {
-                whole[i] = Some(name.as_deref().map_or(Stage::Unattributed, workflow_stage));
-            }
-            Origin::Subagent { .. } => {}
+            out.push((current, request));
         }
     }
-    // Resolve subagents through their spawning call, and pass each resolved
-    // agent's stage to the agents it spawned, until nothing changes.
-    loop {
-        let mut changed = false;
-        for (i, t) in transcripts.iter().enumerate() {
-            if whole[i].is_none()
-                && let Origin::Subagent {
-                    tool_use_id: Some(id),
-                } = &t.origin
-                && let Some(&s) = agent_stage.get(id.as_str())
-            {
-                whole[i] = Some(s);
-                changed = true;
-            }
-            if let Some(s) = whole[i] {
-                for tu in t.messages.iter().flat_map(|m| &m.tool_uses) {
-                    if tu.name == "Agent" && !agent_stage.contains_key(tu.id.as_str()) {
-                        agent_stage.insert(&tu.id, s);
-                        changed = true;
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
+    let stage_of = |source: &SourceReport| match source.kind {
+        SourceKind::Main => None,
+        SourceKind::Agent => Some(
+            source
+                .anchor_tool_use_id
+                .as_deref()
+                .and_then(|id| agent_stage.get(id).copied())
+                .unwrap_or(Stage::Unattributed),
+        ),
+        SourceKind::WorkflowAgent => Some(
+            source
+                .workflow_name
+                .as_deref()
+                .map_or(Stage::Unattributed, workflow_stage),
+        ),
+    };
+    for source in &report.sources {
+        if let Some(stage) = stage_of(source) {
+            out.extend(source.requests.iter().map(|r| (stage, r)));
         }
     }
-    let mut out: BTreeMap<&str, (Stage, &Message)> = BTreeMap::new();
-    for (i, t) in transcripts.iter().enumerate() {
-        for (j, m) in t.messages.iter().enumerate() {
-            let (Some(id), Some(_)) = (&m.id, &m.usage) else {
-                continue;
-            };
-            let stage = match t.origin {
-                Origin::Main => line_stages[i][j],
-                _ => whole[i].unwrap_or(Stage::Unattributed),
-            };
-            out.insert(id, (stage, m));
-        }
-    }
-    out.into_values().collect()
+    out
 }
 
 /// The prices of the run's model file (USD per million tokens).
@@ -444,14 +345,14 @@ impl Pricing {
 
     /// `usage`'s dollars at these prices; `None` when `model` is neither the
     /// file's `internal_name` nor one of its aliases.
-    pub fn cost(&self, model: Option<&str>, usage: &Usage) -> Option<f64> {
-        let model = model?;
+    #[allow(clippy::cast_precision_loss)]
+    pub fn cost(&self, model: &str, usage: &TokenUsage) -> Option<f64> {
         self.names.iter().any(|n| n == model).then(|| {
-            (usage.input * self.input
-                + usage.output * self.output
-                + usage.cache_read * self.cache_read
-                + usage.cache_write_5m * self.cache_write
-                + usage.cache_write_1h * self.input * HOUR_CACHE_WRITE_INPUT_MULTIPLIER)
+            (usage.input as f64 * self.input
+                + usage.output as f64 * self.output
+                + usage.cache_read as f64 * self.cache_read
+                + usage.cache_write_5m as f64 * self.cache_write
+                + usage.cache_write_1h as f64 * self.input * HOUR_CACHE_WRITE_INPUT_MULTIPLIER)
                 / 1_000_000.0
         })
     }
@@ -478,15 +379,14 @@ impl Breakdown {
         self.stages.get(&stage).copied().unwrap_or_default()
     }
 
-    /// The attributed sums of `transcripts` ([`attribute`]), priced with
-    /// `pricing`.
-    pub fn attributed(transcripts: &[Transcript], pricing: Option<&Pricing>) -> Self {
+    /// The attributed sums of the sessions `reports` ([`attribute`]), priced
+    /// with `pricing`.
+    pub fn attributed(reports: &[SessionReport], pricing: Option<&Pricing>) -> Self {
         let mut sums: BTreeMap<Stage, (f64, Tokens)> = BTreeMap::new();
-        for (stage, m) in attribute(transcripts) {
-            let Some(usage) = &m.usage else { continue };
+        for (stage, r) in reports.iter().flat_map(attribute) {
             let e = sums.entry(stage).or_default();
-            e.1.add(&usage.tokens());
-            if let Some(c) = pricing.and_then(|p| p.cost(m.model.as_deref(), usage)) {
+            e.1.add(&Tokens::from(&r.usage));
+            if let Some(c) = pricing.and_then(|p| p.cost(&r.model, &r.usage)) {
                 e.0 += c;
             }
         }
@@ -542,228 +442,35 @@ impl Breakdown {
     }
 }
 
-// --- Reading the trace tree -------------------------------------------------
-
-#[derive(Deserialize)]
-struct LineJson {
-    #[serde(rename = "type", default)]
-    kind: Option<String>,
-    #[serde(default)]
-    message: Option<MessageJson>,
-}
-
-#[derive(Deserialize)]
-struct MessageJson {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    usage: Option<UsageJson>,
-    #[serde(default)]
-    content: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-struct UsageJson {
-    #[serde(default)]
-    input_tokens: f64,
-    #[serde(default)]
-    output_tokens: f64,
-    #[serde(default)]
-    cache_read_input_tokens: f64,
-    #[serde(default)]
-    cache_creation_input_tokens: f64,
-    #[serde(default)]
-    cache_creation: Option<CacheCreationJson>,
-}
-
-#[derive(Deserialize)]
-struct CacheCreationJson {
-    #[serde(default)]
-    ephemeral_1h_input_tokens: f64,
-}
-
-#[derive(Deserialize)]
-struct MetaJson {
-    #[serde(rename = "toolUseId", default)]
-    tool_use_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct WorkflowRunJson {
-    #[serde(rename = "workflowName", default)]
-    workflow_name: Option<String>,
-}
-
-impl From<MessageJson> for Message {
-    fn from(m: MessageJson) -> Self {
-        let tool_uses = m
-            .content
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
-            .map(|b| ToolUse {
-                id: b
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
-                name: b
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
-                input: b.get("input").cloned().unwrap_or(serde_json::Value::Null),
-            })
-            .collect();
-        Message {
-            id: m.id,
-            model: m.model,
-            usage: m.usage.map(|u| {
-                let hour = u
-                    .cache_creation
-                    .map_or(0.0, |c| c.ephemeral_1h_input_tokens);
-                Usage {
-                    input: u.input_tokens,
-                    output: u.output_tokens,
-                    cache_read: u.cache_read_input_tokens,
-                    cache_write_5m: u.cache_creation_input_tokens - hour,
-                    cache_write_1h: hour,
-                }
-            }),
-            tool_uses,
-        }
-    }
-}
-
-/// The assistant lines of the transcript at `path`.
-fn read_messages(path: &Path) -> Result<Vec<Message>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    Ok(text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<LineJson>(l).ok())
-        .filter(|l| l.kind.as_deref() == Some("assistant"))
-        .filter_map(|l| l.message.map(Message::from))
-        .collect())
-}
-
-/// Reads `path` as `T`; `None` when it does not exist.
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
-    };
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|e| format!("cannot parse {}: {e}", path.display()))
-}
-
-/// The entries of `dir`, sorted by name, that are directories (`dirs`) or
-/// files ending in `suffix`.
-fn entries(dir: &Path, dirs: bool, suffix: &str) -> Result<Vec<std::path::PathBuf>, String> {
-    let read = match std::fs::read_dir(dir) {
-        Ok(r) => r,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("cannot read {}: {e}", dir.display())),
-    };
-    let mut out = Vec::new();
-    for entry in read {
-        let path = entry
-            .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
-            .path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let keep = if dirs {
-            path.is_dir()
-        } else {
-            path.is_file() && name.ends_with(suffix)
-        };
-        if keep {
-            out.push(path);
-        }
-    }
-    out.sort();
-    Ok(out)
-}
-
-/// The `agent-*.jsonl` transcripts of `dir`.
-fn agent_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, String> {
-    Ok(entries(dir, false, ".jsonl")?
-        .into_iter()
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("agent-"))
-        })
-        .collect())
-}
-
-/// Every transcript under the projects directory `projects`: per project,
-/// its main transcripts, then per session its subagents and its workflow
-/// agents, each set in name order.
+/// The attributed usage of the checkpoint at `dir`
+/// ([`Breakdown::attributed`] over every session core reaps from its
+/// [`PROJECTS_DIR`]); `None` when it has no [`PROJECTS_DIR`].
 ///
 /// # Errors
 ///
-/// When a directory or transcript cannot be read, or a meta or workflow JSON
-/// exists but does not parse.
-pub fn read_transcripts(projects: &Path) -> Result<Vec<Transcript>, String> {
-    let mut out = Vec::new();
-    for project in entries(projects, true, "")? {
-        for main in entries(&project, false, ".jsonl")? {
-            out.push(Transcript {
-                origin: Origin::Main,
-                messages: read_messages(&main)?,
-            });
-        }
-        for session in entries(&project, true, "")? {
-            let subagents = session.join("subagents");
-            for path in agent_files(&subagents)? {
-                let meta: Option<MetaJson> = read_json(&path.with_extension("meta.json"))?;
-                out.push(Transcript {
-                    origin: Origin::Subagent {
-                        tool_use_id: meta.and_then(|m| m.tool_use_id),
-                    },
-                    messages: read_messages(&path)?,
-                });
-            }
-            for run in entries(&subagents.join("workflows"), true, "")? {
-                let id = run.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let info: Option<WorkflowRunJson> =
-                    read_json(&session.join("workflows").join(format!("{id}.json")))?;
-                let name = info.and_then(|w| w.workflow_name);
-                for path in agent_files(&run)? {
-                    out.push(Transcript {
-                        origin: Origin::Workflow { name: name.clone() },
-                        messages: read_messages(&path)?,
-                    });
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// The attributed usage of the checkpoint at `dir` ([`Breakdown::attributed`]
-/// over [`read_transcripts`]); `None` when it has no [`PROJECTS_DIR`].
-///
-/// # Errors
-///
-/// As [`read_transcripts`].
+/// When core cannot list a directory of the tree or read a main transcript,
+/// naming the projects directory.
 pub fn read_checkpoint(dir: &Path, pricing: Option<&Pricing>) -> Result<Option<Breakdown>, String> {
     let projects = dir.join(PROJECTS_DIR);
     if !projects.is_dir() {
         return Ok(None);
     }
-    let transcripts = read_transcripts(&projects)?;
-    Ok(Some(Breakdown::attributed(&transcripts, pricing)))
+    let src = FsTranscriptSource::new(projects.clone());
+    let reports = list_sessions(&src)
+        .and_then(|sessions| {
+            sessions
+                .iter()
+                .map(|location| reap_session(&src, location))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|e| format!("cannot read the traces under {}: {e}", projects.display()))?;
+    Ok(Some(Breakdown::attributed(&reports, pricing)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdm_core::transcript::{MemoryTranscriptSource, locate_session};
     use serde_json::json;
 
     const MODEL: &str = "claude-test-1";
@@ -778,32 +485,37 @@ mod tests {
         Pricing::parse(MODEL_FILE).expect("model file")
     }
 
-    /// An assistant line `id` with `input` input tokens and the tool uses
-    /// `(id, name, input)`.
-    fn msg(id: &str, input: f64, tools: &[(&str, &str, serde_json::Value)]) -> Message {
-        Message {
-            id: Some(id.to_owned()),
-            model: Some(MODEL.to_owned()),
-            usage: Some(Usage {
-                input,
-                ..Usage::default()
-            }),
-            tool_uses: tools
-                .iter()
-                .map(|(id, name, input)| ToolUse {
-                    id: (*id).to_owned(),
-                    name: (*name).to_owned(),
-                    input: input.clone(),
-                })
-                .collect(),
-        }
+    /// A tool call: `(id, name, input)`.
+    type Call = (&'static str, &'static str, serde_json::Value);
+
+    /// An assistant line of request `id` on `model`, with `input` input
+    /// tokens and the calls `calls`.
+    fn model_line(id: &str, model: &str, input: u64, calls: &[Call]) -> String {
+        let content: Vec<serde_json::Value> = calls
+            .iter()
+            .map(|(id, name, input)| {
+                json!({ "type": "tool_use", "id": id, "name": name, "input": input })
+            })
+            .collect();
+        json!({
+            "type": "assistant",
+            "requestId": id,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "id": format!("msg_{id}"), "model": model, "content": content,
+                "usage": { "input_tokens": input },
+            },
+        })
+        .to_string()
+    }
+
+    /// [`model_line`] on the priced model.
+    fn line(id: &str, input: u64, calls: &[Call]) -> String {
+        model_line(id, MODEL, input, calls)
     }
 
     /// An `rdm-effort` `Agent` call `id` with `prompt`.
-    fn rdm_agent(
-        id: &'static str,
-        prompt: &str,
-    ) -> (&'static str, &'static str, serde_json::Value) {
+    fn rdm_agent(id: &'static str, prompt: &str) -> Call {
         (
             id,
             "Agent",
@@ -811,129 +523,149 @@ mod tests {
         )
     }
 
-    fn main(messages: Vec<Message>) -> Transcript {
-        Transcript {
-            origin: Origin::Main,
-            messages,
+    /// An in-memory projects tree holding session `s` under `-w`.
+    struct Tree(MemoryTranscriptSource);
+
+    impl Tree {
+        fn new(main: &[String]) -> Self {
+            Tree(MemoryTranscriptSource::new().with_file("-w/s.jsonl", main.join("\n")))
+        }
+
+        /// Adds `Agent` subagent `id` with its meta (none when `None`).
+        fn agent(self, id: &str, meta: Option<serde_json::Value>, lines: &[String]) -> Self {
+            let mut src = self.0.with_file(
+                &format!("-w/s/subagents/agent-{id}.jsonl"),
+                lines.join("\n"),
+            );
+            if let Some(meta) = meta {
+                src = src.with_file(
+                    &format!("-w/s/subagents/agent-{id}.meta.json"),
+                    meta.to_string(),
+                );
+            }
+            Tree(src)
+        }
+
+        /// Adds agent `id` of workflow run `wf_<run>`, with a sidecar naming
+        /// the run `name` (no sidecar when `None`).
+        fn workflow(self, run: &str, name: Option<&str>, id: &str, lines: &[String]) -> Self {
+            let mut src = self.0.with_file(
+                &format!("-w/s/subagents/workflows/wf_{run}/agent-{id}.jsonl"),
+                lines.join("\n"),
+            );
+            if let Some(name) = name {
+                src = src.with_file(
+                    &format!("-w/s/workflows/wf_{run}.json"),
+                    json!({ "runId": format!("wf_{run}"), "workflowName": name }).to_string(),
+                );
+            }
+            Tree(src)
+        }
+
+        fn reap(&self) -> SessionReport {
+            let location = locate_session(&self.0, "s").expect("locate");
+            reap_session(&self.0, &location).expect("reap")
         }
     }
 
-    fn sub(tool_use_id: Option<&str>, messages: Vec<Message>) -> Transcript {
-        Transcript {
-            origin: Origin::Subagent {
-                tool_use_id: tool_use_id.map(str::to_owned),
-            },
-            messages,
-        }
+    fn meta(tool_use_id: &str, parent: Option<&str>) -> Option<serde_json::Value> {
+        Some(json!({
+            "agentType": "rdm:rdm-effort-medium",
+            "toolUseId": tool_use_id,
+            "parentAgentId": parent,
+        }))
     }
 
-    fn wf(name: Option<&str>, messages: Vec<Message>) -> Transcript {
-        Transcript {
-            origin: Origin::Workflow {
-                name: name.map(str::to_owned),
-            },
-            messages,
-        }
-    }
-
-    fn stages_by_id(ts: &[Transcript]) -> BTreeMap<String, Stage> {
-        attribute(ts)
+    fn stages_by_id(report: &SessionReport) -> BTreeMap<String, Stage> {
+        attribute(report)
             .into_iter()
-            .map(|(s, m)| (m.id.clone().expect("id"), s))
+            .map(|(s, r)| (r.request_id.clone(), s))
             .collect()
     }
 
-    /// The dispatch-phase sequence of the main thread, one line each.
-    fn dispatch_main() -> Transcript {
-        main(vec![
-            msg("m01", 1.0, &[]),
-            msg(
+    /// The dispatch-phase sequence of the main thread, one request each.
+    fn dispatch_main() -> Vec<String> {
+        vec![
+            line("m01", 1, &[]),
+            line(
                 "m02",
-                1.0,
+                1,
                 &[("s1", "Skill", json!({ "skill": "rdm:dispatch-phase" }))],
             ),
-            msg(
+            line(
                 "m03",
-                1.0,
+                1,
                 &[rdm_agent(
                     "a-plan",
                     "Write the plan; run rdm plan create ...",
                 )],
             ),
-            msg("m04", 1.0, &[]),
-            msg(
+            line("m04", 1, &[]),
+            line(
                 "m05",
-                1.0,
+                1,
                 &[(
                     "w1",
                     "Workflow",
                     json!({ "name": "rdm:rdm-wf-plan-review" }),
                 )],
             ),
-            msg(
+            line(
                 "m06",
-                1.0,
+                1,
                 &[rdm_agent("a-impl", "Implement the approved plan.")],
             ),
-            msg(
+            line(
                 "m07",
-                1.0,
+                1,
                 &[(
                     "b1",
                     "Bash",
                     json!({ "command": "rdm verify run --item phase/x/phase-1 --project p" }),
                 )],
             ),
-            msg(
+            line(
                 "m08",
-                1.0,
+                1,
                 &[("b2", "Bash", json!({ "command": "git log --oneline" }))],
             ),
-            msg(
+            line(
                 "m09",
-                1.0,
+                1,
                 &[(
                     "w2",
                     "Workflow",
                     json!({ "name": "rdm-wf-review-refute-fix" }),
                 )],
             ),
-            msg("m10", 1.0, &[]),
-            msg(
-                "m11",
-                1.0,
-                &[rdm_agent("a-fix", "Fix the review comments.")],
-            ),
-            msg(
+            line("m10", 1, &[]),
+            line("m11", 1, &[rdm_agent("a-fix", "Fix the review comments.")]),
+            line(
                 "m12",
-                1.0,
+                1,
                 &[(
                     "w3",
                     "Workflow",
                     json!({ "name": "rdm:rdm-wf-review-refute-fix" }),
                 )],
             ),
-            msg(
-                "m13",
-                1.0,
-                &[("s2", "Skill", json!({ "skill": "rdm:land" }))],
-            ),
-            msg(
+            line("m13", 1, &[("s2", "Skill", json!({ "skill": "rdm:land" }))]),
+            line(
                 "m14",
-                1.0,
+                1,
                 &[(
                     "a-explore",
                     "Agent",
                     json!({ "subagent_type": "Explore", "prompt": "look" }),
                 )],
             ),
-        ])
+        ]
     }
 
     #[test]
-    fn main_thread_lines_take_the_most_recently_opened_stage() {
+    fn main_thread_requests_take_the_most_recently_opened_stage() {
         use Stage::*;
-        let got = stages_by_id(&[dispatch_main()]);
+        let got = stages_by_id(&Tree::new(&dispatch_main()).reap());
         let want: BTreeMap<String, Stage> = [
             ("m01", Other),
             ("m02", Other),
@@ -957,27 +689,31 @@ mod tests {
     }
 
     #[test]
-    fn subagents_take_their_spawning_calls_stage() {
+    fn subagents_take_their_anchoring_calls_stage() {
         use Stage::*;
-        let ts = [
-            dispatch_main(),
-            sub(Some("a-plan"), vec![msg("p1", 1.0, &[])]),
-            sub(Some("a-impl"), vec![msg("i1", 1.0, &[])]),
-            sub(
-                Some("a-fix"),
-                vec![msg(
+        let report = Tree::new(&dispatch_main())
+            .agent("plan", meta("a-plan", None), &[line("p1", 1, &[])])
+            .agent("impl", meta("a-impl", None), &[line("i1", 1, &[])])
+            .agent(
+                "fix",
+                meta("a-fix", None),
+                &[line(
                     "f1",
-                    1.0,
+                    1,
                     &[("a-nested", "Agent", json!({ "subagent_type": "Explore" }))],
                 )],
-            ),
-            // Listed before its parent resolves nothing differently.
-            sub(Some("a-nested"), vec![msg("n1", 1.0, &[])]),
-            sub(Some("a-explore"), vec![msg("e1", 1.0, &[])]),
-            sub(Some("a-unknown"), vec![msg("u1", 1.0, &[])]),
-            sub(None, vec![msg("u2", 1.0, &[])]),
-        ];
-        let got = stages_by_id(&ts);
+            )
+            // Nested: anchored through its parent to the main-thread call.
+            .agent(
+                "nested",
+                meta("a-nested", Some("fix")),
+                &[line("n1", 1, &[])],
+            )
+            .agent("explore", meta("a-explore", None), &[line("e1", 1, &[])])
+            .agent("unknown", meta("a-unknown", None), &[line("u1", 1, &[])])
+            .agent("nometa", None, &[line("u2", 1, &[])])
+            .reap();
+        let got = stages_by_id(&report);
         for (id, want) in [
             ("p1", Planning),
             ("i1", Implementation),
@@ -994,13 +730,18 @@ mod tests {
     #[test]
     fn workflow_agents_take_their_runs_workflow() {
         use Stage::*;
-        let ts = [
-            wf(Some("rdm-wf-plan-review"), vec![msg("w1", 1.0, &[])]),
-            wf(Some("rdm-wf-review-refute-fix"), vec![msg("w2", 1.0, &[])]),
-            wf(Some("rdm-wf-estimate"), vec![msg("w3", 1.0, &[])]),
-            wf(None, vec![msg("w4", 1.0, &[])]),
-        ];
-        let got = stages_by_id(&ts);
+        let report = Tree::new(&[line("m", 1, &[])])
+            .workflow("1", Some("rdm-wf-plan-review"), "a", &[line("w1", 1, &[])])
+            .workflow(
+                "2",
+                Some("rdm-wf-review-refute-fix"),
+                "a",
+                &[line("w2", 1, &[])],
+            )
+            .workflow("3", Some("rdm-wf-estimate"), "a", &[line("w3", 1, &[])])
+            .workflow("4", None, "a", &[line("w4", 1, &[])])
+            .reap();
+        let got = stages_by_id(&report);
         assert_eq!(
             [&got["w1"], &got["w2"], &got["w3"], &got["w4"]],
             [&PlanReview, &CodeReview, &Other, &Unattributed]
@@ -1008,13 +749,14 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_message_id_counts_once_and_the_last_line_wins() {
-        let t = main(vec![
-            msg("x", 10.0, &[]),
-            msg("x", 30.0, &[rdm_agent("a1", "Implement.")]),
-            msg("y", 5.0, &[]),
-        ]);
-        let b = Breakdown::attributed(&[t], None);
+    fn a_request_streamed_over_several_lines_counts_once_at_its_last_usage() {
+        let report = Tree::new(&[
+            line("x", 10, &[]),
+            line("x", 30, &[rdm_agent("a1", "Implement.")]),
+            line("y", 5, &[]),
+        ])
+        .reap();
+        let b = Breakdown::attributed(&[report], None);
         assert_eq!(b.get(Stage::Implementation).tokens.input, 35.0);
         assert_eq!(b.get(Stage::Other).tokens.input, 0.0);
         assert_eq!(b.get(Stage::Implementation).cost_usd, None);
@@ -1023,22 +765,24 @@ mod tests {
     #[test]
     fn dollars_price_both_cache_write_durations_and_skip_unknown_models() {
         let p = pricing();
-        let u = Usage {
-            input: 1_000_000.0,
-            output: 100_000.0,
-            cache_read: 10_000_000.0,
-            cache_write_5m: 200_000.0,
-            cache_write_1h: 500_000.0,
+        let u = TokenUsage {
+            input: 1_000_000,
+            output: 100_000,
+            cache_read: 10_000_000,
+            cache_write_5m: 200_000,
+            cache_write_1h: 500_000,
         };
         // 4 + 2 + 2 + 1 + 0.5 * 4 * 2 = 13.
-        assert_eq!(p.cost(Some("claude-test-1"), &u), Some(13.0));
-        assert_eq!(p.cost(Some("test-1"), &u), Some(13.0));
-        assert_eq!(p.cost(Some("claude-other"), &u), None);
-        assert_eq!(p.cost(None, &u), None);
+        assert_eq!(p.cost("claude-test-1", &u), Some(13.0));
+        assert_eq!(p.cost("test-1", &u), Some(13.0));
+        assert_eq!(p.cost("claude-other", &u), None);
 
-        let mut unknown = msg("z", 1_000_000.0, &[]);
-        unknown.model = Some("claude-other".to_owned());
-        let b = Breakdown::attributed(&[main(vec![msg("a", 1_000_000.0, &[]), unknown])], Some(&p));
+        let report = Tree::new(&[
+            line("a", 1_000_000, &[]),
+            model_line("z", "claude-other", 1_000_000, &[]),
+        ])
+        .reap();
+        let b = Breakdown::attributed(&[report], Some(&p));
         let other = b.get(Stage::Other);
         assert_eq!(other.tokens.input, 2_000_000.0);
         assert_eq!(other.cost_usd, Some(4.0));
@@ -1048,12 +792,13 @@ mod tests {
     #[test]
     fn the_remainder_against_the_recorded_totals_is_unattributed() {
         let p = pricing();
-        // 1M input in planning ($4), 1M input in other ($4).
-        let t = main(vec![
-            msg("a", 1_000_000.0, &[]),
-            msg("b", 1_000_000.0, &[rdm_agent("a1", "rdm plan create")]),
-        ]);
-        let attributed = Breakdown::attributed(&[t], Some(&p));
+        // 1M input in other ($4), 1M input in planning ($4).
+        let report = Tree::new(&[
+            line("a", 1_000_000, &[]),
+            line("b", 1_000_000, &[rdm_agent("a1", "rdm plan create")]),
+        ])
+        .reap();
+        let attributed = Breakdown::attributed(&[report], Some(&p));
         // The recorded totals add an untraced model's 500 input, 300 output
         // tokens and $0.25.
         let recorded = Tokens {
@@ -1101,11 +846,14 @@ mod tests {
         std::fs::write(path, text).expect("write");
     }
 
-    fn line(id: &str, input: u64, hour: u64, tools: serde_json::Value) -> String {
+    /// An assistant line with `hour` 1-hour and 100 5-minute cache writes.
+    fn cached_line(id: &str, input: u64, hour: u64, tools: serde_json::Value) -> String {
         json!({
             "type": "assistant",
+            "requestId": id,
+            "timestamp": "2026-01-01T00:00:00Z",
             "message": {
-                "id": id, "model": MODEL, "content": tools,
+                "id": format!("msg_{id}"), "model": MODEL, "content": tools,
                 "usage": {
                     "input_tokens": input, "output_tokens": 0,
                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": hour + 100,
@@ -1125,14 +873,14 @@ mod tests {
         let main_lines = [
             json!({ "type": "user", "message": { "content": "go" } }).to_string(),
             "not json".to_owned(),
-            line(
+            cached_line(
                 "m1",
                 10,
                 0,
                 json!([{ "type": "tool_use", "id": "t-plan", "name": "Agent",
                          "input": { "subagent_type": "rdm-effort-low", "prompt": "rdm plan create" } }]),
             ),
-            line(
+            cached_line(
                 "m2",
                 20,
                 0,
@@ -1143,19 +891,16 @@ mod tests {
         write(&project.join("s1.jsonl"), &main_lines.join("\n"));
         write(
             &session.join("subagents/agent-a1.jsonl"),
-            &line("p1", 100, 1000, json!([])),
+            &cached_line("p1", 100, 1000, json!([])),
         );
+        let meta = session.join("subagents/agent-a1.meta.json");
         write(
-            &session.join("subagents/agent-a1.meta.json"),
+            &meta,
             r#"{"agentType":"rdm:rdm-effort-low","toolUseId":"t-plan"}"#,
         );
         write(
             &session.join("subagents/workflows/wf_1/agent-b1.jsonl"),
-            &line("r1", 1000, 0, json!([])),
-        );
-        write(
-            &session.join("subagents/workflows/wf_1/agent-b1.meta.json"),
-            r#"{"agentType":"workflow-subagent","description":"find:plan:x"}"#,
+            &cached_line("r1", 1000, 0, json!([])),
         );
         write(
             &session.join("workflows/wf_1.json"),
@@ -1163,8 +908,9 @@ mod tests {
         );
         write(
             &session.join("subagents/workflows/wf_2/agent-c1.jsonl"),
-            &line("q1", 7, 0, json!([])),
+            &cached_line("q1", 7, 0, json!([])),
         );
+        // Not a session's trace: the plan-repo snapshots beside it.
         write(&project.join("rdm-plan/000001.tar"), "tar");
 
         let b = read_checkpoint(tmp.path(), Some(&pricing()))
@@ -1180,10 +926,14 @@ mod tests {
 
         assert_eq!(read_checkpoint(&tmp.path().join("none"), None), Ok(None));
 
-        let meta = session.join("subagents/agent-a1.meta.json");
+        // A meta that does not parse leaves its subagent unanchored, so its
+        // usage is unattributed instead of failing the checkpoint.
         write(&meta, "{not json");
-        let e = read_checkpoint(tmp.path(), None).expect_err("bad meta");
-        assert!(e.contains(&meta.display().to_string()), "{e}");
+        let b = read_checkpoint(tmp.path(), None)
+            .expect("read")
+            .expect("trace");
+        assert_eq!(b.get(Stage::Planning).tokens.input, 10.0);
+        assert_eq!(b.get(Stage::Unattributed).tokens.input, 107.0);
     }
 
     #[test]

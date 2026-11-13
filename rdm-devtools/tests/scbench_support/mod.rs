@@ -417,8 +417,8 @@ pub struct TraceUsage {
     pub write_1h: u64,
 }
 
-/// One trace-file `assistant` line of message `id` by `model` with `usage`
-/// and the `tool_use` blocks `(id, name, input)`.
+/// One trace-file `assistant` line of message `id` (request `req-<id>`) by
+/// `model` with `usage` and the `tool_use` blocks `(id, name, input)`.
 pub fn assistant_line(
     id: &str,
     model: &str,
@@ -431,7 +431,8 @@ pub fn assistant_line(
     ));
     json!({
         "parentUuid": null, "isSidechain": false, "type": "assistant",
-        "uuid": format!("u-{id}"), "timestamp": "2026-01-01T00:00:00Z",
+        "uuid": format!("u-{id}"), "requestId": format!("req-{id}"),
+        "timestamp": "2026-01-01T00:00:00Z",
         "message": {
             "model": model, "id": id, "type": "message", "role": "assistant",
             "content": content, "stop_reason": "tool_use",

@@ -29,6 +29,7 @@ clap = { workspace = true }
 flate2 = { workspace = true }
 rdm-core = { path = "../rdm-core" }
 rdm-store-fs = { path = "../rdm-store-fs" }
+rdm-transcript = { path = "../rdm-transcript" }
 rustix = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }

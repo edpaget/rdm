@@ -2912,6 +2912,7 @@ dependencies = [
  "minijinja",
  "rdm-core",
  "rdm-store-fs",
+ "rdm-transcript",
  "rustix",
  "serde",
  "serde-saphyr",
