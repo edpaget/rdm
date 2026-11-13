@@ -145,6 +145,60 @@ over the given seeds, then the report.
 6. **Re-run into a fresh `--out`.** The report reads one run directory, so a
    re-run is never merged with an earlier one.
 
+## Headless resumes in the rdm arms
+
+**The cause.** SCBench runs the agent as `claude --print`, once per
+checkpoint. The rdm lane runs its planner, reviewers and implementer as
+background subagents and Workflows, and Claude Code's print mode stops
+background tasks 10 minutes after the last turn. In the first smoke run,
+every full-lane checkpoint's `agent/stderr.log` held `Background tasks still
+running 10m after the last turn ...; stopping them`, and the checkpoint
+ended with its phase `in-progress` and nothing committed, reviewed or
+landed. Every rdm-arm checkpoint then failed for plumbing reasons, which
+says nothing about code quality.
+
+**The fix.** The rdm image's agent binary, `claude-rdm`, does two things for
+every rdm arm (`tracked`, `planned`, `full-lane`):
+
+- It raises the print-mode ceiling to 2 h
+  (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=7200000`) unless it is already set.
+- After every `claude` exit it reads the checkpoint's phase through
+  `rdm phase list`. The phase has settled when it is `done`, `blocked` or
+  `wont-fix`. Until then the wrapper resumes the same session with
+  `claude --continue`, the original arguments and a fixed continuation
+  prompt, and exports the plan repo after every exit.
+
+`bench/scbench/README.md` § "Full-lane arm" gives the settle rule, the
+prompt's contract and where the wrapper's `claude-rdm:` lines land.
+
+**The cap.** At most `RDM_RESUME_MAX` resumes per checkpoint attempt,
+default 6, one per lane stage that runs in the background or can be cut.
+The default lives in the wrapper, so the rdm SHA, which names the image and
+is in the run record, pins it. A checkpoint still unsettled after the cap
+ends as a lane failure (`unfinished`, `escalated` or `phase-missing`) and
+the wrapper exits
+with the last `claude`'s status.
+
+**The step-limit interaction.** `step_limit` reaches Claude Code as
+`--max-turns`, which counts main-thread turns per `claude` process. Each
+resume keeps the original `--max-turns`, so it gets a fresh budget, and an
+rdm-arm checkpoint can run up to `(1 + RDM_RESUME_MAX) × step_limit` = 7 ×
+1000 turns. A control runs one process of 100 turns and never resumes.
+SCBench's own retry (`--continue` on an agent error) multiplies attempts by
+up to 3 for every arm. The report's `steps` counts API messages including
+subagents, so it can exceed `step_limit` for any arm.
+
+**The confound.** The rdm arms get a 2 h background ceiling, resumes and a
+larger turn budget; the controls keep upstream's configuration, which no
+control checkpoint in the smoke run hit. An rdm-vs-control difference
+therefore includes the extra turns the rdm arms may spend. Read it with the
+arms' `steps` and `cost_usd`, which show the actual spend.
+
+**Rebuild after a change.** The wrapper is part of the rdm image, so editing
+it (to change the default cap, say) changes the rdm SHA. Run
+`scbench image build` again before the next rdm-arm run; `image check`
+refuses the stale image.
+
 ## Reading the report
 
 The ladder ends by printing the markdown report. `scbench report --run <dir>`
@@ -180,11 +234,17 @@ Each metric is computed per seed, from SCBench's per-checkpoint files
 | `trivial_wrappers_final` | functions that only forward to another, at the last checkpoint | lower |
 | `sloc_final` | source lines, at the last checkpoint: context for the counts above, with no direction | — |
 | `<metric>_change` | the same metric at the last checkpoint minus at the first, averaged over problems: the erosion across checkpoints | as above |
-| `cost_usd` | Σ agent cost over checkpoints | lower |
-| `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`, `tokens_total` | Σ net tokens over checkpoints | lower |
-| `steps` | Σ agent steps | lower |
+| `cost_usd` | Σ agent cost over checkpoints, each the final `result`'s cumulative `total_cost_usd`, covering every resume | lower |
+| `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`, `tokens_total` | Σ over checkpoints of the final `result`'s `modelUsage` totals in `agent/stdout.jsonl` (every turn, subagent and resume), else SCBench's `net_tokens` when a checkpoint has no stream | lower |
+| `steps` | Σ agent steps: assistant messages with usage, subagents and every resume included | lower |
 | `wall_clock_seconds` | Σ agent wall-clock, excluding evaluation | lower |
 | `lane_failures` | checkpoints the rdm lane did not land (rdm-image arms only) | lower |
+
+The token figures come from the agent stream in every arm. SCBench's own
+`net_tokens` is the last turn's main-thread `usage` alone, so it undercounts
+every multi-turn or subagent-heavy checkpoint, and the rdm arms most. The
+final `result`'s `modelUsage` is the session's running total, which Claude
+Code restores on `--continue`, so it covers every resume of the checkpoint.
 
 A checkpoint passes as SCBench decides it: it has an evaluation, the
 evaluation had no infrastructure failure, and the manifest's `pass_policy`
@@ -283,4 +343,15 @@ Only the operator's first live ladder confirms:
 - that the committed checkpoint counts match a provisioned problem checkout
 - that the rdm image builds, and the lane runs and exports its plan repos in
   the container (see the README's "Full-lane arm")
+- that Claude Code 2.1.322 honours `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+  (its own stderr names the variable)
+- that `--continue` under `--print` resumes the checkpoint's main session in
+  `/workspace`, not a subagent's
+- that a resumed process restores the session's cost. Check this on the
+  first live run: if a `--continue` process's final `total_cost_usd` in
+  `agent/stdout.jsonl` is below the previous process's final value, the
+  restore did not happen, the checkpoint's cost undercounts, and an rdm task
+  tagged `benchmark` follows
+- that the agent follows the continuation prompt
+- that a 2 h ceiling and 6 resumes suit real lane stages
 - the real cost and timing

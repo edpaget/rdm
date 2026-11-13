@@ -13,6 +13,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use super::lane;
 use super::manifest::{Limits, Manifest, Rdm};
 use super::plan::stock_agent_config;
 
@@ -83,7 +84,11 @@ pub fn render_template(
 /// The agent config for an rdm arm: the stock config (with `limits`) with
 /// the wrapper as `binary`, the per-SHA `version`, the rendered template at
 /// `template_path`, `--plugin-dir` and the plan repo's environment, including
-/// the [`PLAN_EXPORT_SUBDIR`] the wrapper exports the plan repo to.
+/// the [`PLAN_EXPORT_SUBDIR`] the wrapper exports the plan repo to and
+/// `RDM_ROADMAP` ([`lane::ROADMAP`], the roadmap the prompts' `@RDM_ROADMAP@`
+/// name), whose highest-numbered phase the wrapper reads to decide whether a
+/// checkpoint has settled or must be resumed. rdm itself reads no
+/// `RDM_ROADMAP`.
 pub fn agent_config(
     manifest: &Manifest,
     rdm: &Rdm,
@@ -99,6 +104,7 @@ pub fn agent_config(
     config["env"] = json!({
         "RDM_ROOT": rdm.plan_root,
         "RDM_PROJECT": rdm.project,
+        "RDM_ROADMAP": lane::ROADMAP,
         "RDM_PLAN_EXPORT_SUBDIR": PLAN_EXPORT_SUBDIR,
         "GIT_AUTHOR_NAME": "rdm-scbench",
         "GIT_AUTHOR_EMAIL": "rdm-scbench@localhost",
@@ -118,6 +124,48 @@ mod tests {
             agent_image_name("2.1.322", "S", "python3.12"),
             "slop-code:claude_code-2.1.322-rdm.S-python3.12"
         );
+    }
+
+    #[test]
+    fn agent_config_env_names_the_lane_roadmap() {
+        let text = r#"
+[scbench]
+repo = "R1"
+sha = "1111111111111111111111111111111111111111"
+[problems]
+repo = "R2"
+sha = "2222222222222222222222222222222222222222"
+subset = ["p1"]
+checkpoints = { p1 = 2 }
+[agent]
+provider = "prov"
+model = "mod"
+model_file = "models/m.yaml"
+thinking = "low"
+claude_code_version = "9.9.9"
+pass_policy = "core-cases"
+environment = "env"
+step_limit = 7
+cost_limit = 0
+net_cost_limit = 0
+[rdm]
+plan_root = "/rdm-plan"
+project = "bench"
+[[arm]]
+name = "a1"
+prompt = "configs/prompts/a1.jinja"
+"#;
+        let manifest = Manifest::parse(text, Path::new("/rdm/bench")).expect("valid");
+        let rdm = manifest.rdm_table().expect("rdm table");
+        let config = agent_config(
+            &manifest,
+            rdm,
+            "S",
+            Path::new("/t/docker.j2"),
+            &manifest.agent.limits(),
+        );
+        assert_eq!(config["env"]["RDM_ROADMAP"], json!(lane::ROADMAP));
+        assert_eq!(config["env"]["RDM_PROJECT"], json!("bench"));
     }
 
     #[test]

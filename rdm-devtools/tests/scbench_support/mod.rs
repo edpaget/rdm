@@ -56,6 +56,8 @@ pub struct Checkpoint {
     pub eval: Option<Eval>,
     pub quality: Option<Quality>,
     pub inference: Option<Inference>,
+    /// The claude_code agent's stream-json stdout, `agent/stdout.jsonl`.
+    pub stream: Option<String>,
 }
 
 fn evaluation(c: &Checkpoint, e: Eval) -> Value {
@@ -193,6 +195,9 @@ pub fn files(run_dir: &Path, c: &Checkpoint) -> Vec<(PathBuf, String)> {
             pretty(&inference(c, i, run_dir)),
         ));
     }
+    if let Some(s) = &c.stream {
+        out.push((dir.join("agent/stdout.jsonl"), s.clone()));
+    }
     out
 }
 
@@ -235,5 +240,6 @@ pub fn simple(problem: &str, name: &str, order: u32) -> Checkpoint {
             cache_read: 1,
             cache_write: 1,
         }),
+        stream: None,
     }
 }

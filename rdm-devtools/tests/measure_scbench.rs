@@ -1624,6 +1624,7 @@ fn full_lane_invocation_uses_rdm_image_template_and_arm_limits() {
         agent["env"]["RDM_PLAN_EXPORT_SUBDIR"].is_string(),
         "{agent}"
     );
+    assert_eq!(agent["env"]["RDM_ROADMAP"], "solution", "{agent}");
     assert_eq!(
         agent["cost_limits"],
         json!({ "step_limit": 4321, "cost_limit": 12.5, "net_cost_limit": 25.0 })

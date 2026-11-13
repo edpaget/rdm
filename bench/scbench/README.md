@@ -259,7 +259,8 @@ cargo run -q -p rdm-devtools --bin rdm-measure -- scbench report \
 `scbench report` makes no call. It reads the run record and each finished
 unit's SCBench checkpoint tree (`evaluation.json`,
 `quality_analysis/overall_quality.json` and `inference_result.json` per
-checkpoint), then writes `rdm-scbench-report.json` and
+checkpoint, plus the token totals of the final `result` event in
+`agent/stdout.jsonl` when the checkpoint has one), then writes `rdm-scbench-report.json` and
 `rdm-scbench-report.md` beside the run record and prints the chosen format
 (default markdown). Per arm it gives the checkpoint pass rate (under the
 manifest's `pass_policy`), the erosion metrics at the last checkpoint and
@@ -298,7 +299,9 @@ needs the manifest's `[rdm]` table, which names the plan repo's path in the
 container (`plan_root`) and its default project.
 
 Build the image and check it before the first run with an rdm arm, and again
-after every commit:
+after every commit. The wrapper `agent/claude-rdm.sh` is part of the image,
+so any change to it changes the rdm SHA: run `scbench image build` again
+before the next rdm-arm run, because `image check` refuses the stale image:
 
 ```bash
 cargo run -q -p rdm-devtools --bin rdm-measure -- scbench image build
@@ -355,7 +358,10 @@ Some choices follow from how the pinned SCBench works:
   (`/workspace`), so plan-repo files never count toward the metrics; the
   runner refuses a `plan_root` inside it and records the graded directory in
   each rdm arm's run record. The agent binary, `claude-rdm`, runs `rdm init`
-  there when no plan repo exists yet, then `claude`. Each problem runs in its
+  there when no plan repo exists yet, then `claude`, resuming it until the
+  checkpoint settles (see "Full-lane arm" § "Headless resumes"). The wrapper
+  never writes stdout itself: stdout carries only `claude`'s stream, and the
+  wrapper's and rdm's own output go to stderr. Each problem runs in its
   own container, so each problem starts with a fresh plan repo that its later
   checkpoints reuse.
 
@@ -443,6 +449,58 @@ documented SCBench interface. After the arm's `slop-code run` and before its
 `output/`, never inside it. A problem's last checkpoint copy is its final
 plan repo.
 
+**Headless resumes.** SCBench runs `claude --print` once per checkpoint, and
+the lane backgrounds subagents and Workflows. Claude Code's print mode stops
+background tasks 10 minutes after the last turn, which ended every full-lane
+checkpoint of the first smoke run with nothing committed, reviewed or
+landed. The wrapper handles this for every rdm arm (`tracked`, `planned`,
+`full-lane`); the controls keep upstream's configuration.
+
+- **The ceiling.** The wrapper exports
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=7200000` (2 h) unless it is already
+  set. It is finite, not `0` ("wait indefinitely"), so a background shell
+  that never exits cannot hold a checkpoint forever.
+- **The settle rule.** After every `claude` exit the wrapper reads
+  `rdm phase list --roadmap solution --format json`, through rdm and never
+  the files. The checkpoint's phase is the highest-numbered phase of
+  `$RDM_ROADMAP` (`solution`, from the agent config's `env`), numbered above
+  the highest phase before the checkpoint started. That baseline is kept
+  under the container's `$TMPDIR` and reused by SCBench's own `--continue`
+  retry. The checkpoint has settled when its phase is `done`, `blocked` or
+  `wont-fix`. A full-lane phase left `reviewed` has not settled.
+- **The resume.** While the checkpoint has not settled, the wrapper resumes
+  the same session: `claude --continue` with every original argument before
+  `--` (model, output format, `--max-turns`, permission mode, `--plugin-dir`)
+  and a fixed continuation prompt after it. That prompt says the previous
+  process's background work was stopped, that this is the same checkpoint
+  (so no second phase is created), to check the phase's state and redo any
+  step whose result never arrived in the foreground, and never to end a turn
+  while a background task is still running. The wrapper exits with the last
+  `claude`'s status.
+- **The cap.** At most `RDM_RESUME_MAX` resumes per checkpoint attempt,
+  default 6: one per lane stage that runs in the background or can be cut
+  (planner, plan review, implementer, verify, code review, land). `0`
+  disables resuming. The default lives in the wrapper, so the rdm SHA pins
+  it. Changing it means editing the wrapper and rebuilding the image.
+- **The export.** Every `claude` exit, each resume included, writes a new
+  plan-repo tar, so a checkpoint's latest export is its final state.
+- **Where the resume lines land.** The wrapper's `claude-rdm: phase <N> is
+  <status>; resuming (<k>/<max>)` and `claude-rdm: checkpoint not settled
+  after <max> resume(s)` lines go to stderr, which SCBench writes to
+  `<checkpoint>/agent/stderr.log`.
+- **Usage.** Every resume continues one session, so its final `result`
+  carries the session's cumulative `total_cost_usd` and `modelUsage`.
+  SCBench keeps the last result's cost and counts every process's assistant
+  messages as steps, so the report's `cost_usd` and `steps` cover every
+  resume. The report reads tokens from the final result's `modelUsage` in
+  `<checkpoint>/agent/stdout.jsonl` (see "Reporting a run").
+- **Limits.** `step_limit` reaches Claude Code as `--max-turns`, per `claude`
+  process. Each resume keeps it, so an rdm-arm checkpoint can run up to
+  `(1 + RDM_RESUME_MAX) × step_limit` main-thread turns (7 × 1000), while a
+  control runs one process of 100. SCBench's own retry multiplies both by up
+  to 3. The guide documents this as a confound against the controls; the
+  report's `steps` and `cost_usd` show the actual spend.
+
 **Classification.** The runner reads each copy through rdm-core, as
 `rdm phase list` does. A checkpoint's phase is the one that is new since the
 previous checkpoint. The runner writes each checkpoint into the run record's
@@ -472,6 +530,11 @@ run confirms the rest:
 - that the trace export copies the tars
 - that `rdm worktree add` and `rdm:land` work at `/workspace`
 - that 1000 steps is enough
+- that Claude Code 2.1.322 honours `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`,
+  that `--continue` resumes the checkpoint's main session in `/workspace`,
+  that the resumed process restores the session's cost, that the agent
+  follows the continuation prompt, and that 2 h and 6 resumes suit real lane
+  stages
 
 ## Cost figures under a subscription
 

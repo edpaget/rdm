@@ -267,6 +267,7 @@ fn unit_checkpoints(a: usize, s: u64, shift: Shift) -> Vec<Checkpoint> {
                     cache_read: 10,
                     cache_write: 1,
                 }),
+                stream: None,
             });
         }
     }
@@ -580,6 +581,96 @@ fn report_pass_follows_the_pass_policy() {
         ]
     );
     assert_eq!(js["summary"]["pass_rate"]["mean"], json!(0.25));
+}
+
+/// A full-lane checkpoint the wrapper resumed once: its `agent/stdout.jsonl`
+/// holds two `claude` processes of one session, and its
+/// `inference_result.json` is what SCBench writes for that stream (the last
+/// result's cumulative `total_cost_usd`, every assistant message as a step,
+/// the last result's per-turn `usage` as `net_tokens`). The report's cost
+/// and steps cover both processes, and its tokens are the final result's
+/// `modelUsage`.
+#[test]
+fn resumed_checkpoint_usage_covers_every_process() {
+    let f = Fixture::new();
+    let assistant = |id: &str| {
+        json!({
+            "type": "assistant",
+            "message": { "id": id, "usage": { "input_tokens": 1, "output_tokens": 1 } },
+        })
+        .to_string()
+    };
+    let init = json!({ "type": "system", "subtype": "init", "session_id": "s1" }).to_string();
+    let stream = [
+        init.clone(),
+        assistant("msg-1"),
+        assistant("msg-2"),
+        json!({
+            "type": "result",
+            "session_id": "s1",
+            "total_cost_usd": 1.0,
+            "usage": { "input_tokens": 2, "output_tokens": 20,
+                       "cache_read_input_tokens": 200, "cache_creation_input_tokens": 5 },
+            "modelUsage": { "claude-opus-5-5": {
+                "inputTokens": 10, "outputTokens": 100,
+                "cacheReadInputTokens": 1000, "cacheCreationInputTokens": 50 } },
+        })
+        .to_string(),
+        init,
+        assistant("msg-3"),
+        json!({
+            "type": "result",
+            "session_id": "s1",
+            "total_cost_usd": 1.5,
+            "usage": { "input_tokens": 3, "output_tokens": 30,
+                       "cache_read_input_tokens": 300, "cache_creation_input_tokens": 7 },
+            "modelUsage": { "claude-opus-5-5": {
+                "inputTokens": 15, "outputTokens": 160,
+                "cacheReadInputTokens": 1600, "cacheCreationInputTokens": 80 } },
+        })
+        .to_string(),
+    ]
+    .join("\n")
+        + "\n";
+    let mut cp = scbench_support::simple("mvvault", "checkpoint_1", 1);
+    cp.inference = Some(Inference {
+        elapsed: 60.0,
+        cost: 1.5,
+        steps: 3,
+        input: 3,
+        output: 30,
+        cache_read: 300,
+        cache_write: 7,
+    });
+    cp.stream = Some(stream);
+    let run = f.write_run(
+        "resumed",
+        true,
+        &RecordPins::default(),
+        &[UnitSpec {
+            arm: "full-lane",
+            group: Some("rdm"),
+            image: "rdm",
+            seed: Some(1),
+            finished: true,
+            checkpoints: vec![cp],
+            lane: None,
+            interrupted: None,
+        }],
+    );
+    let r = report_json(&run, &[]);
+    let s = &arm(&r, "full-lane")["summary"];
+    for (key, want) in [
+        ("cost_usd", 1.5),
+        ("steps", 3.0),
+        ("tokens_input", 15.0),
+        ("tokens_output", 160.0),
+        ("tokens_cache_read", 1600.0),
+        ("tokens_cache_write", 80.0),
+        ("tokens_total", 15.0 + 160.0 + 1600.0 + 80.0),
+    ] {
+        assert_eq!(values(&s[key]), [want], "{key}: {}", s[key]);
+    }
 }
 
 /// A checkpoint the agent never reached counts as a failure: the pass-rate

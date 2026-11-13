@@ -7,6 +7,15 @@
 //! are read (the names SCBench's own `metrics/checkpoint/extractors.py`
 //! reads), and unknown fields are ignored. A missing file is missing data; a
 //! file that exists but does not parse is an error naming it.
+//!
+//! The token figures come from the checkpoint's agent stream
+//! ([`STREAM_FILE`]) when it has one: its final `result` event's
+//! `modelUsage`, the session's running totals over every turn, subagent and
+//! `--continue` resume. SCBench's own `net_tokens` is the last turn's
+//! main-thread `usage` alone, so it is the fallback only for a checkpoint
+//! without a stream. Cost and steps stay SCBench's: its `usage.cost` is the
+//! final result's cumulative `total_cost_usd`, and its `usage.steps` counts
+//! every assistant message of every `claude` process in the invocation.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -22,6 +31,10 @@ pub const EVALUATION_FILE: &str = "evaluation.json";
 pub const QUALITY_FILE: &str = "quality_analysis/overall_quality.json";
 /// SCBench's `INFERENCE_RESULT_FILENAME` (`CheckpointInferenceResult`).
 pub const INFERENCE_FILE: &str = "inference_result.json";
+/// The claude_code agent's stream-json stdout (`STDOUT_FILENAME` under the
+/// checkpoint's `agent` artifacts dir): every line of every `claude` process
+/// the agent binary ran for the checkpoint.
+pub const STREAM_FILE: &str = "agent/stdout.jsonl";
 
 /// The erosion metrics, in report order.
 pub const EROSION: [&str; 8] = [
@@ -118,21 +131,28 @@ impl Quality {
     }
 }
 
-/// One checkpoint's agent usage (from [`INFERENCE_FILE`]).
+/// One checkpoint's agent usage (from [`INFERENCE_FILE`], with the tokens
+/// from [`STREAM_FILE`]'s final `result` when the checkpoint has a stream).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Inference {
-    /// Agent wall-clock seconds for the checkpoint (`elapsed`).
+    /// Agent wall-clock seconds for the checkpoint (`elapsed`), spanning the
+    /// whole agent-binary invocation.
     pub elapsed: f64,
-    /// `usage.cost`, in dollars.
+    /// `usage.cost`, in dollars: the final result's `total_cost_usd`, which
+    /// covers every resume of the session.
     pub cost: f64,
-    /// `usage.steps`.
+    /// `usage.steps`: assistant messages with usage, subagents included,
+    /// over every `claude` process of the invocation.
     pub steps: f64,
-    /// `usage.net_tokens.input`.
+    /// Input tokens: the final result's `modelUsage` `inputTokens` summed
+    /// over models, else `usage.net_tokens.input`.
     pub tokens_input: f64,
-    /// `usage.net_tokens.output`.
+    /// Output tokens: `outputTokens`, else `usage.net_tokens.output`.
     pub tokens_output: f64,
+    /// Cache-read tokens: `cacheReadInputTokens`, else
     /// `usage.net_tokens.cache_read`.
     pub tokens_cache_read: f64,
+    /// Cache-write tokens: `cacheCreationInputTokens`, else
     /// `usage.net_tokens.cache_write`.
     pub tokens_cache_write: f64,
 }
@@ -244,6 +264,80 @@ struct TokensJson {
     cache_write: f64,
 }
 
+/// One line of [`STREAM_FILE`]; only a `result` event's usage is read.
+#[derive(Deserialize)]
+struct StreamEvent {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    usage: Option<serde_json::Value>,
+    #[serde(rename = "modelUsage", default)]
+    model_usage: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+/// The token totals of a stream's final `result` event.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ResultTotals {
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+}
+
+/// `v[key]` as a number, `0` when absent or not a number.
+fn number(v: &serde_json::Value, key: &str) -> f64 {
+    v.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0)
+}
+
+impl StreamEvent {
+    /// The event's totals: `modelUsage` summed over its models (SCBench's own
+    /// `modelUsage` mapping), else its `usage`; `None` with neither.
+    fn totals(&self) -> Option<ResultTotals> {
+        if let Some(models) = self.model_usage.as_ref().filter(|m| !m.is_empty()) {
+            let mut t = ResultTotals {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            };
+            for m in models.values().filter(|m| m.is_object()) {
+                t.input += number(m, "inputTokens");
+                t.output += number(m, "outputTokens");
+                t.cache_read += number(m, "cacheReadInputTokens");
+                t.cache_write += number(m, "cacheCreationInputTokens");
+            }
+            return Some(t);
+        }
+        let u = self.usage.as_ref().filter(|u| u.is_object())?;
+        Some(ResultTotals {
+            input: number(u, "input_tokens"),
+            output: number(u, "output_tokens"),
+            cache_read: number(u, "cache_read_input_tokens"),
+            cache_write: number(u, "cache_creation_input_tokens"),
+        })
+    }
+}
+
+/// The token totals of the last `result` event in the stream at `path`;
+/// `None` when the file does not exist or holds no result with usage. A
+/// line that is not JSON is skipped, as SCBench skips it.
+fn final_result(path: &Path) -> Result<Option<ResultTotals>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    Ok(text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .filter_map(|l| serde_json::from_str::<StreamEvent>(l).ok())
+        .find(|e| e.kind.as_deref() == Some("result"))
+        .and_then(|e| e.totals()))
+}
+
 /// Reads `path` as `T`; `None` when it does not exist.
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     let text = match std::fs::read_to_string(path) {
@@ -297,6 +391,10 @@ pub fn read_unit(
             let eval: Option<EvaluationJson> = read_json(&dir.join(EVALUATION_FILE))?;
             let quality: Option<QualityJson> = read_json(&dir.join(QUALITY_FILE))?;
             let inference: Option<InferenceJson> = read_json(&dir.join(INFERENCE_FILE))?;
+            let totals = match inference {
+                Some(_) => final_result(&dir.join(STREAM_FILE))?,
+                None => None,
+            };
             checkpoints.push(CheckpointOutput {
                 name,
                 order,
@@ -305,14 +403,23 @@ pub fn read_unit(
                 }),
                 evaluated: eval.is_some(),
                 quality: quality.map(Quality::from),
-                inference: inference.map(|i| Inference {
-                    elapsed: i.elapsed,
-                    cost: i.usage.cost,
-                    steps: i.usage.steps,
-                    tokens_input: i.usage.net_tokens.input,
-                    tokens_output: i.usage.net_tokens.output,
-                    tokens_cache_read: i.usage.net_tokens.cache_read,
-                    tokens_cache_write: i.usage.net_tokens.cache_write,
+                inference: inference.map(|i| {
+                    let net = &i.usage.net_tokens;
+                    let t = totals.unwrap_or(ResultTotals {
+                        input: net.input,
+                        output: net.output,
+                        cache_read: net.cache_read,
+                        cache_write: net.cache_write,
+                    });
+                    Inference {
+                        elapsed: i.elapsed,
+                        cost: i.usage.cost,
+                        steps: i.usage.steps,
+                        tokens_input: t.input,
+                        tokens_output: t.output,
+                        tokens_cache_read: t.cache_read,
+                        tokens_cache_write: t.cache_write,
+                    }
                 }),
             });
         }
@@ -401,6 +508,121 @@ mod tests {
                 trivial_wrappers: 1.0,
             },
         })
+    }
+
+    fn stream(dir: &Path, lines: &[&str]) -> std::path::PathBuf {
+        let path = dir.join("stdout.jsonl");
+        std::fs::write(&path, lines.join("\n") + "\n").expect("write stream");
+        path
+    }
+
+    fn totals(input: f64, output: f64, cache_read: f64, cache_write: f64) -> ResultTotals {
+        ResultTotals {
+            input,
+            output,
+            cache_read,
+            cache_write,
+        }
+    }
+
+    #[test]
+    fn final_result_keeps_the_last_result_and_skips_non_json() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = stream(
+            tmp.path(),
+            &[
+                r#"{"type":"system","subtype":"init"}"#,
+                r#"{"type":"result","usage":{"input_tokens":1},"modelUsage":{"m":{"inputTokens":10,"outputTokens":100,"cacheReadInputTokens":1000,"cacheCreationInputTokens":50}}}"#,
+                "not json at all",
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":7}}}"#,
+                r#"{"type":"result","usage":{"input_tokens":2},"modelUsage":{"m":{"inputTokens":15,"outputTokens":160,"cacheReadInputTokens":1600,"cacheCreationInputTokens":80}}}"#,
+            ],
+        );
+        assert_eq!(
+            final_result(&path).expect("read"),
+            Some(totals(15.0, 160.0, 1600.0, 80.0))
+        );
+    }
+
+    #[test]
+    fn final_result_sums_model_usage_across_models() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = stream(
+            tmp.path(),
+            &[
+                r#"{"type":"result","modelUsage":{"a":{"inputTokens":1,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4},"b":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":30,"cacheCreationInputTokens":40}}}"#,
+            ],
+        );
+        assert_eq!(
+            final_result(&path).expect("read"),
+            Some(totals(11.0, 22.0, 33.0, 44.0))
+        );
+    }
+
+    #[test]
+    fn final_result_without_model_usage_falls_back_to_usage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = stream(
+            tmp.path(),
+            &[
+                r#"{"type":"result","usage":{"input_tokens":5,"output_tokens":6,"cache_read_input_tokens":7,"cache_creation_input_tokens":8},"modelUsage":{}}"#,
+            ],
+        );
+        assert_eq!(
+            final_result(&path).expect("read"),
+            Some(totals(5.0, 6.0, 7.0, 8.0))
+        );
+    }
+
+    #[test]
+    fn no_stream_keeps_net_tokens() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            final_result(&tmp.path().join("missing.jsonl")).expect("read"),
+            None
+        );
+        let run_dir = tmp.path();
+        let cp = run_dir.join("p/checkpoint_1");
+        std::fs::create_dir_all(&cp).expect("mkdir");
+        std::fs::write(cp.join("checkpoint.yaml"), "name: checkpoint_1\norder: 1\n")
+            .expect("checkpoint.yaml");
+        std::fs::write(
+            cp.join(INFERENCE_FILE),
+            r#"{"elapsed":1.0,"usage":{"cost":0.5,"steps":3,"net_tokens":{"input":1,"output":2,"cache_read":3,"cache_write":4}}}"#,
+        )
+        .expect("inference");
+        let read = |dir: &Path| {
+            read_unit(dir, &["p".to_owned()], PassPolicy::Any).expect("read unit")[0].checkpoints[0]
+                .inference
+                .expect("inference")
+        };
+        let i = read(run_dir);
+        assert_eq!(
+            (
+                i.tokens_input,
+                i.tokens_output,
+                i.tokens_cache_read,
+                i.tokens_cache_write
+            ),
+            (1.0, 2.0, 3.0, 4.0)
+        );
+        std::fs::create_dir_all(cp.join("agent")).expect("agent dir");
+        std::fs::write(
+            cp.join(STREAM_FILE),
+            r#"{"type":"result","modelUsage":{"m":{"inputTokens":9,"outputTokens":8,"cacheReadInputTokens":7,"cacheCreationInputTokens":6}}}"#,
+        )
+        .expect("stream");
+        let i = read(run_dir);
+        assert_eq!(
+            (
+                i.tokens_input,
+                i.tokens_output,
+                i.tokens_cache_read,
+                i.tokens_cache_write
+            ),
+            (9.0, 8.0, 7.0, 6.0)
+        );
+        assert_eq!((i.cost, i.steps), (0.5, 3.0));
     }
 
     #[test]
