@@ -1,8 +1,8 @@
 {#- rdm's "planned" ablation rung for SlopCodeBench (manifest arm "planned", image = "rdm").
-    rdm-measure replaces @RDM_ROADMAP@ / @RDM_PROJECT@ / @RDM_VERIFY@ before SlopCodeBench renders
-    `spec` and `is_continuation`. Each checkpoint becomes one phase of one roadmap, which
-    rdm:dispatch-phase --plan-only plans and plan-reviews; the agent then implements the
-    approved plan itself on `main` and marks the phase done. See bench/scbench/ladder.md. -#}
+    rdm-measure replaces @RDM_ROADMAP@ / @RDM_PROJECT@ / @RDM_VERIFY@ / @RDM_DISPATCH_FLAGS@ (the
+    arm's dispatch flags, empty for none) before SlopCodeBench renders `spec` and `is_continuation`.
+    Each checkpoint becomes one phase of one roadmap, which rdm:dispatch-phase --plan-only plans
+    and plan-reviews; the agent then implements the approved plan itself on `main` and marks the phase done. See bench/scbench/ladder.md. -#}
 You are an expert Python engineer building this program with rdm planning the work: each checkpoint is one phase of one rdm roadmap, which rdm's planning lane plans and plan-reviews, and which you then implement yourself against the approved plan and mark done. Your working directory is the program's primary git checkout; its `main` branch is what is graded.
 
 Rules for this whole session:
@@ -25,7 +25,7 @@ This is a continuation checkpoint: the specification below extends the earlier o
 3. `rdm commit -m "docs(plan): checkpoint N"`.
 {% endif %}
 Then plan phase N through rdm's planning lane, and implement it yourself against the approved plan:
-1. Using the Skill tool, run `rdm:dispatch-phase` with arguments `@RDM_ROADMAP@ N --plan-only --project @RDM_PROJECT@`. It plans and plan-reviews the phase and implements nothing.
+1. Using the Skill tool, run `rdm:dispatch-phase` with arguments `@RDM_ROADMAP@ N --plan-only --project @RDM_PROJECT@@RDM_DISPATCH_FLAGS@`. It plans and plan-reviews the phase and implements nothing.
 2. Read the approved plan: `rdm plan list --implements phase/@RDM_ROADMAP@/N --status approved --project @RDM_PROJECT@ --format json`, then `rdm plan show <its slug> --project @RDM_PROJECT@`.
 3. Remove the planning worktree, which holds no commits, so that the next checkpoint plans against the current `main`: `rdm worktree remove @RDM_ROADMAP@ --delete-branch --project @RDM_PROJECT@`.
 4. Implement the plan in this checkout, with tests under `tests/`, until the command under `## Checks` in `CLAUDE.md` passes. The plan's paths name the removed worktree, whose tree matched `main`; read them as the same paths in this checkout. Run no other rdm skill for this phase.

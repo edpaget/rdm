@@ -154,9 +154,9 @@ if [ "$1" = --root ] && [ "$3" = init ]; then
     echo "fake rdm: initialized $2"
     exit 0
 fi
-if [ "$1" = --root ] && [ "$3" = config ] && [ "$4" = set ] && [ "$5" = dispatch.verify ] && [ "$#" -eq 6 ]; then
+if [ "$1" = --root ] && [ "$3" = config ] && [ "$4" = set ] && [ "$#" -eq 6 ]; then
     log_rdm "$@"
-    echo "fake rdm: set dispatch.verify"
+    echo "fake rdm: set $5"
     exit 0
 fi
 if [ "$1" = --root ] && [ "$3" = commit ] && [ "$4" = -m ] && [ "$#" -eq 5 ]; then
@@ -614,4 +614,84 @@ fn without_a_verify_command_the_wrapper_only_inits_and_commits() {
             ]
         );
     }
+}
+
+#[test]
+fn first_call_applies_each_config_override_after_the_gate_and_before_the_commit() {
+    let s = Scenario {
+        after_call: vec![Some(vec![(1, "done")])],
+        env: vec![("RDM_SCBENCH_CONFIG", "max_refutations=0")],
+        ..Scenario::default()
+    };
+    let h = Harness::new(&s);
+    ok_status(&h.run(&scbench_args(), &s));
+    assert_eq!(
+        h.rdm_setup_calls(),
+        [
+            rdm_argv(&h, &["init", "--default-project", "bench"]),
+            rdm_argv(&h, &["config", "set", "dispatch.verify", VERIFY]),
+            rdm_argv(&h, &["config", "set", "max_refutations", "0"]),
+            rdm_argv(&h, &["commit", "-m", "chore(bench): initialize plan repo"]),
+        ]
+    );
+    assert_eq!(h.events(), ["rdm 1", "rdm 2", "rdm 3", "rdm 4", "claude 1"]);
+}
+
+#[test]
+fn a_config_value_holding_an_equals_sign_is_passed_whole_and_blank_lines_are_skipped() {
+    let s = Scenario {
+        after_call: vec![Some(vec![(1, "done")])],
+        env: vec![("RDM_SCBENCH_CONFIG", "a.b=x=y z\n\nmax_refutations=2\n")],
+        unset: vec!["RDM_SCBENCH_VERIFY"],
+        ..Scenario::default()
+    };
+    let h = Harness::new(&s);
+    ok_status(&h.run(&scbench_args(), &s));
+    assert_eq!(
+        h.rdm_setup_calls(),
+        [
+            rdm_argv(&h, &["init", "--default-project", "bench"]),
+            rdm_argv(&h, &["config", "set", "a.b", "x=y z"]),
+            rdm_argv(&h, &["config", "set", "max_refutations", "2"]),
+            rdm_argv(&h, &["commit", "-m", "chore(bench): initialize plan repo"]),
+        ]
+    );
+}
+
+#[test]
+fn a_malformed_config_line_stops_the_wrapper_before_init_and_claude() {
+    let s = Scenario {
+        after_call: vec![Some(vec![(1, "done")])],
+        env: vec![("RDM_SCBENCH_CONFIG", "max_refutations=1\nbogus")],
+        ..Scenario::default()
+    };
+    let h = Harness::new(&s);
+    let out = h.run(&scbench_args(), &s);
+    assert!(!out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("claude-rdm: malformed RDM_SCBENCH_CONFIG line"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(h.calls(), 0, "claude never runs");
+    assert_eq!(
+        h.events(),
+        Vec::<String>::new(),
+        "checked before init, so a retry finds no half-set-up plan repo"
+    );
+}
+
+#[test]
+fn a_later_call_applies_no_config_override() {
+    let s = Scenario {
+        initial: Some(vec![(1, "done")]),
+        after_call: vec![Some(vec![(1, "done"), (2, "done")])],
+        initialized: true,
+        env: vec![("RDM_SCBENCH_CONFIG", "max_refutations=0")],
+        ..Scenario::default()
+    };
+    let h = Harness::new(&s);
+    ok_status(&h.run(&scbench_args(), &s));
+    assert_eq!(h.rdm_setup_calls(), Vec::<Vec<String>>::new());
+    assert_eq!(h.events(), ["claude 1"]);
 }

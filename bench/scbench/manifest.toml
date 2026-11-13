@@ -106,6 +106,13 @@ step_limit = 1000
 cost_limit = 0
 net_cost_limit = 0
 
+# An ablation sweep (README.md § "Variants and sweeps"): one full-lane variant
+# per max_refutations value, named full-lane.max_refutations-<n>. Not part of
+# the ladder; uncomment to run it (cost grows by one arm per value).
+# [[arm]]
+# base = "full-lane"
+# sweep = { setting = "config.max_refutations", values = [0, 2, 5] }
+
 # The rdm-equipped agent image (README.md § "rdm-equipped image"). An arm runs
 # in it with `image = "rdm"`; `scbench image build|check` read this table.
 # plan_root is the plan repo inside the agent container: it must lie outside

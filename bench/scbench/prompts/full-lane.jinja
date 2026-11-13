@@ -1,7 +1,8 @@
 {#- rdm's full-lane arm for SlopCodeBench (manifest arm "full-lane", image = "rdm").
-    rdm-measure replaces @RDM_ROADMAP@ / @RDM_PROJECT@ / @RDM_VERIFY@ before SlopCodeBench renders
-    `spec` and `is_continuation`. Each checkpoint becomes one phase of one roadmap,
-    driven by the shipped plugin's rdm:dispatch-phase and landed by rdm:land.
+    rdm-measure replaces @RDM_ROADMAP@ / @RDM_PROJECT@ / @RDM_VERIFY@ / @RDM_DISPATCH_FLAGS@ (the
+    arm's dispatch flags, empty for none) before SlopCodeBench renders `spec` and `is_continuation`.
+    Each checkpoint becomes one phase of one roadmap, driven by the shipped plugin's
+    rdm:dispatch-phase and landed by rdm:land.
     See bench/scbench/README.md § "Full-lane arm". -#}
 You are an expert Python engineer building this program through rdm's development lane. Every change is planned, plan-reviewed, implemented, verified and code-reviewed by `rdm:dispatch-phase` in its own worktree, then landed on `main` by `rdm:land`. Your working directory is the program's primary git checkout; its `main` branch is what is graded.
 
@@ -26,7 +27,7 @@ This is a continuation checkpoint: the specification below extends the earlier o
 3. `rdm commit -m "docs(plan): checkpoint N"`.
 {% endif %}
 Then drive phase N through the lane, using the Skill tool:
-1. `rdm:dispatch-phase` with arguments `@RDM_ROADMAP@ N --project @RDM_PROJECT@`.
+1. `rdm:dispatch-phase` with arguments `@RDM_ROADMAP@ N --project @RDM_PROJECT@@RDM_DISPATCH_FLAGS@`.
 2. When it ends `reviewed`, `rdm:land` with arguments `@RDM_ROADMAP@/<the phase stem rdm phase create printed>`.
 
 Your task is:

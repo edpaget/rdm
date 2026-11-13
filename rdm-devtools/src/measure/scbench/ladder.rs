@@ -171,6 +171,9 @@ pub fn run(
         .map_err(|e| format!("{e} ({})", manifest_path.display()))?;
     let out = std::path::absolute(&opts.out).unwrap_or(opts.out.clone());
     refuse_used_out(&out)?;
+    // Before the preflight, so a prompt missing a placeholder an arm's
+    // dispatch flags need stops the ladder before any spend.
+    super::read_prompts(&manifest).map_err(|e| format!("{e} ({})", manifest_path.display()))?;
     let projection = plan::projection(&manifest, opts.seeds);
     let probes = plan::probes(&opts.tools);
     let image_check = manifest.arms.iter().any(|a| a.image == ArmImage::Rdm);

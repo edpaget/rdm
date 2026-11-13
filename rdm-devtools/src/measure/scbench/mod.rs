@@ -10,7 +10,8 @@
 //!
 //! A run, in order:
 //!
-//! 1. loads and validates the manifest ([`manifest`]), keeps the arms
+//! 1. loads and validates the manifest ([`manifest`]), expanding its
+//!    ablation variants and sweeps into concrete arms, keeps the arms
 //!    `--arms` selects ([`Manifest::select_arms`]) and the problems
 //!    `--problems` selects ([`Manifest::select_problems`]), refusing an
 //!    unknown name before anything is read or spawned;
@@ -129,6 +130,40 @@ fn refuse_used_out(out: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Reads every `prompt_from = "manifest"` arm's unrendered prompt, keyed by
+/// arm name.
+///
+/// # Errors
+///
+/// When a prompt cannot be read, or an arm sets dispatch flags but its
+/// prompt has no [`lane::DISPATCH_FLAGS_PLACEHOLDER`] to render them into
+/// (`arm <name> sets dispatch flags but its prompt <path> has no
+/// @RDM_DISPATCH_FLAGS@`).
+pub(crate) fn read_prompts(manifest: &Manifest) -> Result<BTreeMap<String, String>, String> {
+    let mut prompts = BTreeMap::new();
+    for arm in &manifest.arms {
+        if let Some(path) = manifest.manifest_prompt_source(arm) {
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                format!(
+                    "arm {}: cannot read prompt {}: {e}",
+                    arm.name,
+                    path.display()
+                )
+            })?;
+            if !arm.dispatch.is_empty() && !text.contains(lane::DISPATCH_FLAGS_PLACEHOLDER) {
+                return Err(format!(
+                    "arm {} sets dispatch flags but its prompt {} has no {}",
+                    arm.name,
+                    path.display(),
+                    lane::DISPATCH_FLAGS_PLACEHOLDER
+                ));
+            }
+            prompts.insert(arm.name.clone(), text);
+        }
+    }
+    Ok(prompts)
+}
+
 /// Runs `scbench run`, returning the process exit code. Installs SIGINT,
 /// SIGTERM and SIGHUP handling for the whole command, then runs
 /// [`run_with`].
@@ -194,19 +229,7 @@ pub fn run_with(
     } else {
         None
     };
-    let mut prompts = BTreeMap::new();
-    for arm in &manifest.arms {
-        if let Some(path) = manifest.manifest_prompt_source(arm) {
-            let text = std::fs::read_to_string(&path).map_err(|e| {
-                format!(
-                    "arm {}: cannot read prompt {}: {e}",
-                    arm.name,
-                    path.display()
-                )
-            })?;
-            prompts.insert(arm.name.clone(), text);
-        }
-    }
+    let prompts = read_prompts(&manifest)?;
     if opts.dry_run {
         let plan = build_plan(
             &manifest,

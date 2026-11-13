@@ -475,6 +475,105 @@ rdm arms' verify command named as the check to run before finishing.
 entrypoints it uses, what each comparison attributes, and the rungs that were
 dropped and why.
 
+## Variants and sweeps
+
+A variant is an `[[arm]]` with `base = "<arm>"`. It measures one setting of
+the rdm lane without a hand-written prompt or arm. It copies its base's
+`prompt`, `prompt_from`, `image`, `group`, limits, `config` and `dispatch`, and
+overrides only what it declares:
+
+- **`config`**: rdm config keys the wrapper applies to the container's plan
+  repo with `rdm config set` on its first call, after `rdm init`, so rdm
+  validates each value and the plan repo's first commit holds them. The
+  accepted keys are `max_refutations` (a non-negative integer) and
+  `dispatch.verify` (a non-empty single line, written
+  `config.dispatch.verify = "..."`), which replaces `[rdm] verify` for the
+  arm: both the plan repo's gate and the prompt's `@RDM_VERIFY@`. The model
+  preset is not a `config set` key, so it is a dispatch flag. A variant's
+  `config` merges into its base's. It needs the rdm image, because only the
+  rdm wrapper applies it.
+- **`dispatch`**: the shipped `rdm:dispatch-phase` flags, `max_plan_revise`,
+  `max_code_rework`, `max_refutations` (where `0` is a value) and `models`
+  (`[A-Za-z0-9_-]+`; rdm itself rejects an unknown preset). They are
+  rendered into the prompt's `@RDM_DISPATCH_FLAGS@` placeholder in a fixed
+  order (` --max-plan-revise 1 --max-code-rework 0 --max-refutations 0
+  --models fable`), or as nothing when none is set. A variant's `dispatch`
+  merges into its base's. It needs `prompt_from = "manifest"`, and the run
+  refuses an arm whose prompt has no `@RDM_DISPATCH_FLAGS@`, before
+  anything is spawned. `full-lane.jinja` and `planned.jinja` carry the
+  placeholder; `tracked.jinja` and `just-solve-lint.jinja` invoke no
+  dispatch and do not.
+- **Limits**: `step_limit`, `cost_limit` and `net_cost_limit`.
+
+A plain arm may set `config` and `dispatch` too. A variant may not set
+`prompt`, `prompt_from`, `image` or `group`, and its `base` must be a plain
+arm (one without `base`), declared anywhere in the manifest. A base that is
+itself a variant is refused, so a variant chain or a cycle cannot be
+written. Any other key in `config` or `dispatch` is refused, naming the
+accepted ones.
+
+A **sweep** declares one variant per value of one setting:
+
+```toml
+[[arm]]
+base = "full-lane"
+sweep = { setting = "config.max_refutations", values = [0, 2, 5] }
+```
+
+The accepted settings are `config.max_refutations`,
+`config.dispatch.verify`, `dispatch.max_refutations`,
+`dispatch.max_plan_revise`, `dispatch.max_code_rework`, `dispatch.models`,
+`step_limit`, `cost_limit` and `net_cost_limit`. Each value goes through the
+same checks as a hand-written override. A sweep has exactly one setting (no
+cross products) and at least one value. It may also fix other overrides,
+but not the setting it sweeps. Each generated arm is named
+`<prefix>.<leaf>-<value>`. The prefix is the sweep entry's `name`, or its
+`base` when it has none. The leaf is the setting's last segment. The value
+is an integer in decimal, a float as Rust prints it (`2.5`, `0`) or a
+string verbatim. Generated arms stand where their sweep stands, in value
+order.
+
+Arm names match `[A-Za-z0-9_.-]+` and do not start with `.`; the name is
+only a directory under `--out` and a report key. A sweep value that cannot
+form such a name (a `dispatch.verify` command with spaces, say) is refused:
+declare named variants instead. A duplicated name is refused, and when a
+sweep generated it the error names the sweep. Two sweeps of `full-lane`
+over `config.max_refutations` and `dispatch.max_refutations` collide on
+`full-lane.max_refutations-0` unless one has a `name` prefix.
+
+**Worked example.** Appended to the manifest, the sweep above generates
+three arms after `full-lane`: `full-lane.max_refutations-0`,
+`full-lane.max_refutations-2` and `full-lane.max_refutations-5`. Each
+inherits `full-lane`'s prompt, image, group and limits. `--arms` selects a
+generated arm by name, like any other:
+
+```bash
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench run --dry-run \
+  --arms full-lane.max_refutations-0
+```
+
+The dry-run plan's `manifest.arm` holds the expanded arms with their
+`base`, `config` and `dispatch`. Each `plan.arms` entry carries `base:
+"full-lane"` and the fully resolved `overrides` (`config: {
+"max_refutations": "0" }`, the dispatch flags and the arm's own limits).
+Its agent config's `env` carries `RDM_SCBENCH_CONFIG=max_refutations=0`.
+That is the line the wrapper turns into `rdm config set max_refutations 0`
+before the plan repo's first commit. `RDM_SCBENCH_VERIFY` keeps carrying the
+arm's effective verify. After the run, `rdm-scbench-run.json` holds the same
+`base` and `overrides` per unit. Each checkpoint of the unit's `lane` also
+gains `rdm_config`: every project-scopable rdm key that checkpoint's
+exported plan repo resolved to, with its source. The runner computes it
+through rdm-core's own resolver under the agent's environment, so here it
+holds `"max_refutations": { "value": "0", "source": "repo config" }` and
+`dispatch.verify`. It is `null` when the checkpoint has no export. The
+config is recorded per checkpoint because the agent can change it mid-run.
+
+The wrapper applies `RDM_SCBENCH_CONFIG` itself, so rebuild the rdm image
+(`scbench image build`) before the first variant run. The committed ladder
+declares no variant arm, so it costs what it did; `manifest.toml` holds a
+commented-out sweep to copy. [`ladder.md`](ladder.md) § "Dropped rungs"
+records why "code review off" has no variant.
+
 ## Full-lane arm
 
 The `full-lane` arm is the full rdm development lane:

@@ -84,6 +84,8 @@ the same command through `@RDM_VERIFY@`: the rdm rungs write it under
 `## Checks` in `CLAUDE.md`, which `rdm:land` re-runs, and `just-solve-lint`
 names it as the check to run before finishing. The dry-run plan and the run
 record carry it per arm as `verify` (`null` for the upstream-prompt controls).
+An arm's `config.dispatch.verify` replaces it for that arm, in both places
+(`README.md` § "Variants and sweeps").
 
 What each part does:
 
@@ -161,6 +163,10 @@ stock-image arm is refused, because an rdm treatment needs rdm installed.
 
 ## Dropped rungs
 
+A setting of a rung (its rdm config, dispatch flags or limits) is measured
+with a variant arm rather than a new rung: see [`README.md`](README.md)
+§ "Variants and sweeps".
+
 - **Plan without plan review.** No shipped entrypoint produces an unreviewed
   plan unattended. `dispatch-phase` always runs the plan review, and its
   `--interactive` mode waits for a human approval that SCBench's unattended
@@ -190,6 +196,15 @@ stock-image arm is refused, because an rdm treatment needs rdm installed.
   prompt = "configs/prompts/just-solve.jinja"
   image = "rdm"
   ```
+
+- **Stage switches.** No shipped knob turns code review off (and, as
+  above, none turns plan review off). `--max-code-rework 0` ends the phase
+  on the first blocking review instead of skipping it, and
+  `--max-refutations 0` only stops refuting findings, so neither removes
+  the stage. Both are expressible variants, the nearest ablations the
+  shipped lane offers (see [`README.md`](README.md) § "Variants and
+  sweeps"). A "skip code review" knob would weaken the lane's gate for
+  users only to serve the benchmark, so no task is filed.
 
 ## What only a live run confirms
 

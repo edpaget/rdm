@@ -5,10 +5,15 @@
 # Init. On the first call in a container it initializes the plan repo at
 # $RDM_ROOT, so each problem (one container) starts with a fresh plan repo
 # that its later checkpoints reuse. When $RDM_SCBENCH_VERIFY is set (the
-# manifest's [rdm] verify) it also sets that command as the plan repo's
-# dispatch.verify, then commits init's files and the gate as the plan repo's
+# arm's config.dispatch.verify, else the manifest's [rdm] verify) it also sets
+# that command as the plan repo's dispatch.verify. Then it applies every
+# non-empty `key=value` line of $RDM_SCBENCH_CONFIG (the arm's other config
+# overrides, split on the first =) with `rdm config set`, so rdm validates
+# each value itself; a line without = stops the wrapper before init, so
+# before claude runs.
+# Last it commits init's files, the gate and the overrides as the plan repo's
 # first commit. Only the first call does this, so a later checkpoint or a
-# resume never overwrites the gate.
+# resume never overwrites them.
 #
 # Ceiling. Claude Code's print mode stops background tasks (subagents,
 # Workflows) 10 minutes after the last turn. Unless the caller set it, the
@@ -47,11 +52,36 @@ case "$RDM_RESUME_MAX" in
 esac
 export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-7200000}"
 
+# Walks the non-empty lines of $RDM_SCBENCH_CONFIG, each split on its first
+# =; a line without = fails the wrapper. With `set`, applies each line with
+# `rdm config set`; with `check`, only checks them.
+config_lines() {
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$line" in
+            *=*) ;;
+            *)
+                echo "claude-rdm: malformed RDM_SCBENCH_CONFIG line (want key=value): $line" >&2
+                exit 2
+                ;;
+        esac
+        if [ "$1" = set ]; then
+            rdm --root "$RDM_ROOT" config set "${line%%=*}" "${line#*=}" >&2
+        fi
+    done <<EOF
+${RDM_SCBENCH_CONFIG:-}
+EOF
+}
+
 if [ ! -d "$RDM_ROOT/.git" ]; then
+    # Checked before init, so a malformed line never leaves an initialized
+    # plan repo that a retry would take as set up.
+    config_lines check
     rdm --root "$RDM_ROOT" init --default-project "$RDM_PROJECT" >&2
     if [ -n "${RDM_SCBENCH_VERIFY:-}" ]; then
         rdm --root "$RDM_ROOT" config set dispatch.verify "$RDM_SCBENCH_VERIFY" >&2
     fi
+    config_lines set
     rdm --root "$RDM_ROOT" commit -m "chore(bench): initialize plan repo" >&2
 fi
 

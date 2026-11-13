@@ -10,15 +10,17 @@
 //! `agent/workspace/` ([`AGENT_WORKSPACE`]). After the arm's run, `collect`
 //! extracts each checkpoint's latest tar to
 //! `<out>/<arm>/plan-repos/<problem>/<checkpoint>/`, reads its phases through
-//! rdm-core ([`read_phases`]) and [`classify`]s the checkpoint.
+//! rdm-core ([`read_phases`]), [`classify`]s the checkpoint and records the
+//! rdm config the plan repo resolved to ([`resolved_config`]).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rdm_core::model::PhaseStatus;
 use serde::{Deserialize, Serialize};
 
 use super::exec::Ran;
-use super::manifest::Rdm;
+use super::manifest::{Arm, DispatchFlags, Rdm};
 use super::plan::CommandSpec;
 use super::rdm_image::PLAN_EXPORT_SUBDIR;
 
@@ -31,14 +33,70 @@ pub const CHECKPOINT_FILE: &str = "checkpoint.yaml";
 /// directory (`<checkpoint>/agent/workspace/projects/-workspace/...`).
 pub const AGENT_WORKSPACE: &str = "agent/workspace";
 
+/// The placeholder a manifest prompt marks the `rdm:dispatch-phase`
+/// invocation's flags with ([`dispatch_flags`]).
+pub const DISPATCH_FLAGS_PLACEHOLDER: &str = "@RDM_DISPATCH_FLAGS@";
+
 /// Fills an rdm prompt template's `@RDM_ROADMAP@` ([`ROADMAP`]),
-/// `@RDM_PROJECT@` (`rdm.project`) and `@RDM_VERIFY@` (`rdm.verify`),
-/// leaving SCBench's Jinja untouched.
-pub fn render_prompt(template: &str, rdm: &Rdm) -> String {
+/// `@RDM_PROJECT@` (`rdm.project`), `@RDM_VERIFY@` (`arm`'s effective verify,
+/// [`Arm::verify`]) and `@RDM_DISPATCH_FLAGS@` (`arm`'s dispatch flags,
+/// [`dispatch_flags`]), leaving SCBench's Jinja untouched.
+pub fn render_prompt(template: &str, rdm: &Rdm, arm: &Arm) -> String {
+    let verify = arm.verify(Some(rdm)).unwrap_or(&rdm.verify);
     template
+        .replace(DISPATCH_FLAGS_PLACEHOLDER, &dispatch_flags(&arm.dispatch))
         .replace("@RDM_ROADMAP@", ROADMAP)
         .replace("@RDM_PROJECT@", &rdm.project)
-        .replace("@RDM_VERIFY@", &rdm.verify)
+        .replace("@RDM_VERIFY@", verify)
+}
+
+/// `flags` as they follow the dispatch invocation's other arguments: each
+/// flag and value with a leading space, in [`DispatchFlags::args`] order
+/// (` --max-plan-revise 1 --models fable`); empty when none is set.
+pub fn dispatch_flags(flags: &DispatchFlags) -> String {
+    flags.args().iter().map(|a| format!(" {a}")).collect()
+}
+
+/// One rdm config key the plan repo resolved to, as `rdm config get`
+/// would report it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResolvedSetting {
+    /// The resolved value.
+    pub value: String,
+    /// Where it came from (`repo config`, `project config`,
+    /// `environment variable`, ...).
+    pub source: String,
+}
+
+/// Every project-scopable rdm config key the plan repo at `dir` resolves to
+/// for `project`, under the agent's environment `env` and no global config
+/// (a fresh container `HOME` has none), through rdm-core's own resolver;
+/// keys that resolve to nothing are left out. `None` when the plan repo's
+/// `rdm.toml` cannot be read.
+pub fn resolved_config(
+    dir: &Path,
+    project: &str,
+    env: &BTreeMap<String, String>,
+) -> Option<BTreeMap<String, ResolvedSetting>> {
+    use rdm_core::config::{GlobalConfig, PROJECT_SCOPABLE_KEYS, resolve_scoped_value};
+    let store = rdm_store_fs::FsStore::new(dir);
+    let repo = rdm_core::io::load_config(&store).ok()?;
+    let global = GlobalConfig::default();
+    let mut out = BTreeMap::new();
+    for key in PROJECT_SCOPABLE_KEYS {
+        if let Ok(Some(v)) =
+            resolve_scoped_value(key, Some(project), &repo, &global, |k| env.get(k).cloned())
+        {
+            out.insert(
+                (*key).to_owned(),
+                ResolvedSetting {
+                    value: v.value,
+                    source: v.source.to_string(),
+                },
+            );
+        }
+    }
+    Some(out)
 }
 
 /// One phase of [`ROADMAP`], as a checkpoint's plan repo records it.
@@ -226,6 +284,10 @@ pub struct CheckpointRecord {
     pub order: i64,
     /// Where its plan repo was extracted; `null` with no export.
     pub plan_repo: Option<PathBuf>,
+    /// The rdm config that plan repo resolved to under the agent's
+    /// environment ([`resolved_config`]); `null` with no export or an
+    /// unreadable `rdm.toml`.
+    pub rdm_config: Option<BTreeMap<String, ResolvedSetting>>,
     /// Its classification.
     #[serde(flatten)]
     pub classification: Classification,
@@ -288,6 +350,8 @@ fn latest_export(checkpoint_dir: &Path) -> Result<Option<PathBuf>, String> {
 /// Copies and classifies every checkpoint of `problems` for arm `arm`:
 /// `run_dir` is SCBench's output directory for the arm, `plan_repos_dir`
 /// receives `<problem>/<checkpoint>/`, `project` is the plan repo's project
+/// `env` is the agent's environment (the agent config's `env`), which each
+/// checkpoint's resolved rdm config ([`resolved_config`]) is read under,
 /// and `spawn` runs (and records) each `tar -xf` extraction.
 ///
 /// # Errors
@@ -301,6 +365,7 @@ pub(super) fn collect(
     run_dir: &Path,
     plan_repos_dir: &Path,
     project: &str,
+    env: &BTreeMap<String, String>,
     spawn: &mut dyn FnMut(&CommandSpec) -> Result<Ran, String>,
 ) -> Result<LaneRecord, String> {
     let mut records = Vec::new();
@@ -314,6 +379,7 @@ pub(super) fn collect(
                     checkpoint: name,
                     order,
                     plan_repo: None,
+                    rdm_config: None,
                     classification: failure(Reason::PlanRepoMissing, None, None),
                 });
                 continue;
@@ -330,7 +396,7 @@ pub(super) fn collect(
                     dest.display().to_string(),
                 ],
                 cwd: None,
-                env: std::collections::BTreeMap::new(),
+                env: BTreeMap::new(),
             };
             let ran = spawn(&extract)?;
             if !ran.ok() {
@@ -352,6 +418,7 @@ pub(super) fn collect(
             out.push(CheckpointRecord {
                 checkpoint: name,
                 order,
+                rdm_config: resolved_config(&dest, project, env),
                 plan_repo: Some(dest),
                 classification,
             });
@@ -383,22 +450,98 @@ mod tests {
         (c.outcome, c.reason)
     }
 
-    #[test]
-    fn render_prompt_fills_every_placeholder() {
-        let rdm = Rdm {
+    fn rdm() -> Rdm {
+        Rdm {
             plan_root: "/rdm-plan".to_owned(),
             project: "bench".to_owned(),
             verify: "pytest -q && ruff check".to_owned(),
-        };
+        }
+    }
+
+    fn manifest_arm() -> Arm {
+        Arm {
+            name: "lane".to_owned(),
+            base: None,
+            prompt: "prompts/l.jinja".to_owned(),
+            prompt_from: crate::measure::scbench::manifest::PromptFrom::Manifest,
+            image: crate::measure::scbench::manifest::ArmImage::Rdm,
+            group: None,
+            step_limit: None,
+            cost_limit: None,
+            net_cost_limit: None,
+            config: Default::default(),
+            dispatch: DispatchFlags::default(),
+        }
+    }
+
+    const TEMPLATE: &str = "rdm:dispatch-phase @RDM_ROADMAP@ N --project @RDM_PROJECT@@RDM_DISPATCH_FLAGS@ \
+                            run `@RDM_VERIFY@` {{ spec }}";
+
+    #[test]
+    fn render_prompt_fills_every_placeholder() {
         assert_eq!(
-            render_prompt(
-                "rdm:dispatch-phase @RDM_ROADMAP@ N --project @RDM_PROJECT@ \
-                 run `@RDM_VERIFY@` {{ spec }}",
-                &rdm
-            ),
+            render_prompt(TEMPLATE, &rdm(), &manifest_arm()),
             "rdm:dispatch-phase solution N --project bench \
              run `pytest -q && ruff check` {{ spec }}"
         );
+    }
+
+    #[test]
+    fn render_prompt_fills_every_dispatch_flag_in_order_and_the_effective_verify() {
+        let mut arm = manifest_arm();
+        arm.dispatch = DispatchFlags {
+            max_refutations: Some(0),
+            max_plan_revise: Some(1),
+            max_code_rework: Some(0),
+            models: Some("fable".to_owned()),
+        };
+        arm.config.dispatch = Some(crate::measure::scbench::manifest::ConfigDispatch {
+            verify: Some("pytest -x".to_owned()),
+        });
+        assert_eq!(
+            render_prompt(TEMPLATE, &rdm(), &arm),
+            "rdm:dispatch-phase solution N --project bench --max-plan-revise 1 \
+             --max-code-rework 0 --max-refutations 0 --models fable run `pytest -x` {{ spec }}"
+        );
+        assert_eq!(dispatch_flags(&DispatchFlags::default()), "");
+    }
+
+    fn write_plan_repo(dir: &Path, toml: &str) {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        std::fs::write(dir.join("rdm.toml"), toml).expect("rdm.toml");
+    }
+
+    #[test]
+    fn resolved_config_reads_the_plan_repo_under_the_agent_env() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_plan_repo(
+            tmp.path(),
+            "max_refutations = 0\n[dispatch]\nverify = \"pytest -q\"\n",
+        );
+        let got = resolved_config(tmp.path(), "bench", &BTreeMap::new()).expect("readable");
+        let setting = |value: &str, source: &str| ResolvedSetting {
+            value: value.to_owned(),
+            source: source.to_owned(),
+        };
+        assert_eq!(
+            got,
+            BTreeMap::from([
+                (
+                    "dispatch.verify".to_owned(),
+                    setting("pytest -q", "repo config")
+                ),
+                ("max_refutations".to_owned(), setting("0", "repo config")),
+            ])
+        );
+        let env = BTreeMap::from([("RDM_MAX_REFUTATIONS".to_owned(), "3".to_owned())]);
+        let got = resolved_config(tmp.path(), "bench", &env).expect("readable");
+        assert_eq!(got["max_refutations"], setting("3", "environment variable"));
+    }
+
+    #[test]
+    fn resolved_config_of_a_repo_without_rdm_toml_is_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(resolved_config(tmp.path(), "bench", &BTreeMap::new()), None);
     }
 
     #[test]

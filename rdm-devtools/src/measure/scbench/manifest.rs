@@ -1,14 +1,23 @@
 //! The pinned SCBench manifest (`bench/scbench/manifest.toml`): every value a
 //! result depends on, parsed strictly and validated before anything runs.
+//!
+//! An `[[arm]]` with `base = "<arm>"` is an ablation variant: it copies a
+//! plain arm (one without `base`) and overrides only its rdm `config`
+//! ([`ConfigOverrides`], applied to the container's plan repo with
+//! `rdm config set`), its `dispatch` flags ([`DispatchFlags`], rendered into
+//! the prompt's `@RDM_DISPATCH_FLAGS@`) and its limits. A variant with a
+//! `sweep = { setting, values }` expands into one arm per value, named
+//! `<name or base>.<setting leaf>-<value>`. [`Manifest::parse`] expands every
+//! variant and sweep, so [`Manifest::arms`] holds only concrete arms.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// A parsed, validated manifest.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A parsed, validated manifest whose variants and sweeps are expanded into
+/// concrete arms.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Manifest {
     /// The pinned SlopCodeBench checkout.
     pub scbench: Pin,
@@ -16,8 +25,9 @@ pub struct Manifest {
     pub problems: Problems,
     /// The agent, model and evaluation settings every arm shares.
     pub agent: Agent,
-    /// The arms, run in this order.
-    #[serde(rename = "arm", default)]
+    /// The arms, run in this order, with every variant and sweep expanded
+    /// where its `[[arm]]` stands.
+    #[serde(rename = "arm")]
     pub arms: Vec<Arm>,
     /// The rdm-equipped image's plan repo settings; required when an arm
     /// selects `image = "rdm"` and by `scbench image`.
@@ -82,35 +92,205 @@ pub struct Agent {
     pub net_cost_limit: f64,
 }
 
-/// One arm: a named prompt, run in the stock or the rdm-equipped image.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// One concrete arm: a named prompt, run in the stock or the rdm-equipped
+/// image.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Arm {
-    /// The arm name (used as a directory name).
+    /// The arm name (`[A-Za-z0-9_.-]+`, not starting with `.`; used as a
+    /// directory name).
     pub name: String,
+    /// The plain arm this one is a variant of; `None` for a plain arm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// The prompt template, relative to the SCBench checkout or, with
     /// [`PromptFrom::Manifest`], to the manifest's directory.
     pub prompt: String,
     /// Where [`Arm::prompt`] lives (default [`PromptFrom::Scbench`]).
-    #[serde(default)]
     pub prompt_from: PromptFrom,
     /// The agent image the arm runs in (default [`ArmImage::Stock`]).
-    #[serde(default)]
     pub image: ArmImage,
     /// The treatment group the arm belongs to; when absent it follows
     /// [`Arm::image`] (see [`Arm::group`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<ArmGroup>,
     /// Overrides `[agent] step_limit` for this arm.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub step_limit: Option<u64>,
     /// Overrides `[agent] cost_limit` for this arm (0 = unlimited).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_limit: Option<f64>,
     /// Overrides `[agent] net_cost_limit` for this arm (0 = unlimited).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_cost_limit: Option<f64>,
+    /// rdm config keys the wrapper sets in the arm's plan repo (rdm image
+    /// only).
+    #[serde(skip_serializing_if = "ConfigOverrides::is_empty")]
+    pub config: ConfigOverrides,
+    /// Flags rendered into the prompt's `@RDM_DISPATCH_FLAGS@` (manifest
+    /// prompts only).
+    #[serde(skip_serializing_if = "DispatchFlags::is_empty")]
+    pub dispatch: DispatchFlags,
+}
+
+/// The rdm config keys an arm may override: only keys `rdm config set`
+/// accepts that change the lane. It mirrors `rdm.toml`'s own shape
+/// (`config.dispatch.verify`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigOverrides {
+    /// `max_refutations`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_refutations: Option<u64>,
+    /// The `dispatch` table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<ConfigDispatch>,
+}
+
+/// The `config.dispatch` table of an arm.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigDispatch {
+    /// `dispatch.verify`: replaces `[rdm] verify` for the arm (a non-empty
+    /// single line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
+}
+
+impl ConfigOverrides {
+    /// Whether no key is set.
+    pub fn is_empty(&self) -> bool {
+        self.max_refutations.is_none() && self.verify().is_none()
+    }
+
+    /// The `dispatch.verify` override, if set.
+    pub fn verify(&self) -> Option<&str> {
+        self.dispatch.as_ref().and_then(|d| d.verify.as_deref())
+    }
+
+    /// Every set key, as the rdm key and the value passed to
+    /// `rdm config set`, in key order.
+    pub fn entries(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        if let Some(v) = self.max_refutations {
+            out.insert("max_refutations".to_owned(), v.to_string());
+        }
+        if let Some(v) = self.verify() {
+            out.insert("dispatch.verify".to_owned(), v.to_owned());
+        }
+        out
+    }
+
+    fn merge(&mut self, over: &Self) {
+        if over.max_refutations.is_some() {
+            self.max_refutations = over.max_refutations;
+        }
+        if let Some(v) = over.verify() {
+            self.dispatch = Some(ConfigDispatch {
+                verify: Some(v.to_owned()),
+            });
+        }
+    }
+}
+
+/// The shipped `rdm:dispatch-phase` flags an arm may pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchFlags {
+    /// `--max-refutations <n>` (`0` is a value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_refutations: Option<u64>,
+    /// `--max-plan-revise <n>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_plan_revise: Option<u64>,
+    /// `--max-code-rework <n>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_code_rework: Option<u64>,
+    /// `--models <preset>` (`[A-Za-z0-9_-]+`; rdm rejects an unknown preset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<String>,
+}
+
+impl DispatchFlags {
+    /// Whether no flag is set.
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// The flags as arguments, in a fixed order: `--max-plan-revise`,
+    /// `--max-code-rework`, `--max-refutations`, `--models`.
+    pub fn args(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (flag, value) in [
+            (
+                "--max-plan-revise",
+                self.max_plan_revise.map(|n| n.to_string()),
+            ),
+            (
+                "--max-code-rework",
+                self.max_code_rework.map(|n| n.to_string()),
+            ),
+            (
+                "--max-refutations",
+                self.max_refutations.map(|n| n.to_string()),
+            ),
+            ("--models", self.models.clone()),
+        ] {
+            if let Some(v) = value {
+                out.push(flag.to_owned());
+                out.push(v);
+            }
+        }
+        out
+    }
+
+    fn merge(&mut self, over: &Self) {
+        if over.max_refutations.is_some() {
+            self.max_refutations = over.max_refutations;
+        }
+        if over.max_plan_revise.is_some() {
+            self.max_plan_revise = over.max_plan_revise;
+        }
+        if over.max_code_rework.is_some() {
+            self.max_code_rework = over.max_code_rework;
+        }
+        if over.models.is_some() {
+            self.models.clone_from(&over.models);
+        }
+    }
+}
+
+/// An arm's fully resolved overrides (inherited from its base plus its
+/// own), as the dry-run plan and the run record hold them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Overrides {
+    /// rdm config key -> value as passed to `rdm config set`
+    /// (`dispatch.verify` included).
+    pub config: BTreeMap<String, String>,
+    /// The dispatch flags.
+    pub dispatch: DispatchFlags,
+    /// The arm's own `step_limit`, if set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_limit: Option<u64>,
+    /// The arm's own `cost_limit`, if set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_limit: Option<f64>,
+    /// The arm's own `net_cost_limit`, if set.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub net_cost_limit: Option<f64>,
 }
+
+/// The settings a `sweep` may vary, one per sweep.
+pub const SWEEP_SETTINGS: &[&str] = &[
+    "config.max_refutations",
+    "config.dispatch.verify",
+    "dispatch.max_refutations",
+    "dispatch.max_plan_revise",
+    "dispatch.max_code_rework",
+    "dispatch.models",
+    "step_limit",
+    "cost_limit",
+    "net_cost_limit",
+];
 
 /// Where an arm's prompt template lives.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,7 +300,8 @@ pub enum PromptFrom {
     #[default]
     Scbench,
     /// rdm's own template beside the manifest: the runner fills its
-    /// `@RDM_ROADMAP@`/`@RDM_PROJECT@`/`@RDM_VERIFY@` placeholders and writes it to
+    /// `@RDM_ROADMAP@`/`@RDM_PROJECT@`/`@RDM_VERIFY@`/`@RDM_DISPATCH_FLAGS@`
+    /// placeholders and writes it to
     /// `<out>/<arm>/prompt.jinja` (see [`super::lane::render_prompt`]).
     Manifest,
 }
@@ -164,17 +345,330 @@ impl Arm {
         group_for(self.group, self.image)
     }
 
-    /// The verify command this arm runs under: `rdm.verify` when the arm
-    /// runs in the rdm image (the wrapper sets the gate) or its prompt is
-    /// rendered from the manifest (the prompt names the command); `None`
-    /// for an upstream-prompt stock control.
-    pub fn verify<'a>(&self, rdm: Option<&'a Rdm>) -> Option<&'a str> {
+    /// The verify command this arm runs under, when the arm runs in the rdm
+    /// image (the wrapper sets the gate) or its prompt is rendered from the
+    /// manifest (the prompt names the command): its `config.dispatch.verify`
+    /// when set, else `rdm.verify`. `None` for an upstream-prompt stock
+    /// control.
+    pub fn verify<'a>(&'a self, rdm: Option<&'a Rdm>) -> Option<&'a str> {
         if self.image == ArmImage::Rdm || self.prompt_from == PromptFrom::Manifest {
-            rdm.map(|r| r.verify.as_str())
+            self.config.verify().or(rdm.map(|r| r.verify.as_str()))
         } else {
             None
         }
     }
+
+    /// The arm's fully resolved overrides.
+    pub fn overrides(&self) -> Overrides {
+        Overrides {
+            config: self.config.entries(),
+            dispatch: self.dispatch.clone(),
+            step_limit: self.step_limit,
+            cost_limit: self.cost_limit,
+            net_cost_limit: self.net_cost_limit,
+        }
+    }
+
+    /// The `RDM_SCBENCH_CONFIG` value: every config override except
+    /// `dispatch.verify` (which `RDM_SCBENCH_VERIFY` carries) as
+    /// newline-separated `key=value` lines in key order; `None` when there
+    /// are none.
+    pub fn config_lines(&self) -> Option<String> {
+        let lines: Vec<String> = self
+            .config
+            .entries()
+            .into_iter()
+            .filter(|(k, _)| k != "dispatch.verify")
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+
+    fn apply(&mut self, f: &Fragment) {
+        self.config.merge(&f.config);
+        self.dispatch.merge(&f.dispatch);
+        if f.step_limit.is_some() {
+            self.step_limit = f.step_limit;
+        }
+        if f.cost_limit.is_some() {
+            self.cost_limit = f.cost_limit;
+        }
+        if f.net_cost_limit.is_some() {
+            self.net_cost_limit = f.net_cost_limit;
+        }
+    }
+}
+
+/// Whether `name` is a valid arm name: `[A-Za-z0-9_.-]+`, not starting with
+/// `.` (so never `.`, `..` or a hidden directory).
+pub fn valid_arm_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+// --- The manifest as written, before variants are expanded --------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManifest {
+    scbench: Pin,
+    problems: Problems,
+    agent: Agent,
+    #[serde(rename = "arm", default)]
+    arms: Vec<ArmSpec>,
+    #[serde(default)]
+    rdm: Option<Rdm>,
+}
+
+/// One `[[arm]]` as written: a plain arm, a named variant or a sweep.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArmSpec {
+    name: Option<String>,
+    base: Option<String>,
+    prompt: Option<String>,
+    prompt_from: Option<PromptFrom>,
+    image: Option<ArmImage>,
+    group: Option<ArmGroup>,
+    step_limit: Option<u64>,
+    cost_limit: Option<f64>,
+    net_cost_limit: Option<f64>,
+    #[serde(default)]
+    config: ConfigOverrides,
+    #[serde(default)]
+    dispatch: DispatchFlags,
+    sweep: Option<Sweep>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Sweep {
+    setting: String,
+    values: Vec<toml::Value>,
+}
+
+/// One set of overrides: what a variant declares, or one sweep value.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Fragment {
+    #[serde(default)]
+    config: ConfigOverrides,
+    #[serde(default)]
+    dispatch: DispatchFlags,
+    step_limit: Option<u64>,
+    cost_limit: Option<f64>,
+    net_cost_limit: Option<f64>,
+}
+
+impl Fragment {
+    /// The single-setting fragment `setting = value`, through the same typed
+    /// path a hand-written override takes.
+    fn of(setting: &str, value: &toml::Value) -> Result<Self, String> {
+        let mut v = value.clone();
+        for seg in setting.rsplit('.') {
+            let mut t = toml::Table::new();
+            t.insert(seg.to_owned(), v);
+            v = toml::Value::Table(t);
+        }
+        v.try_into().map_err(|e: toml::de::Error| e.to_string())
+    }
+
+    /// Whether this fragment sets `setting` (one of [`SWEEP_SETTINGS`]).
+    fn sets(&self, setting: &str) -> bool {
+        match setting {
+            "config.max_refutations" => self.config.max_refutations.is_some(),
+            "config.dispatch.verify" => self.config.verify().is_some(),
+            "dispatch.max_refutations" => self.dispatch.max_refutations.is_some(),
+            "dispatch.max_plan_revise" => self.dispatch.max_plan_revise.is_some(),
+            "dispatch.max_code_rework" => self.dispatch.max_code_rework.is_some(),
+            "dispatch.models" => self.dispatch.models.is_some(),
+            "step_limit" => self.step_limit.is_some(),
+            "cost_limit" => self.cost_limit.is_some(),
+            "net_cost_limit" => self.net_cost_limit.is_some(),
+            _ => false,
+        }
+    }
+}
+
+/// A sweep value as it appears in a generated arm name: an integer in
+/// decimal, a float through `Display` (`2.5`, `0`), a string verbatim.
+fn render_value(v: &toml::Value) -> Option<String> {
+    match v {
+        toml::Value::Integer(i) => Some(i.to_string()),
+        toml::Value::Float(f) => Some(f.to_string()),
+        toml::Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// The concrete arm a plain `[[arm]]` (one without `base`) writes.
+fn plain_arm(spec: &ArmSpec) -> Result<Arm, String> {
+    let Some(name) = &spec.name else {
+        return Err("arm.name: an [[arm]] without base needs a name".to_owned());
+    };
+    if spec.sweep.is_some() {
+        return Err(format!(
+            "arm {name}: a sweep needs base = \"<arm>\" naming the arm it varies"
+        ));
+    }
+    let Some(prompt) = &spec.prompt else {
+        return Err(format!("arm.prompt of arm \"{name}\" is required"));
+    };
+    Ok(Arm {
+        name: name.clone(),
+        base: None,
+        prompt: prompt.clone(),
+        prompt_from: spec.prompt_from.unwrap_or_default(),
+        image: spec.image.unwrap_or_default(),
+        group: spec.group,
+        step_limit: spec.step_limit,
+        cost_limit: spec.cost_limit,
+        net_cost_limit: spec.net_cost_limit,
+        config: spec.config.clone(),
+        dispatch: spec.dispatch.clone(),
+    })
+}
+
+/// Expands every `[[arm]]` into concrete arms, in manifest order, and
+/// checks the name rule and duplicate names.
+fn expand(specs: &[ArmSpec]) -> Result<Vec<Arm>, String> {
+    let mut plain: BTreeMap<String, Arm> = BTreeMap::new();
+    for spec in specs.iter().filter(|s| s.base.is_none()) {
+        let arm = plain_arm(spec)?;
+        plain.entry(arm.name.clone()).or_insert(arm);
+    }
+    let variants: BTreeSet<&str> = specs
+        .iter()
+        .filter(|s| s.base.is_some())
+        .filter_map(|s| s.name.as_deref())
+        .collect();
+
+    let mut arms = Vec::new();
+    // Why each arm exists, for a duplicate-name error: `None` for an arm
+    // written by hand.
+    let mut origins: Vec<Option<String>> = Vec::new();
+    for spec in specs {
+        let Some(base) = &spec.base else {
+            arms.push(plain_arm(spec)?);
+            origins.push(None);
+            continue;
+        };
+        let label = spec.name.as_deref().unwrap_or(base);
+        let fixed: Vec<&str> = [
+            ("prompt", spec.prompt.is_some()),
+            ("prompt_from", spec.prompt_from.is_some()),
+            ("image", spec.image.is_some()),
+            ("group", spec.group.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(f, set)| set.then_some(f))
+        .collect();
+        if !fixed.is_empty() {
+            return Err(format!(
+                "arm {label}: a variant (base = {base}) may override only config, dispatch, \
+                 step_limit, cost_limit, net_cost_limit; it sets {}",
+                fixed.join(", ")
+            ));
+        }
+        let Some(base_arm) = plain.get(base) else {
+            if variants.contains(base.as_str()) {
+                return Err(format!(
+                    "arm {label}: base {base} is itself a variant; derive from a plain arm"
+                ));
+            }
+            return Err(format!(
+                "arm {label}: unknown base {base}; plain arms: {}",
+                plain.keys().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        };
+        let declared = Fragment {
+            config: spec.config.clone(),
+            dispatch: spec.dispatch.clone(),
+            step_limit: spec.step_limit,
+            cost_limit: spec.cost_limit,
+            net_cost_limit: spec.net_cost_limit,
+        };
+        let mut arm = base_arm.clone();
+        arm.base = Some(base.clone());
+        arm.apply(&declared);
+        let Some(sweep) = &spec.sweep else {
+            let Some(name) = &spec.name else {
+                return Err(format!(
+                    "arm.name: a variant of {base} needs a name (or a sweep)"
+                ));
+            };
+            arm.name = name.clone();
+            arms.push(arm);
+            origins.push(None);
+            continue;
+        };
+        let setting = sweep.setting.as_str();
+        if !SWEEP_SETTINGS.contains(&setting) {
+            return Err(format!(
+                "arm {label}: sweep setting \"{setting}\" is not supported; accepted: {}",
+                SWEEP_SETTINGS.join(", ")
+            ));
+        }
+        if sweep.values.is_empty() {
+            return Err(format!(
+                "arm {label}: the sweep over {setting} has no values"
+            ));
+        }
+        if declared.sets(setting) {
+            return Err(format!(
+                "arm {label}: the sweep over {setting} also fixes {setting}; drop one"
+            ));
+        }
+        let leaf = setting.rsplit('.').next().unwrap_or(setting);
+        let prefix = spec.name.as_deref().unwrap_or(base);
+        for value in &sweep.values {
+            let Some(rendered) = render_value(value) else {
+                return Err(format!(
+                    "arm {label}: sweep value {value} of {setting} must be a number or a string"
+                ));
+            };
+            let fragment = Fragment::of(setting, value).map_err(|e| {
+                format!(
+                    "arm {label}: sweep value {value} of {setting}: {}",
+                    e.trim()
+                )
+            })?;
+            let name = format!("{prefix}.{leaf}-{rendered}");
+            if !valid_arm_name(&name) {
+                return Err(format!(
+                    "arm {label}: sweep value {value} of {setting} cannot form an arm name \
+                     (\"{name}\"); declare named variants instead"
+                ));
+            }
+            let mut generated = arm.clone();
+            generated.apply(&fragment);
+            generated.name = name;
+            arms.push(generated);
+            origins.push(Some(format!(
+                "generated by the sweep over {setting} of base {base}"
+            )));
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    for (arm, origin) in arms.iter().zip(&origins) {
+        if !valid_arm_name(&arm.name) {
+            return Err(format!(
+                "arm.name must match [A-Za-z0-9_.-]+ and not start with \".\", got \"{}\"",
+                arm.name
+            ));
+        }
+        if !seen.insert(arm.name.as_str()) {
+            return Err(match origin {
+                Some(o) => format!("arm.name \"{}\" is duplicated ({o})", arm.name),
+                None => format!("arm.name \"{}\" is duplicated", arm.name),
+            });
+        }
+    }
+    Ok(arms)
 }
 
 /// The treatment group of an arm with the explicit `group` (if any) that
@@ -254,15 +748,22 @@ impl Manifest {
     }
 
     /// Parses and validates manifest text whose relative paths resolve
-    /// against `dir`.
+    /// against `dir`, expanding every variant and sweep into concrete arms.
     ///
     /// # Errors
     ///
-    /// When the text does not parse or fails validation; the message names
-    /// the offending field.
+    /// When the text does not parse, a variant or sweep is malformed, or the
+    /// result fails validation; the message names the offending field.
     pub fn parse(text: &str, dir: &Path) -> Result<Self, String> {
-        let mut manifest: Self = toml::from_str(text).map_err(|e| e.to_string())?;
-        manifest.dir = dir.to_path_buf();
+        let raw: RawManifest = toml::from_str(text).map_err(|e| e.to_string())?;
+        let manifest = Self {
+            arms: expand(&raw.arms)?,
+            scbench: raw.scbench,
+            problems: raw.problems,
+            agent: raw.agent,
+            rdm: raw.rdm,
+            dir: dir.to_path_buf(),
+        };
         manifest.validate()?;
         Ok(manifest)
     }
@@ -429,27 +930,45 @@ impl Manifest {
         if self.arms.is_empty() {
             return Err("arm: the manifest must define at least one [[arm]]".to_owned());
         }
-        let mut seen = BTreeSet::new();
         for arm in &self.arms {
-            if arm.name.is_empty()
-                || !arm
-                    .name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
-                return Err(format!(
-                    "arm.name must match [A-Za-z0-9_-]+, got \"{}\"",
-                    arm.name
-                ));
-            }
             if arm.prompt.trim().is_empty() {
                 return Err(format!(
                     "arm.prompt of arm \"{}\" must not be empty",
                     arm.name
                 ));
             }
-            if !seen.insert(arm.name.as_str()) {
-                return Err(format!("arm.name \"{}\" is duplicated", arm.name));
+            if !arm.config.is_empty() && arm.image != ArmImage::Rdm {
+                return Err(format!(
+                    "arm {}: config overrides need image = \"rdm\" (only the rdm wrapper applies \
+                     them); it runs in the stock image",
+                    arm.name
+                ));
+            }
+            if let Some(verify) = arm.config.verify()
+                && (verify.trim().is_empty() || verify.contains(['\n', '\r']))
+            {
+                return Err(format!(
+                    "arm {}: config.dispatch.verify must be a non-empty single line, got {verify:?}",
+                    arm.name
+                ));
+            }
+            if !arm.dispatch.is_empty() && arm.prompt_from != PromptFrom::Manifest {
+                return Err(format!(
+                    "arm {}: dispatch flags need prompt_from = \"manifest\" (only a manifest \
+                     prompt renders @RDM_DISPATCH_FLAGS@)",
+                    arm.name
+                ));
+            }
+            if let Some(models) = &arm.dispatch.models
+                && (models.is_empty()
+                    || !models
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            {
+                return Err(format!(
+                    "arm {}: dispatch.models must match [A-Za-z0-9_-]+, got \"{models}\"",
+                    arm.name
+                ));
             }
             if arm.image == ArmImage::Rdm && self.rdm.is_none() {
                 return Err(format!(
@@ -965,6 +1484,308 @@ prompt = "configs/prompts/anti_slop.jinja"
         );
         let e = m.select_problems(Some(&[])).expect_err("empty");
         assert_eq!(e, "--problems: no problem selected; problems: mvvault, xjq");
+    }
+
+    /// [`text`] with `[rdm]`, a plain rdm-image, manifest-prompt `full-lane`
+    /// arm (limits, a config key and a dispatch flag set) and `extra`.
+    fn variants(extra: &str) -> String {
+        format!(
+            "{RDM}{}\n[[arm]]\nname = \"full-lane\"\nprompt = \"prompts/full-lane.jinja\"\n\
+             prompt_from = \"manifest\"\nimage = \"rdm\"\ngroup = \"rdm\"\nstep_limit = 1000\n\
+             cost_limit = 4\nconfig = {{ max_refutations = 3, dispatch = {{ verify = \"pytest\" }} }}\n\
+             dispatch = {{ max_plan_revise = 2 }}\n{extra}",
+            text()
+        )
+    }
+
+    fn arm<'a>(m: &'a Manifest, name: &str) -> &'a Arm {
+        m.arms
+            .iter()
+            .find(|a| a.name == name)
+            .unwrap_or_else(|| panic!("no arm {name}: {:?}", arm_names(m)))
+    }
+
+    #[test]
+    fn a_variant_inherits_its_base_and_overrides_only_what_it_declares() {
+        let m = parse(&variants(
+            "[[arm]]\nname = \"fl\"\nbase = \"full-lane\"\nstep_limit = 1500\n\
+             config.max_refutations = 0\ndispatch = { models = \"fable\" }\n",
+        ))
+        .expect("valid");
+        let base = arm(&m, "full-lane");
+        let v = arm(&m, "fl");
+        assert_eq!(v.base.as_deref(), Some("full-lane"));
+        assert_eq!(base.base, None);
+        assert_eq!(
+            (&v.prompt, v.prompt_from, v.image, v.group),
+            (&base.prompt, base.prompt_from, base.image, base.group)
+        );
+        assert_eq!(
+            (v.step_limit, v.cost_limit, v.net_cost_limit),
+            (Some(1500), Some(4.0), None)
+        );
+        assert_eq!(v.config.max_refutations, Some(0));
+        assert_eq!(v.config.verify(), Some("pytest"), "inherited from the base");
+        assert_eq!(
+            v.dispatch,
+            DispatchFlags {
+                max_plan_revise: Some(2),
+                models: Some("fable".to_owned()),
+                ..DispatchFlags::default()
+            }
+        );
+        let o = v.overrides();
+        assert_eq!(
+            o.config,
+            BTreeMap::from([
+                ("dispatch.verify".to_owned(), "pytest".to_owned()),
+                ("max_refutations".to_owned(), "0".to_owned()),
+            ])
+        );
+        assert_eq!(v.config_lines().as_deref(), Some("max_refutations=0"));
+        assert_eq!(v.verify(m.rdm.as_ref()), Some("pytest"));
+        assert_eq!(arm(&m, "just-solve").config_lines(), None);
+    }
+
+    #[test]
+    fn a_variant_is_placed_where_its_spec_stands() {
+        let t = variants("[[arm]]\nname = \"fl\"\nbase = \"full-lane\"\n");
+        let t = format!("{t}\n[[arm]]\nname = \"last\"\nprompt = \"x.jinja\"\n");
+        let m = parse(&t).expect("valid");
+        assert_eq!(
+            arm_names(&m),
+            ["just-solve", "anti_slop", "full-lane", "fl", "last"]
+        );
+    }
+
+    fn variant_fails(extra: &str, wants: &[&str]) {
+        let e = parse(&variants(extra)).expect_err("must fail");
+        for want in wants {
+            assert!(e.contains(want), "error {e:?} should name {want:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_base_fails_naming_it_and_the_plain_arms() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"nope\"\n",
+            &["nope", "unknown base", "full-lane"],
+        );
+    }
+
+    #[test]
+    fn a_base_that_is_itself_a_variant_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v1\"\nbase = \"full-lane\"\n\
+             [[arm]]\nname = \"v2\"\nbase = \"v1\"\n",
+            &["v1", "itself a variant"],
+        );
+    }
+
+    #[test]
+    fn a_variant_setting_prompt_or_image_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\nprompt = \"y.jinja\"\n",
+            &["it sets prompt"],
+        );
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\nimage = \"stock\"\n",
+            &["it sets image"],
+        );
+    }
+
+    #[test]
+    fn an_unsupported_config_key_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\nconfig.gates.reviewed = true\n",
+            &["gates", "max_refutations"],
+        );
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\nconfig.models.preset = \"fable\"\n",
+            &["models"],
+        );
+    }
+
+    #[test]
+    fn an_unsupported_dispatch_key_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\ndispatch.max_turns = 3\n",
+            &["max_turns", "max_code_rework"],
+        );
+    }
+
+    #[test]
+    fn a_negative_max_refutations_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\nconfig.max_refutations = -1\n",
+            &["max_refutations"],
+        );
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\n\
+             sweep = { setting = \"config.max_refutations\", values = [1, -1] }\n",
+            &["-1", "config.max_refutations"],
+        );
+    }
+
+    #[test]
+    fn a_multi_line_config_verify_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\n\
+             config.dispatch.verify = \"a\\nb\"\n",
+            &["config.dispatch.verify"],
+        );
+    }
+
+    #[test]
+    fn config_on_a_stock_arm_and_dispatch_on_an_upstream_prompt_arm_fail() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"just-solve\"\nconfig.max_refutations = 1\n",
+            &["arm v", "config", "image = \"rdm\""],
+        );
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"just-solve\"\ndispatch.models = \"fable\"\n",
+            &["arm v", "dispatch", "prompt_from = \"manifest\""],
+        );
+    }
+
+    #[test]
+    fn an_unsafe_models_preset_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nbase = \"full-lane\"\ndispatch.models = \"a b\"\n",
+            &["dispatch.models"],
+        );
+    }
+
+    #[test]
+    fn a_sweep_generates_one_arm_per_value_in_place_and_in_order() {
+        let m = parse(&variants(
+            "[[arm]]\nbase = \"full-lane\"\n\
+             sweep = { setting = \"config.max_refutations\", values = [0, 2, 5] }\n\
+             [[arm]]\nname = \"after\"\nprompt = \"z.jinja\"\n",
+        ))
+        .expect("valid");
+        assert_eq!(
+            arm_names(&m),
+            [
+                "just-solve",
+                "anti_slop",
+                "full-lane",
+                "full-lane.max_refutations-0",
+                "full-lane.max_refutations-2",
+                "full-lane.max_refutations-5",
+                "after",
+            ]
+        );
+        for n in [0, 2, 5] {
+            let a = arm(&m, &format!("full-lane.max_refutations-{n}"));
+            assert_eq!(a.base.as_deref(), Some("full-lane"));
+            assert_eq!(a.config.max_refutations, Some(n));
+            assert_eq!(a.config_lines(), Some(format!("max_refutations={n}")));
+            assert_eq!(a.dispatch, arm(&m, "full-lane").dispatch);
+        }
+        let picked = m
+            .select_arms(Some(&["full-lane.max_refutations-0".to_owned()]))
+            .expect("selects a generated arm");
+        assert_eq!(arm_names(&picked), ["full-lane.max_refutations-0"]);
+    }
+
+    #[test]
+    fn a_sweep_name_prefix_and_fixed_overrides_apply_to_every_generated_arm() {
+        let m = parse(&variants(
+            "[[arm]]\nname = \"fl-fable\"\nbase = \"full-lane\"\n\
+             dispatch.models = \"fable\"\n\
+             sweep = { setting = \"dispatch.max_code_rework\", values = [0, 1] }\n",
+        ))
+        .expect("valid");
+        let a = arm(&m, "fl-fable.max_code_rework-1");
+        assert_eq!(a.dispatch.max_code_rework, Some(1));
+        assert_eq!(a.dispatch.models.as_deref(), Some("fable"));
+        assert!(
+            m.arms
+                .iter()
+                .any(|a| a.name == "fl-fable.max_code_rework-0")
+        );
+    }
+
+    #[test]
+    fn a_float_cost_limit_sweep_renders_its_values() {
+        let m = parse(&variants(
+            "[[arm]]\nbase = \"full-lane\"\n\
+             sweep = { setting = \"cost_limit\", values = [2.5, 0.0, 7] }\n",
+        ))
+        .expect("valid");
+        assert_eq!(arm(&m, "full-lane.cost_limit-2.5").cost_limit, Some(2.5));
+        assert_eq!(arm(&m, "full-lane.cost_limit-0").cost_limit, Some(0.0));
+        assert_eq!(arm(&m, "full-lane.cost_limit-7").cost_limit, Some(7.0));
+    }
+
+    #[test]
+    fn an_unsupported_sweep_setting_fails_naming_the_accepted_ones() {
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\nsweep = { setting = \"gates.reviewed\", values = [true] }\n",
+            &[
+                "gates.reviewed",
+                "config.max_refutations",
+                "dispatch.models",
+            ],
+        );
+    }
+
+    #[test]
+    fn an_empty_sweep_fails() {
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\nsweep = { setting = \"step_limit\", values = [] }\n",
+            &["step_limit", "no values"],
+        );
+    }
+
+    #[test]
+    fn a_sweep_fixing_its_own_setting_fails() {
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\nstep_limit = 9\n\
+             sweep = { setting = \"step_limit\", values = [1] }\n",
+            &["also fixes step_limit"],
+        );
+    }
+
+    #[test]
+    fn a_sweep_value_that_cannot_form_a_name_fails() {
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\n\
+             sweep = { setting = \"config.dispatch.verify\", values = [\"pytest -q\"] }\n",
+            &["pytest -q", "cannot form an arm name", "named variants"],
+        );
+    }
+
+    #[test]
+    fn sweeps_whose_generated_names_collide_fail_naming_the_name() {
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\n\
+             sweep = { setting = \"config.max_refutations\", values = [0] }\n\
+             [[arm]]\nbase = \"full-lane\"\n\
+             sweep = { setting = \"dispatch.max_refutations\", values = [0] }\n",
+            &[
+                "arm.name \"full-lane.max_refutations-0\" is duplicated",
+                "dispatch.max_refutations",
+                "base full-lane",
+            ],
+        );
+    }
+
+    #[test]
+    fn the_arm_name_rule_allows_dots_but_not_a_leading_one() {
+        assert!(valid_arm_name("a.b-1"));
+        assert!(valid_arm_name("full-lane.max_refutations-0"));
+        for bad in [".hidden", ".", "..", "", "a/b", "a b"] {
+            assert!(!valid_arm_name(bad), "{bad:?}");
+        }
+        let m = parse(&text().replace("name = \"anti_slop\"", "name = \"a.b-1\""))
+            .expect("dotted name");
+        assert_eq!(m.arms[1].name, "a.b-1");
+        fails_naming(
+            &text().replace("name = \"anti_slop\"", "name = \".hidden\""),
+            "arm.name",
+        );
     }
 
     #[test]

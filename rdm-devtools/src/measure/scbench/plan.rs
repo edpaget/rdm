@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::lane;
-use super::manifest::{Agent, ArmGroup, ArmImage, Limits, Manifest};
+use super::manifest::{Agent, ArmGroup, ArmImage, Limits, Manifest, Overrides};
 use super::rdm_image;
 
 /// The directories a plan is built against (all absolute).
@@ -114,6 +114,10 @@ pub struct ModelCopy {
 pub struct ArmPlan {
     /// The arm name.
     pub name: String,
+    /// The plain arm this one is a variant of; `None` for a plain arm.
+    pub base: Option<String>,
+    /// The arm's fully resolved overrides ([`super::manifest::Arm::overrides`]).
+    pub overrides: Overrides,
     /// The SCBench seed (`slop-code --seed <n>`) this unit runs with.
     pub seed: u64,
     /// The agent image the arm runs in.
@@ -121,8 +125,8 @@ pub struct ArmPlan {
     /// The arm's treatment group ([`super::manifest::Arm::group`]).
     pub group: ArmGroup,
     /// The verify command the arm runs under
-    /// ([`super::manifest::Arm::verify`]); `None` for an upstream stock
-    /// control.
+    /// ([`super::manifest::Arm::verify`], its `config.dispatch.verify` when
+    /// set); `None` for an upstream stock control.
     pub verify: Option<String>,
     /// `<out>/<arm>/agent.yaml`.
     pub agent_config_path: PathBuf,
@@ -139,7 +143,8 @@ pub struct ArmPlan {
     /// `<out>/<arm>/prompt.jinja`, for an arm whose prompt is rdm's own
     /// (`prompt_from = "manifest"`); the run config's `prompt`.
     pub prompt_path: Option<PathBuf>,
-    /// The prompt written there, its `@RDM_...@` placeholders filled
+    /// The prompt written there, its `@RDM_...@` placeholders (the arm's
+    /// dispatch flags included) filled
     /// ([`lane::render_prompt`]); SCBench's Jinja renders the rest.
     pub prompt: Option<String>,
     /// `<out>/<arm>/seed-<n>/plan-repos`, for an rdm arm: where the runner
@@ -329,7 +334,7 @@ pub fn build_plan(
             let (prompt_path, prompt) = match (prompts.get(&arm.name), &manifest.rdm) {
                 (Some(raw), Some(rdm)) if manifest.manifest_prompt_source(arm).is_some() => (
                     Some(dir.join("prompt.jinja")),
-                    Some(lane::render_prompt(raw, rdm)),
+                    Some(lane::render_prompt(raw, rdm, arm)),
                 ),
                 _ => (None, None),
             };
@@ -345,7 +350,7 @@ pub fn build_plan(
                             &rdm.plan_root,
                         );
                         (
-                            rdm_image::agent_config(manifest, rdm, sha, &path, &limits),
+                            rdm_image::agent_config(manifest, rdm, sha, &path, &limits, Some(arm)),
                             Some(path),
                             Some(rendered),
                         )
@@ -373,6 +378,8 @@ pub fn build_plan(
             };
             ArmPlan {
                 name: arm.name.clone(),
+                base: arm.base.clone(),
+                overrides: arm.overrides(),
                 seed,
                 image: arm.image,
                 group: arm.group(),

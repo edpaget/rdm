@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use super::containers;
 use super::environment;
 use super::lane::{self, LaneRecord};
-use super::manifest::{ArmGroup, ArmImage, Manifest};
+use super::manifest::{ArmGroup, ArmImage, Manifest, Overrides};
 use super::plan::{self, CommandSpec, Paths, RunPlan, Tools};
 use super::redact;
 use crate::process::{self, Interrupts};
@@ -88,15 +88,21 @@ pub struct ModelFileRecord {
 pub struct ArmRecord {
     /// The arm name.
     pub name: String,
+    /// The plain arm this one is a variant of; `null` for a plain arm.
+    pub base: Option<String>,
+    /// The arm's fully resolved overrides: rdm config, dispatch flags and
+    /// its own limits.
+    pub overrides: Overrides,
     /// The unit's SCBench seed.
     pub seed: u64,
     /// The agent image the arm runs in.
     pub image: ArmImage,
     /// The arm's treatment group, which the ablation comparison keys on.
     pub group: ArmGroup,
-    /// The verify command the arm ran under (`[rdm] verify`, which the
-    /// wrapper sets as `dispatch.verify` and manifest-rendered prompts
-    /// name); `null` for an upstream stock control.
+    /// The verify command the arm ran under (its `config.dispatch.verify`,
+    /// else `[rdm] verify`, which the wrapper sets as `dispatch.verify` and
+    /// manifest-rendered prompts name); `null` for an upstream stock
+    /// control.
     pub verify: Option<String>,
     /// SCBench's graded directory (the environment's `docker.workdir`), read
     /// for an rdm arm; `null` for a stock arm.
@@ -761,6 +767,8 @@ pub fn execute(
         .iter()
         .map(|a| ArmRecord {
             name: a.name.clone(),
+            base: a.base.clone(),
+            overrides: a.overrides.clone(),
             seed: a.seed,
             image: a.image,
             group: a.group,
@@ -862,12 +870,19 @@ pub fn execute(
             return Err(format!("arm {unit}: run {}", ran.describe()));
         }
         if let (Some(dir), Some(rdm)) = (&arm.plan_repos_dir, &manifest.rdm) {
+            let agent_env: BTreeMap<String, String> = arm.agent_config["env"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                .collect();
             let collected = lane::collect(
                 &arm.name,
                 &manifest.problems.subset,
                 &arm.run_dir,
                 dir,
                 &rdm.project,
+                &agent_env,
                 &mut |spec| ex.spawn(spec, Io::Quiet),
             );
             // A signal during the lane's git and tar steps makes them fail;

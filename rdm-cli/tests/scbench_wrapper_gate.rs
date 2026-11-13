@@ -1,7 +1,7 @@
 //! `bench/scbench/agent/claude-rdm.sh`'s plan-repo setup against the real
 //! `rdm` binary: the first call leaves `dispatch.verify` resolving to the
-//! committed manifest's `[rdm] verify`, committed, and a later call never
-//! overwrites it. `claude` is a fake that prints one stream-json line; no
+//! committed manifest's `[rdm] verify` and every `RDM_SCBENCH_CONFIG`
+//! override applied, committed, and a later call never overwrites them. `claude` is a fake that prints one stream-json line; no
 //! Docker, network or SCBench is involved.
 //!
 //! Every child runs with a cleared environment: a temp `HOME`, an
@@ -94,6 +94,11 @@ impl Sandbox {
 
     /// Runs the wrapper as SlopCodeBench would, once, with no resume.
     fn wrapper(&self) -> Output {
+        self.wrapper_with(&[])
+    }
+
+    /// [`Sandbox::wrapper`] with `env` added.
+    fn wrapper_with(&self, env: &[(&str, &str)]) -> Output {
         self.command("sh")
             .arg(repo_root().join("bench/scbench/agent/claude-rdm.sh"))
             .args(["--print", "--", "PROMPT"])
@@ -103,6 +108,7 @@ impl Sandbox {
             .env("RDM_PLAN_EXPORT_SUBDIR", "projects/-workspace/rdm-plan")
             .env("RDM_RESUME_MAX", "0")
             .env("RDM_SCBENCH_VERIFY", &self.verify)
+            .envs(env.iter().copied())
             .output()
             .expect("run claude-rdm.sh")
     }
@@ -178,5 +184,31 @@ fn a_later_wrapper_call_keeps_the_plan_repos_gate() {
     assert_eq!(
         s.resolved_verify(),
         ["other".to_owned(), "other".to_owned()]
+    );
+}
+
+#[test]
+fn wrapper_setup_applies_the_arms_config_overrides_beside_the_gate() {
+    let s = Sandbox::new();
+    assert_ok(&s.wrapper_with(&[("RDM_SCBENCH_CONFIG", "max_refutations=0")]));
+    assert_eq!(
+        s.rdm(&[
+            "config",
+            "get",
+            "max_refutations",
+            "--raw",
+            "--project",
+            "bench"
+        ])
+        .trim_end_matches('\n'),
+        "0"
+    );
+    let shown = s.rdm(&["config", "get", "max_refutations", "--project", "bench"]);
+    assert!(shown.contains("repo config"), "{shown}");
+    assert_eq!(s.resolved_verify(), [s.verify.clone(), s.verify.clone()]);
+    let status = s.rdm(&["status"]);
+    assert!(
+        status.contains("No uncommitted changes"),
+        "the overrides are committed: {status}"
     );
 }

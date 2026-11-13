@@ -15,7 +15,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use super::lane;
-use super::manifest::{Limits, Manifest, Rdm};
+use super::manifest::{Arm, Limits, Manifest, Rdm};
 use super::plan::stock_agent_config;
 
 /// The payload image's repository; its tag is the rdm SHA.
@@ -92,32 +92,45 @@ pub fn render_template(
 /// `RDM_ROADMAP` ([`lane::ROADMAP`], the roadmap the prompts' `@RDM_ROADMAP@`
 /// name), whose highest-numbered phase the wrapper reads to decide whether a
 /// checkpoint has settled or must be resumed. rdm itself reads no
-/// `RDM_ROADMAP`. `RDM_SCBENCH_VERIFY` carries `[rdm] verify`, which the
-/// wrapper sets as the plan repo's `dispatch.verify` on its first call (not
-/// `RDM_DISPATCH_VERIFY`, which would override the plan repo's config).
+/// `RDM_ROADMAP`.
+///
+/// `RDM_SCBENCH_VERIFY` carries `arm`'s effective verify ([`Arm::verify`]:
+/// its `config.dispatch.verify`, else `[rdm] verify`), which the wrapper sets
+/// as the plan repo's `dispatch.verify` on its first call. `RDM_SCBENCH_CONFIG`
+/// carries the arm's other config overrides ([`Arm::config_lines`]), which
+/// the wrapper applies with `rdm config set` on that same first call; it is
+/// left out when there are none. Neither is rdm's own `RDM_<KEY>` variable,
+/// which would override the plan repo's config invisibly and never land in
+/// its `rdm.toml`. `arm` is `None` for the image smoke check, which runs no
+/// arm.
 pub fn agent_config(
     manifest: &Manifest,
     rdm: &Rdm,
     sha: &str,
     template_path: &Path,
     limits: &Limits,
+    arm: Option<&Arm>,
 ) -> Value {
     let mut config = stock_agent_config(&manifest.agent, limits);
     config["binary"] = json!(WRAPPER);
     config["version"] = json!(agent_version(&manifest.agent.claude_code_version, sha));
     config["docker_template"] = json!(template_path.display().to_string());
     config["extra_args"] = json!(["--plugin-dir", PLUGIN_DIR]);
+    let verify = arm.and_then(|a| a.verify(Some(rdm))).unwrap_or(&rdm.verify);
     config["env"] = json!({
         "RDM_ROOT": rdm.plan_root,
         "RDM_PROJECT": rdm.project,
         "RDM_ROADMAP": lane::ROADMAP,
-        "RDM_SCBENCH_VERIFY": rdm.verify,
+        "RDM_SCBENCH_VERIFY": verify,
         "RDM_PLAN_EXPORT_SUBDIR": PLAN_EXPORT_SUBDIR,
         "GIT_AUTHOR_NAME": "rdm-scbench",
         "GIT_AUTHOR_EMAIL": "rdm-scbench@localhost",
         "GIT_COMMITTER_NAME": "rdm-scbench",
         "GIT_COMMITTER_EMAIL": "rdm-scbench@localhost",
     });
+    if let Some(lines) = arm.and_then(Arm::config_lines) {
+        config["env"]["RDM_SCBENCH_CONFIG"] = json!(lines);
+    }
     config
 }
 
@@ -171,6 +184,7 @@ prompt = "configs/prompts/a1.jinja"
             "S",
             Path::new("/t/docker.j2"),
             &manifest.agent.limits(),
+            Some(&manifest.arms[0]),
         );
         assert_eq!(config["env"]["RDM_ROADMAP"], json!(lane::ROADMAP));
         assert_eq!(config["env"]["RDM_PROJECT"], json!("bench"));
@@ -178,6 +192,70 @@ prompt = "configs/prompts/a1.jinja"
             config["env"]["RDM_SCBENCH_VERIFY"],
             json!("pytest -q && ruff check")
         );
+    }
+
+    #[test]
+    fn agent_config_env_carries_each_arms_config_overrides() {
+        let text = r#"
+[scbench]
+repo = "R1"
+sha = "1111111111111111111111111111111111111111"
+[problems]
+repo = "R2"
+sha = "2222222222222222222222222222222222222222"
+subset = ["p1"]
+checkpoints = { p1 = 2 }
+[agent]
+provider = "prov"
+model = "mod"
+model_file = "models/m.yaml"
+thinking = "low"
+claude_code_version = "9.9.9"
+pass_policy = "core-cases"
+environment = "env"
+step_limit = 7
+cost_limit = 0
+net_cost_limit = 0
+[rdm]
+plan_root = "/rdm-plan"
+project = "bench"
+verify = "pytest -q"
+[[arm]]
+name = "full-lane"
+prompt = "prompts/full-lane.jinja"
+prompt_from = "manifest"
+image = "rdm"
+[[arm]]
+base = "full-lane"
+sweep = { setting = "config.max_refutations", values = [0] }
+[[arm]]
+name = "gated"
+base = "full-lane"
+config.dispatch.verify = "pytest -x"
+"#;
+        let manifest = Manifest::parse(text, Path::new("/rdm/bench")).expect("valid");
+        let rdm = manifest.rdm_table().expect("rdm table");
+        let env = |name: &str| {
+            let arm = manifest.arms.iter().find(|a| a.name == name).expect("arm");
+            agent_config(
+                &manifest,
+                rdm,
+                "S",
+                Path::new("/t/docker.j2"),
+                &arm.limits(&manifest.agent),
+                Some(arm),
+            )["env"]
+                .clone()
+        };
+        let base = env("full-lane");
+        assert!(base.get("RDM_SCBENCH_CONFIG").is_none(), "{base}");
+        assert_eq!(base["RDM_SCBENCH_VERIFY"], json!("pytest -q"));
+        let swept = env("full-lane.max_refutations-0");
+        assert_eq!(swept["RDM_SCBENCH_CONFIG"], json!("max_refutations=0"));
+        assert_eq!(swept["RDM_SCBENCH_VERIFY"], json!("pytest -q"));
+        let gated = env("gated");
+        assert_eq!(gated["RDM_SCBENCH_VERIFY"], json!("pytest -x"));
+        assert!(gated.get("RDM_SCBENCH_CONFIG").is_none(), "{gated}");
     }
 
     #[test]

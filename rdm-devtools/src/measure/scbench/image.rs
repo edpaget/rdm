@@ -210,6 +210,7 @@ pub fn build(opts: &ImageOptions, stderr: &mut dyn Write) -> Result<u8, String> 
             &t.sha,
             &template_path,
             &t.manifest.agent.limits(),
+            None,
         ),
     )?;
 

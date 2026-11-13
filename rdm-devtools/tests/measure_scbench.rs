@@ -49,6 +49,8 @@ struct Spec {
     full_lane: bool,
     /// The `[rdm] plan_root` every stand-in manifest carries.
     plan_root: &'static str,
+    /// `[[arm]]` tables written after every other arm (variants, sweeps).
+    extra_arms: &'static str,
 }
 
 impl Default for Spec {
@@ -65,6 +67,7 @@ impl Default for Spec {
             rdm_arm_group: None,
             full_lane: false,
             plan_root: "/rdm-plan",
+            extra_arms: "",
         }
     }
 }
@@ -222,7 +225,7 @@ prompt = "configs/prompts/just-solve.jinja"
 [[arm]]
 name = "anti_slop"
 prompt = "configs/prompts/anti_slop.jinja"
-{rdm_arm}{full_lane}
+{rdm_arm}{full_lane}{extra_arms}
 [rdm]
 plan_root = "{plan_root}"
 project = "bench"
@@ -254,6 +257,7 @@ verify = "{STAND_IN_VERIFY}"
                 String::new()
             },
             plan_root = spec.plan_root,
+            extra_arms = spec.extra_arms,
         );
         let template = std::fs::read_to_string(repo_root().join("bench/scbench/agent/docker.j2"))
             .expect("committed agent template");
@@ -1860,13 +1864,18 @@ fn full_lane_bench(b: &Bench, checkpoints: &[Checkpoint]) {
 /// arm (matched by its own `seed-<n>/run.yaml`) leaves its own checkpoints
 /// under `<out>/full-lane/seed-<n>/output/`.
 fn full_lane_bench_seeds(b: &Bench, seeds: &[(u64, &[Checkpoint])]) {
+    lane_bench(b, "full-lane", seeds);
+}
+
+/// [`full_lane_bench_seeds`] for the rdm arm named `arm`.
+fn lane_bench(b: &Bench, arm: &str, seeds: &[(u64, &[Checkpoint])]) {
     let staged = b.root.join("staged");
     let mut responses: Vec<(Vec<String>, Value)> = vec![(
         vec!["--version".to_owned()],
         json!({ "stdout": "uv 0.0.0-fake\n" }),
     )];
     for (seed, checkpoints) in seeds {
-        let output = b.out.join(format!("full-lane/seed-{seed}/output"));
+        let output = b.out.join(format!("{arm}/seed-{seed}/output"));
         let mut place = Vec::new();
         for c in *checkpoints {
             let yaml = staged.join(format!("{seed}-{}-{}.yaml", c.problem, c.name));
@@ -1887,7 +1896,7 @@ fn full_lane_bench_seeds(b: &Bench, seeds: &[(u64, &[Checkpoint])]) {
             }
         }
         responses.push((
-            vec![format!("full-lane/seed-{seed}/run.yaml")],
+            vec![format!("{arm}/seed-{seed}/run.yaml")],
             json!({ "place": place }),
         ));
     }
@@ -2106,6 +2115,8 @@ fn full_lane_classifies_each_checkpoint() {
             "checkpoint": name,
             "order": order,
             "plan_repo": if repo { at(problem, name) } else { Value::Null },
+            // The fixture's rdm.toml sets no project-scopable key.
+            "rdm_config": if repo { json!({}) } else { Value::Null },
             "phase": phase,
             "status": status,
             "outcome": outcome,
@@ -4075,4 +4086,263 @@ fn problems_filter_run_then_report_covers_only_xjq() {
     assert_eq!(fl["lane_failure_reasons"], json!({}));
     let md = std::fs::read_to_string(b.out.join("rdm-scbench-report.md")).expect("md report");
     assert!(md.contains("- problems: `xjq` (--problems)"), "{md}");
+}
+
+/// A full-lane base, a named `dispatch` variant and a `config.max_refutations`
+/// sweep of it.
+const VARIANT_ARMS: &str = r#"
+[[arm]]
+name = "full-lane-fable"
+base = "full-lane"
+dispatch = { models = "fable", max_code_rework = 0 }
+
+[[arm]]
+base = "full-lane"
+sweep = { setting = "config.max_refutations", values = [0, 2] }
+"#;
+
+fn plan_arm<'a>(plan: &'a Value, name: &str) -> &'a Value {
+    let arms = plan["plan"]["arms"].as_array().expect("arms");
+    arms.iter()
+        .find(|a| a["name"] == name)
+        .unwrap_or_else(|| panic!("no arm {name}: {arms:?}"))
+}
+
+#[test]
+fn dry_run_lists_every_generated_arm_with_its_resolved_overrides() {
+    let b = Bench::new(&Spec {
+        extra_arms: VARIANT_ARMS,
+        ..full_lane_spec()
+    });
+    let plan = json(&ok(&b.run(&["--dry-run"])));
+    let generated = [
+        "full-lane-fable",
+        "full-lane.max_refutations-0",
+        "full-lane.max_refutations-2",
+    ];
+    assert_eq!(
+        plan["selected_arms"],
+        json!([
+            "just-solve",
+            "anti_slop",
+            "full-lane",
+            generated[0],
+            generated[1],
+            generated[2]
+        ])
+    );
+    assert_eq!(plan["projection"]["arms"], 6);
+    let manifest_arms = plan["manifest"]["arm"].as_array().expect("manifest arms");
+    assert_eq!(manifest_arms[3]["base"], "full-lane");
+    assert_eq!(manifest_arms[3]["dispatch"]["models"], "fable");
+    assert_eq!(manifest_arms[4]["config"], json!({ "max_refutations": 0 }));
+
+    let base = plan_arm(&plan, "full-lane");
+    assert_eq!(base["base"], Value::Null);
+    assert_eq!(
+        base["overrides"],
+        json!({ "config": {}, "dispatch": {}, "step_limit": 4321, "cost_limit": 12.5,
+                "net_cost_limit": 25.0 })
+    );
+    assert!(
+        base["agent_config"]["env"]
+            .get("RDM_SCBENCH_CONFIG")
+            .is_none()
+    );
+    let prompt = base["prompt"].as_str().expect("base prompt");
+    assert!(
+        prompt.contains("`solution N --project bench`"),
+        "no flags on the base: {prompt}"
+    );
+
+    let fable = plan_arm(&plan, "full-lane-fable");
+    assert_eq!(fable["base"], "full-lane");
+    assert_eq!(
+        fable["overrides"]["dispatch"],
+        json!({ "models": "fable", "max_code_rework": 0 })
+    );
+    assert_eq!(fable["overrides"]["step_limit"], 4321, "inherited");
+    let prompt = fable["prompt"].as_str().expect("variant prompt");
+    assert!(
+        prompt.contains("`solution N --project bench --max-code-rework 0 --models fable`"),
+        "{prompt}"
+    );
+    assert!(
+        fable["agent_config"]["env"]
+            .get("RDM_SCBENCH_CONFIG")
+            .is_none()
+    );
+
+    for n in [0, 2] {
+        let name = format!("full-lane.max_refutations-{n}");
+        let arm = plan_arm(&plan, &name);
+        assert_eq!(arm["base"], "full-lane");
+        assert_eq!(
+            arm["overrides"]["config"],
+            json!({ "max_refutations": n.to_string() })
+        );
+        assert_eq!(
+            arm["agent_config"]["env"]["RDM_SCBENCH_CONFIG"],
+            format!("max_refutations={n}")
+        );
+        assert_eq!(
+            arm["agent_config"]["env"]["RDM_SCBENCH_VERIFY"],
+            STAND_IN_VERIFY
+        );
+        assert_eq!(
+            arm["run_config"]["save_dir"],
+            p(&b.out.join(&name).join("seed-1"))
+        );
+    }
+    assert!(!b.out.exists(), "--out was created");
+}
+
+#[test]
+fn run_arms_selects_a_generated_arm() {
+    let b = Bench::new(&Spec {
+        extra_arms: VARIANT_ARMS,
+        ..full_lane_spec()
+    });
+    let plan = json(&ok(&b.run(&[
+        "--dry-run",
+        "--arms",
+        "full-lane.max_refutations-0",
+    ])));
+    assert_eq!(
+        plan["selected_arms"],
+        json!(["full-lane.max_refutations-0"])
+    );
+}
+
+#[test]
+fn dispatch_flags_on_a_prompt_without_the_placeholder_fail_before_any_spawn() {
+    let b = Bench::new(&Spec {
+        extra_arms: r#"
+[[arm]]
+name = "bare"
+prompt = "prompts/bare.jinja"
+prompt_from = "manifest"
+image = "rdm"
+
+[[arm]]
+name = "bare-fable"
+base = "bare"
+dispatch.models = "fable"
+"#,
+        ..Spec::default()
+    });
+    let prompt = b.rdm_dir().join("bench/scbench/prompts/bare.jinja");
+    write(
+        &prompt,
+        "rdm:dispatch-phase @RDM_ROADMAP@ N --project @RDM_PROJECT@\n",
+    );
+    for extra in [&["--dry-run"][..], &[][..]] {
+        let err = fails(&b.run(extra));
+        assert!(
+            err.contains(&format!(
+                "arm bare-fable sets dispatch flags but its prompt {} has no @RDM_DISPATCH_FLAGS@",
+                p(&prompt)
+            )),
+            "{extra:?}: {err}"
+        );
+        for role in ["uv", "docker", "claude"] {
+            assert!(
+                !b.record_path(role).exists(),
+                "{extra:?}: {role} was spawned"
+            );
+        }
+        assert!(!b.out.exists(), "{extra:?}: --out was created");
+    }
+    let err = fails(&b.ladder(&b.out, &["--seeds", "1"], &[]));
+    assert!(err.contains("@RDM_DISPATCH_FLAGS@"), "ladder: {err}");
+    assert!(!spawned_slop_code(&b), "ladder spawned slop-code");
+}
+
+#[test]
+fn a_variant_run_records_its_overrides_and_each_checkpoints_resolved_rdm_config() {
+    use rdm_core::model::PhaseStatus::Done;
+    let b = Bench::new(&Spec {
+        extra_arms: r#"
+[[arm]]
+name = "fl0"
+base = "full-lane"
+config = { max_refutations = 0, dispatch = { verify = "pytest -x" } }
+"#,
+        ..full_lane_spec()
+    });
+    let home = b.home();
+    let tars = b.root.join("tars");
+    let mut mv = PlanRepo::new(&home, &b.root.join("fixture/mvvault"));
+    {
+        use rdm_core::store::Store;
+        let mut config = rdm_core::io::load_config(&mv.store).expect("rdm.toml");
+        config.max_refutations = Some(0);
+        config.dispatch = Some(rdm_core::config::DispatchConfig {
+            verify: Some("pytest -x".to_owned()),
+        });
+        rdm_core::io::save_config(&mut mv.store, &config).expect("save rdm.toml");
+        mv.store.commit().expect("flush");
+    }
+    mv.add(1, Done, None);
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1", &[]);
+    mv.add(2, Done, None);
+    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "M2", &[]);
+    lane_bench(
+        &b,
+        "fl0",
+        &[(
+            1,
+            &[
+                Checkpoint {
+                    problem: "mvvault",
+                    name: "checkpoint_1",
+                    order: 1,
+                    tars: vec![("000001.tar", mv1)],
+                },
+                Checkpoint {
+                    problem: "mvvault",
+                    name: "checkpoint_2",
+                    order: 2,
+                    tars: vec![("000001.tar", mv2)],
+                },
+            ][..],
+        )],
+    );
+    ok(&b.run(&["--arms", "fl0"]));
+    let record = b.record();
+    let arm = arm_record(&record, "fl0");
+    assert_eq!(arm["base"], "full-lane");
+    assert_eq!(arm["verify"], "pytest -x");
+    assert_eq!(
+        arm["overrides"]["config"],
+        json!({ "dispatch.verify": "pytest -x", "max_refutations": "0" })
+    );
+    assert_eq!(
+        arm["agent_config"]["env"]["RDM_SCBENCH_CONFIG"],
+        "max_refutations=0"
+    );
+    assert_eq!(
+        arm["agent_config"]["env"]["RDM_SCBENCH_VERIFY"],
+        "pytest -x"
+    );
+    let checkpoints = arm["lane"]["problems"][0]["checkpoints"]
+        .as_array()
+        .expect("checkpoints");
+    assert_eq!(checkpoints.len(), 2);
+    for c in checkpoints {
+        assert_eq!(
+            c["rdm_config"],
+            json!({
+                "dispatch.verify": { "value": "pytest -x", "source": "repo config" },
+                "max_refutations": { "value": "0", "source": "repo config" },
+            }),
+            "{c}"
+        );
+    }
+    let missing = &arm["lane"]["problems"][1];
+    assert_eq!(missing["problem"], "xjq");
+    assert_eq!(missing["checkpoints"], json!([]));
+
+    let report = json(&ok(&b.report(&b.out, &["--format", "json"])));
+    assert!(report.is_object(), "{report}");
 }
