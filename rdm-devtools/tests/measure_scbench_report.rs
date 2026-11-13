@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use measure_support::{fails, json, ok};
-use scbench_support::{Checkpoint, Eval, FileFixture, Inference, Quality, SymbolFixture};
+use scbench_support::{
+    Checkpoint, Eval, FileFixture, Inference, Quality, SymbolFixture, TraceFile, TraceUsage,
+};
 use serde_json::{Value, json};
 
 const RDM_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -852,7 +854,7 @@ fn report_writes_markdown_and_json() {
     assert_eq!(stdout, md);
     let report =
         json(&std::fs::read_to_string(run.join("rdm-scbench-report.json")).expect("json report"));
-    assert_eq!(report["schema"], 2);
+    assert_eq!(report["schema"], 3);
     assert_eq!(report["run"], json!(run));
 }
 
@@ -1484,4 +1486,464 @@ fn a_baseline_from_before_the_split_still_compares_on_the_snapshot() {
     ok(&self::report(&current, &["--save-baseline", "new"]));
     let r = report_json(&a, &["--baseline", "new"]);
     assert_eq!(r["baseline"]["baseline_has_split"], true);
+}
+
+// --- Cost per lift and cost by lane stage ----------------------------------
+
+/// Sets the run record's `model_file` to one copied from `source`, or none.
+fn set_model_file(run: &Path, source: Option<&Path>) {
+    let path = run.join("rdm-scbench-run.json");
+    let mut record = json(&std::fs::read_to_string(&path).expect("record"));
+    record["model_file"] = match source {
+        Some(s) => {
+            json!({ "source": s, "installed": "/scbench/configs/models/m.yaml", "sha256": "0" })
+        }
+        None => Value::Null,
+    };
+    std::fs::write(&path, serde_json::to_string_pretty(&record).expect("json")).expect("record");
+}
+
+/// A run of just-solve (control) and full-lane (rdm), seeds 1-3, over
+/// mvvault checkpoints 1 and 2:
+///
+/// - just-solve passes both checkpoints (pass rate 2 of 4), full-lane
+///   neither (0): full-lane is worse by 0.5 on every seed;
+/// - cost per checkpoint: just-solve 1 and 1, full-lane 2 and 4, so 2 more
+///   per checkpoint on every seed;
+/// - one application file `main.py` (90 lines, 100 total) with one function
+///   of complexity 4 (just-solve) or 3 (full-lane), so `app_cc_mean_final`
+///   is 1 better on every seed; nesting depth 2, 3, 4 (just-solve) against
+///   3, 2, 4 (full-lane), the same mean; lint findings 4 against 2;
+/// - scb-check erosion 0.5 against 0.25, clone percentage 0.375 against
+///   0.125; verbosity only for just-solve.
+fn lift_run(f: &Fixture) -> PathBuf {
+    let arms = [
+        ("just-solve", "control", "stock", false),
+        ("full-lane", "rdm", "rdm", true),
+    ];
+    let checkpoint = |rdm: bool, k: u32| {
+        let mut c = scbench_support::simple("mvvault", &format!("checkpoint_{k}"), k);
+        c.eval = Some(Eval {
+            passed: !rdm,
+            infra: false,
+        });
+        let mut i = c.inference.expect("inference");
+        i.cost = if rdm { [2.0, 4.0][k as usize - 1] } else { 1.0 };
+        c.inference = Some(i);
+        c
+    };
+    let mut units = Vec::new();
+    for s in 1..=3 {
+        for (arm, group, image, rdm) in arms {
+            units.push(UnitSpec {
+                arm,
+                group: Some(group),
+                image,
+                seed: Some(s),
+                finished: true,
+                checkpoints: vec![checkpoint(rdm, 1), checkpoint(rdm, 2)],
+                lane: None,
+                interrupted: None,
+            });
+        }
+    }
+    let run = f.write_run("lift", true, &RecordPins::default(), &units);
+    for s in 1..=3u64 {
+        for (arm, _, _, rdm) in arms {
+            let out = run.join(arm).join(format!("seed-{s}/output"));
+            let depth = if rdm {
+                [3.0, 2.0, 4.0]
+            } else {
+                [2.0, 3.0, 4.0]
+            }[s as usize - 1];
+            for k in 1..=2 {
+                scbench_support::write_quality_rows(
+                    &out,
+                    "mvvault",
+                    &format!("checkpoint_{k}"),
+                    &[file(
+                        "main.py",
+                        90.0,
+                        if rdm { 2.0 } else { 4.0 },
+                        60.0,
+                        0.0,
+                        0.0,
+                    )],
+                    &[symbol(
+                        "main.py",
+                        "function",
+                        if rdm { 3.0 } else { 4.0 },
+                        depth,
+                    )],
+                );
+            }
+            let row = |checkpoint| scbench_support::ScbRow {
+                problem: "mvvault",
+                checkpoint,
+                erosion: Some(if rdm { 0.25 } else { 0.5 }),
+                verbosity: (!rdm).then_some(0.1),
+                cloned_pct: Some(if rdm { 0.125 } else { 0.375 }),
+            };
+            scbench_support::write_checkpoint_results(
+                &out,
+                &[row("checkpoint_1"), row("checkpoint_2")],
+            );
+        }
+    }
+    run
+}
+
+#[test]
+fn cost_per_lift_prices_only_a_lift_that_excludes_zero() {
+    let f = Fixture::new();
+    let run = lift_run(&f);
+    let r = report_json(&run, &[]);
+    assert_eq!(r["schema"], 3);
+    let c = &r["cost_per_lift"];
+    assert_eq!(c["against"], "just-solve");
+    assert_eq!(
+        c["measures"],
+        json!([
+            "pass_rate",
+            "app_cc_mean_final",
+            "app_cc_high_count_final",
+            "app_max_nesting_depth_final",
+            "app_lint_per_loc_final",
+            "scb_erosion_final",
+            "scb_cloned_pct_final",
+            "scb_verbosity_final",
+        ])
+    );
+    let arms = c["arms"].as_array().expect("arms");
+    assert_eq!(arms.len(), 1, "{c}");
+    let fl = &arms[0];
+    assert_eq!(
+        (&fl["arm"], &fl["group"]),
+        (&json!("full-lane"), &json!("rdm"))
+    );
+    let point = |x: f64| json!({ "estimate": x, "ci_low": x, "ci_high": x, "n_a": 3, "n_b": 3, "excludes_zero": true });
+    assert_eq!(fl["extra_cost_per_checkpoint"], point(2.0));
+    let m = &fl["measures"];
+
+    // Complexity 3 against 4, lower is better: +1 for $2 a checkpoint.
+    assert_eq!(m["app_cc_mean_final"]["lift"], point(1.0));
+    assert_eq!(m["app_cc_mean_final"]["better"], "lower");
+    assert_eq!(m["app_cc_mean_final"]["scope"], "application");
+    assert_eq!(
+        m["app_cc_mean_final"]["price"],
+        json!({ "status": "priced", "usd_per_unit": 2.0 })
+    );
+    // Erosion 0.25 against 0.5 and clone percentage 0.125 against 0.375.
+    for key in ["scb_erosion_final", "scb_cloned_pct_final"] {
+        assert_eq!(m[key]["lift"], point(0.25), "{key}");
+        assert_eq!(m[key]["scope"], "snapshot", "{key}");
+        assert_eq!(
+            m[key]["price"],
+            json!({ "status": "priced", "usd_per_unit": 8.0 }),
+            "{key}"
+        );
+    }
+    assert_eq!(m["app_lint_per_loc_final"]["price"]["status"], "priced");
+
+    // Overlapping nesting depths with the same mean: not priced.
+    let nesting = &m["app_max_nesting_depth_final"];
+    assert_eq!(nesting["lift"]["estimate"].as_f64(), Some(0.0));
+    let lo = nesting["lift"]["ci_low"].as_f64().expect("ci_low");
+    let hi = nesting["lift"]["ci_high"].as_f64().expect("ci_high");
+    assert!(lo < 0.0 && 0.0 < hi, "{nesting}");
+    assert_eq!(
+        nesting["price"],
+        json!({ "status": "includes_zero", "usd_per_unit": null })
+    );
+    assert_eq!(
+        m["app_cc_high_count_final"]["price"]["status"],
+        "includes_zero"
+    );
+    // Half a pass-rate point worse on every seed.
+    assert_eq!(m["pass_rate"]["lift"]["estimate"].as_f64(), Some(-0.5));
+    assert_eq!(m["pass_rate"]["price"]["status"], "worse");
+    // Verbosity is only recorded for just-solve.
+    assert_eq!(m["scb_verbosity_final"]["lift"], Value::Null);
+    assert_eq!(m["scb_verbosity_final"]["price"]["status"], "no_data");
+
+    let js = arm(&r, "just-solve");
+    assert_stat(
+        &js["summary"]["cost_per_checkpoint_usd"],
+        &[1.0, 1.0, 1.0],
+        "just-solve cost_per_checkpoint_usd",
+    );
+    assert_eq!(
+        values(&arm(&r, "full-lane")["summary"]["cost_per_checkpoint_usd"]),
+        [3.0, 3.0, 3.0]
+    );
+
+    let md = ok(&report(&run, &[]));
+    for want in [
+        "## Cost per lift against just-solve\n",
+        "### app_cc_mean_final\n",
+        "### scb_erosion_final (SCBench snapshot, includes tests)\n",
+        "| full-lane | 3/3 | +1 [+1, +1] * | +2 [+2, +2] * | $2 per unit |",
+        "interval includes 0, not priced",
+        "worse than just-solve, not priced",
+        "no data, not priced",
+        "the ratio itself has no interval",
+    ] {
+        assert!(md.contains(want), "{want}\n{md}");
+    }
+}
+
+#[test]
+fn lift_against_names_an_arm_of_the_run() {
+    let f = Fixture::new();
+    let run = f.write_run(
+        "a",
+        true,
+        &RecordPins::default(),
+        &main_units(Shift::default()),
+    );
+    let err = fails(&report(&run, &["--lift-against", "plan_first"]));
+    assert!(
+        err.contains(
+            "--lift-against: no finished arm plan_first in this run (arms: just-solve, \
+             anti_slop, full-lane)"
+        ),
+        "stderr: {err}"
+    );
+    let r = report_json(&run, &["--lift-against", "anti_slop"]);
+    let c = &r["cost_per_lift"];
+    assert_eq!(c["against"], "anti_slop");
+    let names: Vec<&Value> = c["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .map(|a| &a["arm"])
+        .collect();
+    assert_eq!(names, [&json!("just-solve"), &json!("full-lane")]);
+    // anti_slop costs 0.5 more per checkpoint than just-solve on every seed.
+    assert_eq!(
+        c["arms"][0]["extra_cost_per_checkpoint"]["estimate"].as_f64(),
+        Some(-0.5)
+    );
+}
+
+#[test]
+fn a_run_without_the_default_baseline_arm_has_no_cost_per_lift() {
+    let f = Fixture::new();
+    let run = f.write_run(
+        "solo",
+        true,
+        &RecordPins::default(),
+        &[UnitSpec {
+            arm: "full-lane",
+            group: Some("rdm"),
+            image: "rdm",
+            seed: Some(1),
+            finished: true,
+            checkpoints: vec![scbench_support::simple("mvvault", "checkpoint_1", 1)],
+            lane: None,
+            interrupted: None,
+        }],
+    );
+    let r = report_json(&run, &[]);
+    assert_eq!(r["cost_per_lift"], Value::Null);
+    let md = ok(&report(&run, &[]));
+    assert!(
+        md.contains(
+            "This run has no `just-solve` arm to price lift against; pass `--lift-against ARM`"
+        ),
+        "{md}"
+    );
+}
+
+#[test]
+fn a_single_seed_lift_has_no_interval_and_no_price() {
+    let f = Fixture::new();
+    let run = split_run(&f, "split", &RecordPins::default());
+    let r = report_json(&run, &[]);
+    let fl = &r["cost_per_lift"]["arms"][0];
+    assert_eq!(fl["arm"], "full-lane");
+    let p = &fl["measures"]["pass_rate"];
+    assert_eq!(
+        (&p["lift"]["n_a"], &p["lift"]["n_b"]),
+        (&json!(1), &json!(1))
+    );
+    assert_eq!(p["lift"]["ci_low"], Value::Null);
+    assert_eq!(
+        p["price"],
+        json!({ "status": "no_interval", "usd_per_unit": null })
+    );
+}
+
+/// A run of full-lane (rdm) and just-solve (control), seed 1, one mvvault
+/// checkpoint each with the same Claude trace and recorded usage ($10;
+/// tokens 1,000,500 in, 100,300 out, 5,000,000 cache read, 250,000 cache
+/// write), priced by [`scbench_support::write_model_file`]:
+///
+/// - the main transcript dispatches the planner (1,000,000 input: $4), then
+///   the code review (100,000 output: $2);
+/// - the planner subagent reads 5,000,000 from cache ($1) and writes
+///   250,000 to the 1-hour cache ($2);
+/// - so planning is $7 and 6,250,000 tokens, code review $2 and 100,000,
+///   and the untraced $1 and 800 tokens are unattributed.
+fn stage_run(f: &Fixture) -> PathBuf {
+    let mut cp = scbench_support::simple("mvvault", "checkpoint_1", 1);
+    cp.inference = Some(Inference {
+        elapsed: 60.0,
+        cost: 10.0,
+        steps: 3,
+        input: 1_000_500,
+        output: 100_300,
+        cache_read: 5_000_000,
+        cache_write: 250_000,
+    });
+    let unit = |arm, group, image| UnitSpec {
+        arm,
+        group: Some(group),
+        image,
+        seed: Some(1),
+        finished: true,
+        checkpoints: vec![cp.clone()],
+        lane: None,
+        interrupted: None,
+    };
+    let run = f.write_run(
+        "stages",
+        true,
+        &RecordPins::default(),
+        &[
+            unit("full-lane", "rdm", "rdm"),
+            unit("just-solve", "control", "stock"),
+        ],
+    );
+    let model = "claude-test-1";
+    let main = [
+        json!({ "type": "user", "message": { "role": "user", "content": "go" } }).to_string(),
+        scbench_support::assistant_line(
+            "msg-1",
+            model,
+            TraceUsage {
+                input: 1_000_000,
+                ..TraceUsage::default()
+            },
+            &[(
+                "toolu-plan",
+                "Agent",
+                json!({ "description": "Plan", "subagent_type": "rdm:rdm-effort-medium",
+                        "prompt": "You are the PLANNER. Record it with rdm plan create." }),
+            )],
+        ),
+        scbench_support::assistant_line(
+            "msg-2",
+            model,
+            TraceUsage {
+                output: 100_000,
+                ..TraceUsage::default()
+            },
+            &[(
+                "toolu-review",
+                "Workflow",
+                json!({ "name": "rdm:rdm-wf-review-refute-fix" }),
+            )],
+        ),
+    ]
+    .join("\n");
+    let planner = scbench_support::assistant_line(
+        "msg-3",
+        model,
+        TraceUsage {
+            cache_read: 5_000_000,
+            write_1h: 250_000,
+            ..TraceUsage::default()
+        },
+        &[],
+    );
+    for arm in ["full-lane", "just-solve"] {
+        scbench_support::write_trace(
+            &run.join(arm).join("seed-1/output"),
+            "mvvault",
+            "checkpoint_1",
+            "session-1",
+            &[
+                TraceFile {
+                    path: None,
+                    text: main.clone() + "\n",
+                },
+                TraceFile {
+                    path: Some("subagents/agent-a1.jsonl"),
+                    text: planner.clone() + "\n",
+                },
+                TraceFile {
+                    path: Some("subagents/agent-a1.meta.json"),
+                    text: json!({ "agentType": "rdm:rdm-effort-medium", "description": "Plan",
+                                  "toolUseId": "toolu-plan" })
+                    .to_string(),
+                },
+            ],
+        );
+    }
+    let model_file = f.root.join("models/test.yaml");
+    scbench_support::write_model_file(&model_file);
+    set_model_file(&run, Some(&model_file));
+    run
+}
+
+#[test]
+fn rdm_arm_cost_is_split_by_lane_stage_with_the_rest_unattributed() {
+    let f = Fixture::new();
+    let run = stage_run(&f);
+    let r = report_json(&run, &[]);
+    let fl = arm(&r, "full-lane");
+    let stages = &fl["stage_costs"];
+    for (stage, cost, tokens) in [
+        ("planning", 7.0, 6_250_000.0),
+        ("plan_review", 0.0, 0.0),
+        ("implementation", 0.0, 0.0),
+        ("verification", 0.0, 0.0),
+        ("code_review", 2.0, 100_000.0),
+        ("triage", 0.0, 0.0),
+        ("other", 0.0, 0.0),
+        ("unattributed", 1.0, 800.0),
+    ] {
+        let s = &stages[stage];
+        assert_eq!(
+            one(&s["cost_usd_per_checkpoint"]),
+            Some(cost),
+            "{stage}: {s}"
+        );
+        assert_eq!(
+            one(&s["tokens_per_checkpoint"]),
+            Some(tokens),
+            "{stage}: {s}"
+        );
+        let c = &fl["checkpoints"][0]["stages"][stage];
+        assert_eq!(one(&c["cost_usd"]), Some(cost), "{stage}: {c}");
+        assert_eq!(one(&c["tokens"]), Some(tokens), "{stage}: {c}");
+    }
+    let js = arm(&r, "just-solve");
+    assert_eq!(js["stage_costs"], Value::Null);
+    assert_eq!(js["checkpoints"][0]["stages"], json!({}));
+
+    let md = ok(&report(&run, &[]));
+    assert!(
+        md.contains("## Cost by lane stage\n\n### full-lane\n"),
+        "{md}"
+    );
+    assert!(md.contains("| planning | 7 | 6250000 | 70% |"), "{md}");
+    assert!(md.contains("| unattributed | 1 | 800 | 10% |"), "{md}");
+    assert!(!md.contains("No model file is recorded"), "{md}");
+
+    // Without a model file the tokens still split, but no stage has dollars.
+    set_model_file(&run, None);
+    let r = report_json(&run, &[]);
+    let stages = &arm(&r, "full-lane")["stage_costs"];
+    assert_eq!(stages["planning"]["cost_usd_per_checkpoint"], Value::Null);
+    assert_eq!(
+        stages["unattributed"]["cost_usd_per_checkpoint"],
+        Value::Null
+    );
+    assert_eq!(
+        one(&stages["planning"]["tokens_per_checkpoint"]),
+        Some(6_250_000.0)
+    );
+    assert!(ok(&report(&run, &[])).contains("No model file is recorded"));
 }

@@ -272,7 +272,8 @@ verify = "{STAND_IN_VERIFY}"
                 ("bench/scbench/manifest.toml", &manifest_text),
                 (
                     "bench/scbench/models/opus-5.5.yaml",
-                    "internal_name: stand-in\n",
+                    "internal_name: stand-in\npricing:\n  input: 4\n  output: 20\n  \
+                     cache_read: 0.2\n  cache_write: 5\n",
                 ),
                 ("bench/scbench/agent/Dockerfile", "FROM scratch\n"),
                 ("bench/scbench/agent/docker.j2", &template),

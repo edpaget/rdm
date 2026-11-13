@@ -55,7 +55,9 @@
 //! `scbench report` ([`report`]) aggregates a run's SCBench outputs
 //! ([`outputs`]) per arm with seed-bootstrap confidence intervals
 //! ([`stats`]), sets every rdm arm against every control arm, and saves or
-//! compares a baseline ([`baseline`]). It makes no call at all.
+//! compares a baseline ([`baseline`]). It prices quality lift against a
+//! baseline arm and splits each rdm arm's cost by lane stage from the
+//! checkpoints' Claude traces ([`stages`]). It makes no call at all.
 //!
 //! `scbench image build` (slow: a release build of rdm plus SCBench's base
 //! image) builds the payload image from the rdm checkout under test, then has
@@ -75,6 +77,7 @@ pub mod plan;
 pub mod rdm_image;
 pub mod redact;
 pub mod report;
+pub mod stages;
 pub mod stats;
 
 use std::collections::BTreeMap;

@@ -389,6 +389,7 @@ mod tests {
             metrics: Vec::new(),
             arms: Vec::new(),
             comparisons: Vec::new(),
+            cost_per_lift: None,
             skipped_runs: Vec::new(),
             baseline: None,
         }

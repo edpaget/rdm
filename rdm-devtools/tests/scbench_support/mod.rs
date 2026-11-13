@@ -7,6 +7,10 @@
 //! `SymbolMetrics`). They are built from SCBench's source, not
 //! captured from a run, so only a live run confirms SCBench writes exactly
 //! these.
+//!
+//! Beside them: the unit's run-level `checkpoint_results.jsonl` rows, an
+//! SCBench model file, and a checkpoint's Claude trace tree under
+//! `agent/workspace/projects/` (the shapes of a real run's traces).
 
 #![allow(dead_code)]
 
@@ -349,4 +353,129 @@ pub fn write_test_results(
     eval["total_counts"] = Value::Object(total);
     std::fs::write(&path, serde_json::to_string_pretty(&eval).expect("json"))
         .expect("write evaluation.json");
+}
+
+/// One `checkpoint_results.jsonl` row's scb-check composites; `None` leaves
+/// the field out.
+#[derive(Clone, Copy)]
+pub struct ScbRow {
+    pub problem: &'static str,
+    pub checkpoint: &'static str,
+    pub erosion: Option<f64>,
+    pub verbosity: Option<f64>,
+    pub cloned_pct: Option<f64>,
+}
+
+/// Writes the unit's `<run_dir>/checkpoint_results.jsonl`, each row with the
+/// other fields SCBench writes beside the composites.
+pub fn write_checkpoint_results(run_dir: &Path, rows: &[ScbRow]) {
+    let text: String = rows
+        .iter()
+        .map(|r| {
+            let mut v = json!({
+                "problem": r.problem, "version": 1, "checkpoint": r.checkpoint,
+                "path": run_dir.join(r.problem), "state": "ran", "strict_pass_rate": 1.0,
+            });
+            for (k, x) in [
+                ("erosion", r.erosion),
+                ("verbosity", r.verbosity),
+                ("cloned_pct", r.cloned_pct),
+            ] {
+                if let Some(x) = x {
+                    v[k] = json!(x);
+                }
+            }
+            serde_json::to_string(&v).expect("json") + "\n"
+        })
+        .collect();
+    std::fs::create_dir_all(run_dir).expect("mkdir");
+    std::fs::write(run_dir.join("checkpoint_results.jsonl"), text).expect("results");
+}
+
+/// Writes an SCBench model file for `claude-test-1` at `path`, priced input
+/// 4, output 20, cache read 0.2 and 5-minute cache write 5 USD/MTok.
+pub fn write_model_file(path: &Path) {
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(
+        path,
+        "internal_name: claude-test-1\nprovider: anthropic\nthinking_style: effort\n\
+         aliases:\n  - claude-test-1\n  - test-1\npricing:\n  input: 4\n  output: 20\n  \
+         cache_read: 0.20\n  cache_write: 5.00\nagent_specific:\n  claude_code:\n    \
+         endpoint: anthropic\n",
+    )
+    .expect("model file");
+}
+
+/// One message's usage: input, output, cache read, 5-minute and 1-hour
+/// cache writes.
+#[derive(Clone, Copy, Default)]
+pub struct TraceUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub write_5m: u64,
+    pub write_1h: u64,
+}
+
+/// One trace-file `assistant` line of message `id` by `model` with `usage`
+/// and the `tool_use` blocks `(id, name, input)`.
+pub fn assistant_line(
+    id: &str,
+    model: &str,
+    usage: TraceUsage,
+    tools: &[(&str, &str, Value)],
+) -> String {
+    let mut content = vec![json!({ "type": "text", "text": "working" })];
+    content.extend(tools.iter().map(
+        |(id, name, input)| json!({ "type": "tool_use", "id": id, "name": name, "input": input }),
+    ));
+    json!({
+        "parentUuid": null, "isSidechain": false, "type": "assistant",
+        "uuid": format!("u-{id}"), "timestamp": "2026-01-01T00:00:00Z",
+        "message": {
+            "model": model, "id": id, "type": "message", "role": "assistant",
+            "content": content, "stop_reason": "tool_use",
+            "usage": {
+                "input_tokens": usage.input,
+                "output_tokens": usage.output,
+                "cache_read_input_tokens": usage.cache_read,
+                "cache_creation_input_tokens": usage.write_5m + usage.write_1h,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": usage.write_5m,
+                    "ephemeral_1h_input_tokens": usage.write_1h,
+                },
+                "service_tier": "standard",
+            },
+        },
+    })
+    .to_string()
+}
+
+/// One trace file of a checkpoint: its path under the session (`None` for
+/// the main transcript `<session>.jsonl`, else relative to `<session>/`)
+/// and its text.
+pub struct TraceFile {
+    pub path: Option<&'static str>,
+    pub text: String,
+}
+
+/// Writes a checkpoint's Claude trace tree: session `session` of project
+/// `-workspace` under `<checkpoint>/agent/workspace/projects/`.
+pub fn write_trace(
+    run_dir: &Path,
+    problem: &str,
+    checkpoint: &str,
+    session: &str,
+    files: &[TraceFile],
+) {
+    let project =
+        checkpoint_dir(run_dir, problem, checkpoint).join("agent/workspace/projects/-workspace");
+    for f in files {
+        let path = match f.path {
+            None => project.join(format!("{session}.jsonl")),
+            Some(rel) => project.join(session).join(rel),
+        };
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, &f.text).expect("trace file");
+    }
 }

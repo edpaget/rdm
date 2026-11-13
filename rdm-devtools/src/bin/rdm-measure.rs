@@ -27,7 +27,7 @@
 //!                            [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
 //!                            [--stop-grace-secs N] [--baseline NAME] [--dry-run]
 //! rdm-measure scbench report --run DIR [--baseline NAME] [--save-baseline NAME]
-//!                            [--format markdown|json]
+//!                            [--lift-against ARM] [--format markdown|json]
 //! rdm-measure scbench image build [--manifest PATH] [--cache-dir DIR]
 //!                                 [--docker-bin PATH] [--uv-bin PATH]
 //! rdm-measure scbench image check [--manifest PATH] [--cache-dir DIR]
@@ -206,6 +206,11 @@ struct ScbenchReportArgs {
     /// already exists.
     #[arg(long, value_name = "NAME", value_parser = flag_value)]
     save_baseline: Option<String>,
+    /// Price every arm's quality lift against arm ARM of this same run
+    /// (default just-solve, skipped when the run has none). Unlike
+    /// --baseline, which compares with a saved run file, this names an arm.
+    #[arg(long, value_name = "ARM", value_parser = flag_value)]
+    lift_against: Option<String>,
     /// What to print (both are always written).
     #[arg(long, value_enum, default_value = "markdown")]
     format: MarkdownOrJson,
@@ -768,6 +773,7 @@ fn scbench_report_cmd(a: &ScbenchReportArgs) -> Result<ExitCode, String> {
         run: PathBuf::from(&a.run),
         baseline: a.baseline.clone(),
         save_baseline: a.save_baseline.clone(),
+        lift_against: a.lift_against.clone(),
         format: match a.format {
             MarkdownOrJson::Markdown => scbench::report::Format::Markdown,
             MarkdownOrJson::Json => scbench::report::Format::Json,

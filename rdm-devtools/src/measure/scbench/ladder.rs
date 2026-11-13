@@ -250,6 +250,7 @@ pub fn run(
             run: out.clone(),
             baseline: opts.baseline.clone(),
             save_baseline: None,
+            lift_against: None,
             format: Format::Markdown,
         },
         stdout,

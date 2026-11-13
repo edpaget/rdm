@@ -18,6 +18,13 @@
 //! `snapshot`), which include the tests and keep their schema-1 keys so an
 //! old report stays comparable. The hidden `Regression` tests are reported
 //! beside them ([`outputs::regressions`]).
+//!
+//! Schema 3 adds what each arm's quality costs: every arm's lift over a
+//! baseline arm (`--lift-against`, default [`DEFAULT_LIFT_AGAINST`]) on each
+//! of [`LIFT_MEASURES`], its extra cost per checkpoint, and the price of a
+//! unit of lift where the lift's interval excludes 0 ([`CostPerLift`]); and,
+//! for the rdm arms, each checkpoint's cost split by lane stage
+//! ([`super::stages`]).
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -31,6 +38,7 @@ use super::lane::{Outcome, Reason};
 use super::manifest::{self, ArmGroup, ArmImage};
 use super::outputs::{self, EROSION, PassPolicy, ProblemOutput};
 use super::plan::RECORD_FILE;
+use super::stages::{Pricing, Stage};
 use super::stats;
 
 /// The report JSON's file name, beside the run record.
@@ -38,7 +46,20 @@ pub const REPORT_JSON: &str = "rdm-scbench-report.json";
 /// The rendered markdown report's file name, beside the run record.
 pub const REPORT_MD: &str = "rdm-scbench-report.md";
 /// The report JSON's schema version.
-pub const REPORT_SCHEMA: u32 = 2;
+pub const REPORT_SCHEMA: u32 = 3;
+/// The arm lift is priced against when `--lift-against` is not given.
+pub const DEFAULT_LIFT_AGAINST: &str = "just-solve";
+/// The summary metrics lift is priced on, in report order.
+pub const LIFT_MEASURES: [&str; 8] = [
+    PASS_RATE,
+    "app_cc_mean_final",
+    "app_cc_high_count_final",
+    "app_max_nesting_depth_final",
+    "app_lint_per_loc_final",
+    "scb_erosion_final",
+    "scb_cloned_pct_final",
+    "scb_verbosity_final",
+];
 
 /// What `scbench report` prints to stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +79,9 @@ pub struct ReportOptions {
     pub baseline: Option<String>,
     /// Save the run as this baseline (`--save-baseline`).
     pub save_baseline: Option<String>,
+    /// The arm to price lift against (`--lift-against`); `None` is
+    /// [`DEFAULT_LIFT_AGAINST`], which a run may lack.
+    pub lift_against: Option<String>,
     /// What to print.
     pub format: Format,
 }
@@ -221,6 +245,96 @@ pub struct CheckpointReport {
     /// Regressions open after this checkpoint.
     #[serde(default)]
     pub regressions_open: Option<Stat>,
+    /// Its cost and tokens per lane stage ([`Stage`] key); rdm arms only,
+    /// empty otherwise.
+    #[serde(default)]
+    pub stages: BTreeMap<String, StageCheckpoint>,
+}
+
+/// One lane stage at one checkpoint, over an arm's seeds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StageCheckpoint {
+    /// Its dollars; `null` without a model file.
+    pub cost_usd: Option<Stat>,
+    /// Its tokens, every class summed.
+    pub tokens: Option<Stat>,
+}
+
+/// One lane stage over an arm's seeds: per seed, the stage's sum over the
+/// checkpoints with an inference record divided by their number.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StageFigures {
+    /// Dollars per checkpoint; `null` without a model file.
+    pub cost_usd_per_checkpoint: Option<Stat>,
+    /// Tokens per checkpoint, every class summed.
+    pub tokens_per_checkpoint: Option<Stat>,
+}
+
+/// Why a lift is or is not priced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceStatus {
+    /// Either side lacks the measure or the cost.
+    NoData,
+    /// Fewer than two seeds on either side: no interval, so lift cannot be
+    /// told from noise.
+    NoInterval,
+    /// The lift's interval contains 0.
+    IncludesZero,
+    /// The lift's interval lies below 0: the arm is worse.
+    Worse,
+    /// The lift excludes 0 and the arm costs no more than the baseline.
+    NoExtraCost,
+    /// Priced: extra cost per checkpoint over lift.
+    Priced,
+}
+
+/// The price of one arm's lift on one measure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiftPrice {
+    /// Whether and why not it is priced.
+    pub status: PriceStatus,
+    /// USD per checkpoint per unit of the measure, when `priced`; it has no
+    /// interval.
+    pub usd_per_unit: Option<f64>,
+}
+
+/// One arm's lift on one measure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiftMeasure {
+    /// The measure's better direction.
+    pub better: Option<String>,
+    /// The measure's scope ([`MetricInfo::scope`]).
+    pub scope: Option<String>,
+    /// `arm − baseline`, oriented so a positive lift is better; `null` when
+    /// either side has no value.
+    pub lift: Option<Delta>,
+    /// Its price.
+    pub price: LiftPrice,
+}
+
+/// One arm against the lift baseline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiftArm {
+    /// The arm.
+    pub arm: String,
+    /// Its group.
+    pub group: ArmGroup,
+    /// `cost_per_checkpoint_usd` of the arm minus the baseline's, unoriented.
+    pub extra_cost_per_checkpoint: Option<Delta>,
+    /// Each of [`CostPerLift::measures`].
+    pub measures: BTreeMap<String, LiftMeasure>,
+}
+
+/// Every arm's quality lift over one baseline arm, and its price.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostPerLift {
+    /// The baseline arm.
+    pub against: String,
+    /// The measures, in order ([`LIFT_MEASURES`]).
+    pub measures: Vec<String>,
+    /// Every other arm, in arm order.
+    pub arms: Vec<LiftArm>,
 }
 
 /// One arm's figures.
@@ -242,6 +356,10 @@ pub struct ArmReport {
     pub lane_failure_reasons: Option<BTreeMap<String, u64>>,
     /// Every checkpoint, problem by problem, in `(order, name)` order.
     pub checkpoints: Vec<CheckpointReport>,
+    /// Cost and tokens per checkpoint by lane stage ([`Stage`] key); `null`
+    /// for a control arm and for an arm with no inference record.
+    #[serde(default)]
+    pub stage_costs: Option<BTreeMap<String, StageFigures>>,
 }
 
 /// One rdm arm against one control arm.
@@ -295,6 +413,10 @@ pub struct Report {
     pub arms: Vec<ArmReport>,
     /// Every rdm arm against every control arm, in arm order.
     pub comparisons: Vec<Comparison>,
+    /// Every arm's lift over the lift baseline arm and its price; `null`
+    /// when the run has no [`DEFAULT_LIFT_AGAINST`] arm and none was named.
+    #[serde(default)]
+    pub cost_per_lift: Option<CostPerLift>,
     /// Units left out of every figure.
     pub skipped_runs: Vec<Skipped>,
     /// The comparison with `--baseline`, when given.
@@ -312,7 +434,15 @@ pub(super) struct RecordView {
     rdm: ShaView,
     pub(super) observed: ObservedView,
     problems_filter: Option<Vec<String>>,
+    model_file: Option<ModelFileView>,
     arms: Vec<ArmView>,
+}
+
+/// The record's copied model file (`exec::ModelFileRecord`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ModelFileView {
+    source: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -412,8 +542,13 @@ const TESTS: &str = "tests";
 const SNAPSHOT: &str = "snapshot";
 /// The test-set measures beside the erosion metrics.
 const TESTS_EXTRA: [&str; 2] = ["file_count", "code_ratio"];
-const USAGE: [&str; 9] = [
+/// SCBench's scb-check composites ([`outputs::ScbCheck`]), reported as
+/// `scb_<name>_{final,change}`.
+const SCB_CHECK: [&str; 3] = ["erosion", "verbosity", "cloned_pct"];
+const COST_PER_CHECKPOINT: &str = "cost_per_checkpoint_usd";
+const USAGE: [&str; 10] = [
     "cost_usd",
+    COST_PER_CHECKPOINT,
     "tokens_input",
     "tokens_output",
     "tokens_cache_read",
@@ -462,6 +597,15 @@ fn metric_infos() -> Vec<MetricInfo> {
             out.push(info(
                 format!("{e}_{suffix}"),
                 erosion_better(e),
+                Some(SNAPSHOT),
+            ));
+        }
+    }
+    for suffix in ["final", "change"] {
+        for s in SCB_CHECK {
+            out.push(info(
+                format!("scb_{s}_{suffix}"),
+                Some("lower"),
                 Some(SNAPSHOT),
             ));
         }
@@ -578,6 +722,11 @@ fn unit_values(unit: &Unit, expected: Option<&BTreeMap<String, u64>>) -> BTreeMa
         put(format!("{e}_final"), &finals);
         put(format!("{e}_change"), &changes);
     }
+    for s in SCB_CHECK {
+        let (finals, changes) = finals_and_changes(unit, &|c| c.scb_check?.get(s));
+        put(format!("scb_{s}_final"), &finals);
+        put(format!("scb_{s}_change"), &changes);
+    }
     let inferences: Vec<_> = unit
         .problems
         .iter()
@@ -593,6 +742,11 @@ fn unit_values(unit: &Unit, expected: Option<&BTreeMap<String, u64>>) -> BTreeMa
             ("tokens_cache_write", sum(&|i| i.tokens_cache_write)),
         ];
         v.insert("cost_usd".to_owned(), sum(&|i| i.cost));
+        #[allow(clippy::cast_precision_loss)]
+        v.insert(
+            COST_PER_CHECKPOINT.to_owned(),
+            sum(&|i| i.cost) / inferences.len() as f64,
+        );
         v.insert("steps".to_owned(), sum(&|i| i.steps));
         v.insert("wall_clock_seconds".to_owned(), sum(&|i| i.elapsed));
         v.insert(
@@ -660,6 +814,12 @@ const SCALAR_FIELDS: [&str; 4] = [
 /// One checkpoint's erosion metrics.
 type Erosion = BTreeMap<&'static str, f64>;
 
+/// The [`CheckpointValues`] key of stage `s`'s `what` (`cost_usd` or
+/// `tokens`).
+fn stage_value_key(s: Stage, what: &str) -> String {
+    format!("stage.{}.{what}", s.as_str())
+}
+
 /// Every erosion metric `q` has.
 fn erosion_of(q: Option<&outputs::Quality>) -> Erosion {
     EROSION
@@ -708,6 +868,15 @@ fn checkpoint_values(problem: &ProblemOutput) -> Vec<(String, i64, CheckpointVal
         if let Some(Some(step)) = track.steps.get(i) {
             v.insert("regressions_new".to_owned(), step.new as f64);
             v.insert("regressions_open".to_owned(), step.open as f64);
+        }
+        if let Some(b) = &c.stages {
+            for s in Stage::ALL {
+                let u = b.get(s);
+                if let Some(cost) = u.cost_usd {
+                    v.insert(stage_value_key(s, "cost_usd"), cost);
+                }
+                v.insert(stage_value_key(s, "tokens"), u.tokens.total());
+            }
         }
         out.push((
             c.name.clone(),
@@ -786,6 +955,26 @@ fn arm_checkpoints(arm: &ArmUnits, subset: &[String]) -> Vec<CheckpointReport> {
                 regressions_new,
                 regressions_open,
             ] = SCALAR_FIELDS.map(|f| of(f, f));
+            let stages = if arm.group == ArmGroup::Rdm {
+                Stage::ALL
+                    .iter()
+                    .map(|&s| {
+                        let [cost, tokens] = ["cost_usd", "tokens"].map(|what| {
+                            let k = stage_value_key(s, what);
+                            of(&k, &k)
+                        });
+                        (
+                            s.as_str().to_owned(),
+                            StageCheckpoint {
+                                cost_usd: cost,
+                                tokens,
+                            },
+                        )
+                    })
+                    .collect()
+            } else {
+                BTreeMap::new()
+            };
             let mut take = |field: &str| maps.remove(field).unwrap_or_default();
             out.push(CheckpointReport {
                 problem: problem.clone(),
@@ -801,10 +990,173 @@ fn arm_checkpoints(arm: &ArmUnits, subset: &[String]) -> Vec<CheckpointReport> {
                 regression_total,
                 regressions_new,
                 regressions_open,
+                stages,
             });
         }
     }
     out
+}
+
+/// One stage's (dollars, tokens) per checkpoint; dollars are `None` without
+/// a model file.
+type StageValue = (Option<f64>, f64);
+
+/// Per stage, one unit's [`StageValue`] over its checkpoints with an
+/// inference record; `None` when it has none.
+#[allow(clippy::cast_precision_loss)]
+fn unit_stage_values(unit: &Unit) -> Option<BTreeMap<Stage, StageValue>> {
+    let breakdowns: Vec<_> = unit
+        .problems
+        .iter()
+        .flat_map(|p| &p.checkpoints)
+        .filter_map(|c| c.stages.as_ref())
+        .collect();
+    if breakdowns.is_empty() {
+        return None;
+    }
+    let n = breakdowns.len() as f64;
+    Some(
+        Stage::ALL
+            .iter()
+            .map(|&s| {
+                let cost: Option<f64> = breakdowns.iter().map(|b| b.get(s).cost_usd).sum();
+                let tokens: f64 = breakdowns.iter().map(|b| b.get(s).tokens.total()).sum();
+                (s, (cost.map(|c| c / n), tokens / n))
+            })
+            .collect(),
+    )
+}
+
+/// An rdm arm's [`ArmReport::stage_costs`]; `None` when no unit has an
+/// inference record.
+fn arm_stage_costs(arm: &ArmUnits) -> Option<BTreeMap<String, StageFigures>> {
+    let units: Vec<_> = arm
+        .units
+        .iter()
+        .filter_map(|u| Some((u.seed, unit_stage_values(u)?)))
+        .collect();
+    if units.is_empty() {
+        return None;
+    }
+    Some(
+        Stage::ALL
+            .iter()
+            .map(|&s| {
+                let samples = |pick: &dyn Fn(&StageValue) -> Option<f64>| -> Vec<Sample> {
+                    units
+                        .iter()
+                        .filter_map(|(seed, v)| {
+                            Some(Sample {
+                                seed: *seed,
+                                value: pick(v.get(&s)?)?,
+                            })
+                        })
+                        .collect()
+                };
+                let key = |what: &str| format!("stage/{}/{}/{what}", arm.name, s.as_str());
+                (
+                    s.as_str().to_owned(),
+                    StageFigures {
+                        cost_usd_per_checkpoint: stat(&key("cost_usd"), samples(&|v| v.0)),
+                        tokens_per_checkpoint: stat(&key("tokens"), samples(&|v| Some(v.1))),
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+/// `d` turned so a positive estimate is better: negated when `better` is
+/// `lower`.
+fn oriented(d: Delta, better: Option<&str>) -> Delta {
+    if better != Some("lower") {
+        return d;
+    }
+    // `+ 0.0` keeps a negated 0 from printing as -0.
+    let neg = |x: f64| -x + 0.0;
+    Delta {
+        estimate: neg(d.estimate),
+        ci_low: d.ci_high.map(neg),
+        ci_high: d.ci_low.map(neg),
+        ..d
+    }
+}
+
+/// The price of `lift` bought at `extra` cost per checkpoint.
+fn price(lift: Option<&Delta>, extra: Option<&Delta>) -> LiftPrice {
+    let withheld = |status| LiftPrice {
+        status,
+        usd_per_unit: None,
+    };
+    let (Some(lift), Some(extra)) = (lift, extra) else {
+        return withheld(PriceStatus::NoData);
+    };
+    let (Some(_), Some(hi)) = (lift.ci_low, lift.ci_high) else {
+        return withheld(PriceStatus::NoInterval);
+    };
+    if !lift.excludes_zero {
+        withheld(PriceStatus::IncludesZero)
+    } else if hi < 0.0 {
+        withheld(PriceStatus::Worse)
+    } else if extra.estimate <= 0.0 {
+        withheld(PriceStatus::NoExtraCost)
+    } else {
+        LiftPrice {
+            status: PriceStatus::Priced,
+            usd_per_unit: Some(extra.estimate / lift.estimate),
+        }
+    }
+}
+
+/// Every arm but `against` set against it on [`LIFT_MEASURES`].
+fn cost_per_lift(reports: &[ArmReport], infos: &[MetricInfo], against: &str) -> CostPerLift {
+    let base = reports.iter().find(|a| a.name == against);
+    let base_stat = |key: &str| base.and_then(|b| summary_of(b, key));
+    let arms = reports
+        .iter()
+        .filter(|a| a.name != against)
+        .map(|a| {
+            let extra = delta(
+                &format!("lift/{}/{against}/{COST_PER_CHECKPOINT}", a.name),
+                summary_of(a, COST_PER_CHECKPOINT),
+                base_stat(COST_PER_CHECKPOINT),
+            );
+            let measures = LIFT_MEASURES
+                .iter()
+                .map(|&m| {
+                    let info = infos.iter().find(|i| i.key == m);
+                    let better = info.and_then(|i| i.better.clone());
+                    let lift = delta(
+                        &format!("lift/{}/{against}/{m}", a.name),
+                        summary_of(a, m),
+                        base_stat(m),
+                    )
+                    .map(|d| oriented(d, better.as_deref()));
+                    let price = price(lift.as_ref(), extra.as_ref());
+                    (
+                        m.to_owned(),
+                        LiftMeasure {
+                            better,
+                            scope: info.and_then(|i| i.scope.clone()),
+                            lift,
+                            price,
+                        },
+                    )
+                })
+                .collect();
+            LiftArm {
+                arm: a.name.clone(),
+                group: a.group,
+                extra_cost_per_checkpoint: extra,
+                measures,
+            }
+        })
+        .collect();
+    CostPerLift {
+        against: against.to_owned(),
+        measures: LIFT_MEASURES.iter().map(|&m| m.to_owned()).collect(),
+        arms,
+    }
 }
 
 /// Reads the run record at `<run>/rdm-scbench-run.json`.
@@ -820,13 +1172,20 @@ pub(super) fn read_record(run: &Path) -> Result<RecordView, String> {
         .map_err(|e| format!("--run: cannot parse the run record {}: {e}", path.display()))
 }
 
-/// Builds the report of the run at `run` from its record.
+/// Builds the report of the run at `run` from its record, pricing lift
+/// against arm `lift_against` (`None`: [`DEFAULT_LIFT_AGAINST`] when the run
+/// has it).
 ///
 /// # Errors
 ///
-/// When the record names no or an unknown pass policy, or a unit's SCBench
-/// output cannot be read ([`outputs::read_unit`]).
-pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
+/// When the record names no or an unknown pass policy, its model file exists
+/// but does not parse, a unit's SCBench output cannot be read
+/// ([`outputs::read_unit`]), or `lift_against` names no reported arm.
+pub(super) fn build(
+    run: &Path,
+    record: &RecordView,
+    lift_against: Option<&str>,
+) -> Result<Report, String> {
     let m = &record.manifest;
     let policy_name = m.agent.pass_policy.clone().ok_or_else(|| {
         format!(
@@ -837,6 +1196,10 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
     let policy =
         PassPolicy::parse(&policy_name).map_err(|e| format!("manifest.agent.pass_policy: {e}"))?;
     let schema2 = record.schema.is_some_and(|s| s >= 2);
+    let pricing = match record.model_file.as_ref().and_then(|f| f.source.as_ref()) {
+        Some(source) => Pricing::read(source)?,
+        None => None,
+    };
     let mut arms: Vec<ArmUnits> = Vec::new();
     let mut skipped = Vec::new();
     for a in &record.arms {
@@ -863,7 +1226,8 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
             });
             continue;
         }
-        let problems = outputs::read_unit(&a.run_dir, &m.problems.subset, policy)?;
+        let problems =
+            outputs::read_unit(&a.run_dir, &m.problems.subset, policy, pricing.as_ref())?;
         let idx = arms
             .iter()
             .position(|x| x.name == a.name)
@@ -931,8 +1295,34 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
             summary,
             lane_failure_reasons,
             checkpoints: arm_checkpoints(arm, &m.problems.subset),
+            stage_costs: if arm.group == ArmGroup::Rdm {
+                arm_stage_costs(arm)
+            } else {
+                None
+            },
         });
     }
+
+    let cost_per_lift = match lift_against {
+        Some(against) if reports.iter().any(|a| a.name == against) => {
+            Some(cost_per_lift(&reports, &infos, against))
+        }
+        Some(against) => {
+            let names: Vec<&str> = reports.iter().map(|a| a.name.as_str()).collect();
+            return Err(format!(
+                "--lift-against: no finished arm {against} in this run (arms: {})",
+                if names.is_empty() {
+                    "none".to_owned()
+                } else {
+                    names.join(", ")
+                }
+            ));
+        }
+        None => reports
+            .iter()
+            .any(|a| a.name == DEFAULT_LIFT_AGAINST)
+            .then(|| cost_per_lift(&reports, &infos, DEFAULT_LIFT_AGAINST)),
+    };
 
     let mut comparisons = Vec::new();
     for r in reports.iter().filter(|a| a.group == ArmGroup::Rdm) {
@@ -981,6 +1371,7 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
         metrics: infos,
         arms: reports,
         comparisons,
+        cost_per_lift,
         skipped_runs: skipped,
         baseline: None,
     })
@@ -1052,6 +1443,137 @@ fn strings(xs: &[&str]) -> Vec<String> {
     xs.iter().map(|&x| x.to_owned()).collect()
 }
 
+/// A withheld or given price, in words.
+fn price_cell(p: &LiftPrice, against: &str) -> String {
+    match (p.status, p.usd_per_unit) {
+        (PriceStatus::Priced, Some(usd)) => format!("${} per unit", num(usd)),
+        (PriceStatus::Priced | PriceStatus::NoData, _) => "no data, not priced".to_owned(),
+        (PriceStatus::NoInterval, _) => "fewer than 2 seeds, not priced".to_owned(),
+        (PriceStatus::IncludesZero, _) => "interval includes 0, not priced".to_owned(),
+        (PriceStatus::Worse, _) => format!("worse than {against}, not priced"),
+        (PriceStatus::NoExtraCost, _) => "lift at no extra cost".to_owned(),
+    }
+}
+
+/// The `## Cost per lift` section: one table per measure.
+fn render_cost_per_lift(out: &mut String, report: &Report) {
+    let Some(c) = &report.cost_per_lift else {
+        out.push_str("## Cost per lift\n\n");
+        out.push_str(&format!(
+            "This run has no `{DEFAULT_LIFT_AGAINST}` arm to price lift against; pass \
+             `--lift-against ARM` to name another.\n\n"
+        ));
+        return;
+    };
+    out.push_str(&format!("## Cost per lift against {}\n\n", c.against));
+    if c.arms.is_empty() {
+        out.push_str("No other arm in this run.\n\n");
+        return;
+    }
+    for m in &c.measures {
+        let label = report
+            .metrics
+            .iter()
+            .find(|i| &i.key == m)
+            .map_or_else(|| m.clone(), MetricInfo::label);
+        out.push_str(&format!("### {label}\n\n"));
+        let rows: Vec<Vec<String>> = c
+            .arms
+            .iter()
+            .map(|a| {
+                let lm = a.measures.get(m);
+                let lift = lm.and_then(|l| l.lift.as_ref());
+                vec![
+                    a.arm.clone(),
+                    lift.map_or_else(|| "—".to_owned(), |d| format!("{}/{}", d.n_a, d.n_b)),
+                    delta_cell(lift),
+                    delta_cell(a.extra_cost_per_checkpoint.as_ref()),
+                    lm.map_or_else(
+                        || "no data, not priced".to_owned(),
+                        |l| price_cell(&l.price, &c.against),
+                    ),
+                ]
+            })
+            .collect();
+        table(
+            out,
+            &strings(&[
+                "arm",
+                "n (arm/baseline)",
+                "lift [CI]",
+                "extra cost / checkpoint (USD) [CI]",
+                "cost per unit of lift",
+            ]),
+            &rows,
+        );
+    }
+    out.push_str(&format!(
+        "Lift is the arm minus {} on each measure's final per-problem value, turned so \
+         positive is better; pass rate is in units of 1.0 (100 points). Cost per unit is USD \
+         per checkpoint per unit of lift, priced only where the lift's interval excludes 0; \
+         the ratio itself has no interval.\n\n",
+        c.against
+    ));
+}
+
+/// The `## Cost by lane stage` section: one table per rdm arm.
+fn render_stage_costs(out: &mut String, report: &Report) {
+    let arms: Vec<(&ArmReport, &BTreeMap<String, StageFigures>)> = report
+        .arms
+        .iter()
+        .filter_map(|a| Some((a, a.stage_costs.as_ref()?)))
+        .collect();
+    if arms.is_empty() {
+        return;
+    }
+    out.push_str("## Cost by lane stage\n\n");
+    let priced = arms
+        .iter()
+        .flat_map(|(_, s)| s.values())
+        .any(|f| f.cost_usd_per_checkpoint.is_some());
+    if !priced {
+        out.push_str(
+            "No model file is recorded for this run (or it is missing), so stage dollars are \
+             not computed; tokens are still split.\n\n",
+        );
+    }
+    for (a, stages) in arms {
+        out.push_str(&format!("### {}\n\n", a.name));
+        let recorded = summary_of(a, COST_PER_CHECKPOINT).map(|s| s.mean);
+        let rows: Vec<Vec<String>> = Stage::ALL
+            .iter()
+            .map(|s| {
+                let f = stages.get(s.as_str());
+                let cost = f.and_then(|f| f.cost_usd_per_checkpoint.as_ref());
+                let share = match (cost, recorded) {
+                    (Some(c), Some(r)) if r != 0.0 => format!("{}%", num(c.mean / r * 100.0)),
+                    _ => "—".to_owned(),
+                };
+                vec![
+                    s.as_str().to_owned(),
+                    cell(cost),
+                    cell(f.and_then(|f| f.tokens_per_checkpoint.as_ref())),
+                    share,
+                ]
+            })
+            .collect();
+        table(
+            out,
+            &strings(&[
+                "stage",
+                "cost / checkpoint (USD) [CI]",
+                "tokens / checkpoint [CI]",
+                "share of recorded cost",
+            ]),
+            &rows,
+        );
+    }
+    out.push_str(
+        "Stages come from the checkpoints' Claude traces (see `bench/scbench/README.md`); \
+         `unattributed` is the recorded total less every named stage.\n\n",
+    );
+}
+
 /// Renders `report` as markdown.
 pub fn render_markdown(report: &Report) -> String {
     let mut out = String::new();
@@ -1087,6 +1609,7 @@ pub fn render_markdown(report: &Report) -> String {
                 PASS_RATE,
                 REGRESSION_PASS_RATE,
                 "cost_usd",
+                COST_PER_CHECKPOINT,
                 "tokens_total",
                 "wall_clock_seconds",
                 LANE_FAILURES,
@@ -1105,6 +1628,7 @@ pub fn render_markdown(report: &Report) -> String {
             "pass rate",
             "regression pass rate",
             "cost (USD)",
+            "cost / checkpoint (USD)",
             "tokens",
             "wall-clock (s)",
             "lane failures",
@@ -1265,6 +1789,9 @@ pub fn render_markdown(report: &Report) -> String {
         );
     }
 
+    render_cost_per_lift(&mut out, report);
+    render_stage_costs(&mut out, report);
+
     if let Some(b) = &report.baseline {
         baseline::render_markdown(&mut out, b, &report.metrics);
     }
@@ -1314,7 +1841,7 @@ pub fn run(
     }
     let run = std::path::absolute(&opts.run).unwrap_or(opts.run.clone());
     let record = read_record(&run)?;
-    let mut report = build(&run, &record)?;
+    let mut report = build(&run, &record, opts.lift_against.as_deref())?;
     let dir = || baseline::dir(record.manifest_path.as_deref());
     if let Some(name) = &opts.baseline {
         let saved = baseline::load(&dir()?, name)?;
@@ -1400,8 +1927,82 @@ mod tests {
         assert_eq!(get("regressions"), (some("lower"), None));
         assert_eq!(get("regressions_persisting"), (some("lower"), None));
         assert_eq!(get("lane_failures"), (some("lower"), None));
-        // pass rate, regressions, app final+change, tests, snapshot, usage.
-        assert_eq!(infos.len(), 1 + 3 + 16 + 10 + 16 + 9);
+        assert_eq!(
+            get("app_cc_mean_final"),
+            (some("lower"), some("application"))
+        );
+        assert_eq!(
+            get("app_lint_per_loc_final"),
+            (some("lower"), some("application"))
+        );
+        assert_eq!(get("scb_erosion_final"), (some("lower"), some("snapshot")));
+        assert_eq!(
+            get("scb_cloned_pct_change"),
+            (some("lower"), some("snapshot"))
+        );
+        assert_eq!(get("cost_per_checkpoint_usd"), (some("lower"), None));
+        for m in LIFT_MEASURES {
+            assert!(get(m).0.is_some(), "{m}");
+        }
+        // pass rate, regressions, app final+change, tests, snapshot, scb-check
+        // final+change, usage.
+        assert_eq!(infos.len(), 1 + 3 + 20 + 12 + 20 + 6 + 10);
+    }
+
+    fn lift(estimate: f64, ci: Option<(f64, f64)>) -> Delta {
+        Delta {
+            estimate,
+            ci_low: ci.map(|c| c.0),
+            ci_high: ci.map(|c| c.1),
+            n_a: 3,
+            n_b: 3,
+            excludes_zero: ci.is_some_and(|(lo, hi)| lo > 0.0 || hi < 0.0),
+        }
+    }
+
+    #[test]
+    fn a_lower_is_better_delta_is_turned_so_positive_is_better() {
+        let d = oriented(lift(-2.0, Some((-3.0, -1.0))), Some("lower"));
+        assert_eq!(
+            (d.estimate, d.ci_low, d.ci_high),
+            (2.0, Some(1.0), Some(3.0))
+        );
+        assert!(d.excludes_zero);
+        let zero = oriented(lift(0.0, Some((0.0, 0.0))), Some("lower"));
+        assert_eq!(serde_json::to_string(&zero.estimate).expect("json"), "0.0");
+        let higher = oriented(lift(-2.0, Some((-3.0, -1.0))), Some("higher"));
+        assert_eq!(higher.estimate, -2.0);
+    }
+
+    #[test]
+    fn a_price_is_given_only_for_a_lift_that_excludes_zero_at_extra_cost() {
+        let cost = lift(0.5, Some((0.25, 0.75)));
+        let status = |l: Option<Delta>, c: Option<&Delta>| price(l.as_ref(), c).status;
+        assert_eq!(status(None, Some(&cost)), PriceStatus::NoData);
+        assert_eq!(status(Some(lift(1.0, None)), None), PriceStatus::NoData);
+        assert_eq!(
+            status(Some(lift(1.0, None)), Some(&cost)),
+            PriceStatus::NoInterval
+        );
+        assert_eq!(
+            status(Some(lift(0.1, Some((-0.5, 0.7)))), Some(&cost)),
+            PriceStatus::IncludesZero
+        );
+        assert_eq!(
+            status(Some(lift(-1.0, Some((-2.0, -0.5)))), Some(&cost)),
+            PriceStatus::Worse
+        );
+        assert_eq!(
+            status(Some(lift(1.0, Some((0.5, 1.5)))), Some(&lift(-0.5, None))),
+            PriceStatus::NoExtraCost
+        );
+        assert_eq!(
+            price(Some(&lift(2.0, Some((1.0, 3.0)))), Some(&cost)),
+            LiftPrice {
+                status: PriceStatus::Priced,
+                usd_per_unit: Some(0.25),
+            }
+        );
     }
 
     #[test]

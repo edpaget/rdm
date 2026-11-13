@@ -22,6 +22,12 @@
 //! without a stream. Cost and steps stay SCBench's: its `usage.cost` is the
 //! final result's cumulative `total_cost_usd`, and its `usage.steps` counts
 //! every assistant message of every `claude` process in the invocation.
+//!
+//! SCBench's scb-check composites (erosion, verbosity, clone percentage)
+//! score the whole snapshot, tests included, and exist only in the unit's
+//! run-level [`CHECKPOINT_RESULTS_FILE`] ([`ScbCheck`]). A checkpoint with
+//! an inference record also gets its cost split by lane stage from its
+//! Claude traces ([`stages`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -30,6 +36,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use super::lane;
+use super::stages::{self, Breakdown, Pricing};
 
 /// SCBench's `EVALUATION_FILENAME` (`CorrectnessResults`).
 pub const EVALUATION_FILE: &str = "evaluation.json";
@@ -49,14 +56,19 @@ pub const INFERENCE_FILE: &str = "inference_result.json";
 /// checkpoint's `agent` artifacts dir): every line of every `claude` process
 /// the agent binary ran for the checkpoint.
 pub const STREAM_FILE: &str = "agent/stdout.jsonl";
+/// SCBench's run-level per-checkpoint results (one JSON object a line, in
+/// the unit's run directory), carrying the scb-check composites.
+pub const CHECKPOINT_RESULTS_FILE: &str = "checkpoint_results.jsonl";
 
 /// The erosion metrics, in report order.
-pub const EROSION: [&str; 8] = [
+pub const EROSION: [&str; 10] = [
     "cc_max",
+    "cc_mean",
     "cc_high_count",
     "mi_mean",
     "max_nesting_depth",
     "lint_errors",
+    "lint_per_loc",
     "single_use_functions",
     "trivial_wrappers",
     "sloc",
@@ -163,7 +175,8 @@ pub struct Quality {
 
 impl Quality {
     /// Erosion metric `key` (one of [`EROSION`]); `None` for `mi_mean` when
-    /// the snapshot measured no file.
+    /// the snapshot measured no file, for `cc_mean` with no function, and for
+    /// `lint_per_loc` with no line.
     pub fn get(&self, key: &str) -> Option<f64> {
         self.values.get(key).copied()
     }
@@ -175,10 +188,11 @@ impl Quality {
 
     /// The erosion metrics of exactly `files` and `symbols`, by SCBench's
     /// own rules: line, lint, waste counts and MI summed over the files
-    /// (`mi_mean` their mean, absent with no file); `cc_max`,
+    /// (`mi_mean` their mean, absent with no file; `lint_per_loc` lint
+    /// findings per total line, absent with no line); `cc_max`,
     /// `cc_high_count` (complexity above [`HIGH_CC_THRESHOLD`]) and
     /// `max_nesting_depth` over the `function` and `method` symbols, 0 with
-    /// none.
+    /// none, and `cc_mean` their mean complexity, absent with none.
     #[allow(clippy::cast_precision_loss)]
     pub fn from_rows(files: &[&FileRow], symbols: &[&SymbolRow]) -> Self {
         let sum = |f: &dyn Fn(&FileRow) -> f64| files.iter().map(|r| f(r)).sum::<f64>();
@@ -209,6 +223,16 @@ impl Quality {
                 sum(&|r| r.mi.unwrap_or(0.0)) / files.len() as f64,
             );
         }
+        if !functions.is_empty() {
+            values.insert(
+                "cc_mean",
+                functions.iter().map(|s| s.complexity).sum::<f64>() / functions.len() as f64,
+            );
+        }
+        let total_lines = sum(&|r| r.total_lines);
+        if total_lines > 0.0 {
+            values.insert("lint_per_loc", sum(&|r| r.lint_errors) / total_lines);
+        }
         Self {
             values,
             file_count: files.len() as u64,
@@ -224,6 +248,9 @@ pub struct FileRow {
     /// Source lines.
     #[serde(default)]
     pub loc: f64,
+    /// Every line, blank and comment lines included.
+    #[serde(default)]
+    pub total_lines: f64,
     /// Lint findings.
     #[serde(default)]
     pub lint_errors: f64,
@@ -324,6 +351,44 @@ pub struct Inference {
     pub tokens_cache_write: f64,
 }
 
+/// One checkpoint's scb-check composites from [`CHECKPOINT_RESULTS_FILE`]:
+/// whole-snapshot figures, tests included.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+pub struct ScbCheck {
+    /// `erosion`.
+    #[serde(default)]
+    pub erosion: Option<f64>,
+    /// `verbosity`.
+    #[serde(default)]
+    pub verbosity: Option<f64>,
+    /// `cloned_pct`.
+    #[serde(default)]
+    pub cloned_pct: Option<f64>,
+}
+
+impl ScbCheck {
+    /// The composite `key` (`erosion`, `verbosity` or `cloned_pct`).
+    pub fn get(&self, key: &str) -> Option<f64> {
+        match key {
+            "erosion" => self.erosion,
+            "verbosity" => self.verbosity,
+            "cloned_pct" => self.cloned_pct,
+            _ => None,
+        }
+    }
+}
+
+/// One [`CHECKPOINT_RESULTS_FILE`] line; only the fields the report uses.
+#[derive(Deserialize)]
+struct CheckpointResultJson {
+    #[serde(default)]
+    problem: String,
+    #[serde(default)]
+    checkpoint: String,
+    #[serde(flatten)]
+    scb: ScbCheck,
+}
+
 /// One checkpoint of one problem.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckpointOutput {
@@ -351,6 +416,12 @@ pub struct CheckpointOutput {
     pub regression_tests: BTreeSet<String>,
     /// Its agent usage, when recorded.
     pub inference: Option<Inference>,
+    /// Its scb-check composites, when [`CHECKPOINT_RESULTS_FILE`] has a line
+    /// for it.
+    pub scb_check: Option<ScbCheck>,
+    /// Its cost and tokens by lane stage, reconciled with the recorded
+    /// totals; `Some` exactly when it has an inference record.
+    pub stages: Option<Breakdown>,
 }
 
 /// One problem's checkpoints, in SCBench's `(order, name)` order.
@@ -425,6 +496,8 @@ struct QualityJson {
 #[derive(Deserialize)]
 struct LinesJson {
     loc: f64,
+    #[serde(default)]
+    total_lines: f64,
 }
 
 #[derive(Deserialize)]
@@ -436,6 +509,8 @@ struct LintJson {
 struct FunctionsJson {
     #[serde(default)]
     cc_max: f64,
+    #[serde(default)]
+    cc_mean: Option<f64>,
     #[serde(default)]
     cc_high_count: f64,
     #[serde(default)]
@@ -669,6 +744,12 @@ impl From<QualityJson> for Quality {
         if q.file_count > 0 {
             values.insert("mi_mean", q.complexity.mi_sum / q.file_count as f64);
         }
+        if let Some(cc_mean) = q.functions.cc_mean {
+            values.insert("cc_mean", cc_mean);
+        }
+        if q.lines.total_lines > 0.0 {
+            values.insert("lint_per_loc", q.lint.errors / q.lines.total_lines);
+        }
         Self {
             values,
             file_count: q.file_count,
@@ -677,17 +758,27 @@ impl From<QualityJson> for Quality {
 }
 
 /// Reads every checkpoint of `problems` under the unit's `run_dir`, deciding
-/// each pass with `policy`.
+/// each pass with `policy` and pricing its lane stages with `pricing` (no
+/// stage dollars without one).
 ///
 /// # Errors
 ///
-/// When a directory or `checkpoint.yaml` cannot be read, or an SCBench file
-/// exists but does not parse (naming the file).
+/// When a directory or `checkpoint.yaml` cannot be read, an SCBench file
+/// exists but does not parse (naming the file), or a checkpoint's traces
+/// cannot be read ([`stages::read_checkpoint`]).
 pub fn read_unit(
     run_dir: &Path,
     problems: &[String],
     policy: PassPolicy,
+    pricing: Option<&Pricing>,
 ) -> Result<Vec<ProblemOutput>, String> {
+    let results: Option<Vec<CheckpointResultJson>> =
+        read_jsonl(&run_dir.join(CHECKPOINT_RESULTS_FILE))?;
+    let scb: BTreeMap<(String, String), ScbCheck> = results
+        .into_iter()
+        .flatten()
+        .map(|r| ((r.problem, r.checkpoint), r.scb))
+        .collect();
     let mut out = Vec::new();
     for problem in problems {
         let mut checkpoints = Vec::new();
@@ -709,7 +800,43 @@ pub fn read_unit(
                 Some(_) => final_result(&dir.join(STREAM_FILE))?,
                 None => None,
             };
+            let traced = match inference {
+                Some(_) => stages::read_checkpoint(&dir, pricing)?,
+                None => None,
+            };
+            let inference = inference.map(|i| {
+                let net = &i.usage.net_tokens;
+                let t = totals.unwrap_or(ResultTotals {
+                    input: net.input,
+                    output: net.output,
+                    cache_read: net.cache_read,
+                    cache_write: net.cache_write,
+                });
+                Inference {
+                    elapsed: i.elapsed,
+                    cost: i.usage.cost,
+                    steps: i.usage.steps,
+                    tokens_input: t.input,
+                    tokens_output: t.output,
+                    tokens_cache_read: t.cache_read,
+                    tokens_cache_write: t.cache_write,
+                }
+            });
+            let by_stage = inference.map(|i| {
+                Breakdown::reconcile(
+                    traced.as_ref(),
+                    i.cost,
+                    &stages::Tokens {
+                        input: i.tokens_input,
+                        output: i.tokens_output,
+                        cache_read: i.tokens_cache_read,
+                        cache_write: i.tokens_cache_write,
+                    },
+                    pricing.is_some(),
+                )
+            });
             checkpoints.push(CheckpointOutput {
+                scb_check: scb.get(&(problem.clone(), name.clone())).copied(),
                 name,
                 order,
                 passed: eval.as_ref().is_some_and(|e| {
@@ -721,24 +848,8 @@ pub fn read_unit(
                 regression: eval.as_ref().and_then(EvaluationJson::regression),
                 test_outcomes,
                 regression_tests,
-                inference: inference.map(|i| {
-                    let net = &i.usage.net_tokens;
-                    let t = totals.unwrap_or(ResultTotals {
-                        input: net.input,
-                        output: net.output,
-                        cache_read: net.cache_read,
-                        cache_write: net.cache_write,
-                    });
-                    Inference {
-                        elapsed: i.elapsed,
-                        cost: i.usage.cost,
-                        steps: i.usage.steps,
-                        tokens_input: t.input,
-                        tokens_output: t.output,
-                        tokens_cache_read: t.cache_read,
-                        tokens_cache_write: t.cache_write,
-                    }
-                }),
+                inference,
+                stages: by_stage,
             });
         }
         out.push(ProblemOutput {
@@ -811,12 +922,20 @@ mod tests {
     }
 
     fn quality(file_count: u64) -> Quality {
+        quality_with(file_count, Some(3.5), 150.0)
+    }
+
+    fn quality_with(file_count: u64, cc_mean: Option<f64>, total_lines: f64) -> Quality {
         Quality::from(QualityJson {
             file_count,
-            lines: LinesJson { loc: 120.0 },
+            lines: LinesJson {
+                loc: 120.0,
+                total_lines,
+            },
             lint: LintJson { errors: 3.0 },
             functions: FunctionsJson {
                 cc_max: 9.0,
+                cc_mean,
                 cc_high_count: 1.0,
                 depth_max: 4.0,
             },
@@ -910,7 +1029,8 @@ mod tests {
         )
         .expect("inference");
         let read = |dir: &Path| {
-            read_unit(dir, &["p".to_owned()], PassPolicy::Any).expect("read unit")[0].checkpoints[0]
+            read_unit(dir, &["p".to_owned()], PassPolicy::Any, None).expect("read unit")[0]
+                .checkpoints[0]
                 .inference
                 .expect("inference")
         };
@@ -952,6 +1072,16 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_cc_mean_and_lint_per_loc_follow_scbench() {
+        assert_eq!(quality(2).get("cc_mean"), Some(3.5));
+        // lint.errors / lines.total_lines.
+        assert_eq!(quality(2).get("lint_per_loc"), Some(0.02));
+        let bare = quality_with(2, None, 0.0);
+        assert_eq!(bare.get("cc_mean"), None);
+        assert_eq!(bare.get("lint_per_loc"), None);
+    }
+
+    #[test]
     fn test_files_follow_the_one_rule() {
         for path in [
             "tests/conftest.py",
@@ -981,6 +1111,7 @@ mod tests {
         FileRow {
             file_path: path.to_owned(),
             loc,
+            total_lines: loc + 10.0,
             lint_errors: lint,
             mi: Some(mi),
             single_use_count: single_use,
@@ -1026,11 +1157,15 @@ mod tests {
             metrics(&split.application),
             [
                 ("cc_max", Some(12.0)),
+                // The function and method symbols 11, 10 and 12.
+                ("cc_mean", Some(11.0)),
                 // 11 and 12 count; exactly 10 does not.
                 ("cc_high_count", Some(2.0)),
                 ("mi_mean", Some(50.0)),
                 ("max_nesting_depth", Some(4.0)),
                 ("lint_errors", Some(8.0)),
+                // 8 findings over 110 + 210 total lines.
+                ("lint_per_loc", Some(0.025)),
                 ("single_use_functions", Some(3.0)),
                 ("trivial_wrappers", Some(1.0)),
                 ("sloc", Some(300.0)),
@@ -1040,10 +1175,12 @@ mod tests {
             metrics(&split.tests),
             [
                 ("cc_max", Some(15.0)),
+                ("cc_mean", Some(5.25)),
                 ("cc_high_count", Some(1.0)),
                 ("mi_mean", Some(40.0)),
                 ("max_nesting_depth", Some(5.0)),
                 ("lint_errors", Some(30.0)),
+                ("lint_per_loc", Some(30.0 / 450.0)),
                 ("single_use_functions", Some(14.0)),
                 ("trivial_wrappers", Some(1.0)),
                 ("sloc", Some(420.0)),
@@ -1061,10 +1198,12 @@ mod tests {
             metrics(&whole),
             [
                 ("cc_max", Some(15.0)),
+                ("cc_mean", Some(54.0 / 7.0)),
                 ("cc_high_count", Some(3.0)),
                 ("mi_mean", Some(44.0)),
                 ("max_nesting_depth", Some(5.0)),
                 ("lint_errors", Some(38.0)),
+                ("lint_per_loc", Some(38.0 / 770.0)),
                 ("single_use_functions", Some(17.0)),
                 ("trivial_wrappers", Some(2.0)),
                 ("sloc", Some(720.0)),
@@ -1082,10 +1221,12 @@ mod tests {
             metrics(&app_only.tests),
             [
                 ("cc_max", Some(0.0)),
+                ("cc_mean", None),
                 ("cc_high_count", Some(0.0)),
                 ("mi_mean", None),
                 ("max_nesting_depth", Some(0.0)),
                 ("lint_errors", Some(0.0)),
+                ("lint_per_loc", None),
                 ("single_use_functions", Some(0.0)),
                 ("trivial_wrappers", Some(0.0)),
                 ("sloc", Some(0.0)),
@@ -1113,7 +1254,7 @@ mod tests {
     fn read_unit_splits_only_with_both_row_files_and_names_a_bad_line() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cp = checkpoint_dir(tmp.path(), "checkpoint_1", 1);
-        let read = || read_unit(tmp.path(), &["p".to_owned()], PassPolicy::Any);
+        let read = || read_unit(tmp.path(), &["p".to_owned()], PassPolicy::Any, None);
         assert_eq!(read().expect("read")[0].checkpoints[0].split, None);
 
         std::fs::write(
@@ -1150,6 +1291,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scb_check_figures_match_by_problem_and_checkpoint() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        checkpoint_dir(tmp.path(), "checkpoint_1", 1);
+        checkpoint_dir(tmp.path(), "checkpoint_2", 2);
+        let read = || read_unit(tmp.path(), &["p".to_owned()], PassPolicy::Any, None);
+        let scb = |r: &[ProblemOutput]| -> Vec<Option<ScbCheck>> {
+            r[0].checkpoints.iter().map(|c| c.scb_check).collect()
+        };
+        assert_eq!(scb(&read().expect("read")), [None, None]);
+
+        let results = tmp.path().join(CHECKPOINT_RESULTS_FILE);
+        std::fs::write(
+            &results,
+            "{\"problem\":\"p\",\"checkpoint\":\"checkpoint_2\",\"erosion\":0.25,\
+             \"verbosity\":0.1,\"cloned_pct\":0.05,\"state\":\"ran\"}\n\n\
+             {\"problem\":\"q\",\"checkpoint\":\"checkpoint_1\",\"erosion\":9}\n\
+             {\"problem\":\"p\",\"checkpoint\":\"checkpoint_1\",\"erosion\":0.5}\n",
+        )
+        .expect("results");
+        assert_eq!(
+            scb(&read().expect("read")),
+            [
+                Some(ScbCheck {
+                    erosion: Some(0.5),
+                    verbosity: None,
+                    cloned_pct: None,
+                }),
+                Some(ScbCheck {
+                    erosion: Some(0.25),
+                    verbosity: Some(0.1),
+                    cloned_pct: Some(0.05),
+                }),
+            ]
+        );
+
+        std::fs::write(&results, "{\"problem\":\"p\"}\n{not json\n").expect("bad results");
+        let e = read().expect_err("malformed line");
+        assert!(
+            e.contains(&results.display().to_string()) && e.contains("line 2"),
+            "{e}"
+        );
+    }
+
     /// A checkpoint whose `test_outcomes` hold `(id, passed, regression)`;
     /// `None` is an unevaluated one.
     fn outcome_checkpoint(order: i64, tests: Option<&[(&str, bool, bool)]>) -> CheckpointOutput {
@@ -1173,6 +1358,8 @@ mod tests {
                 .map(|t| t.0.to_owned())
                 .collect(),
             inference: None,
+            scb_check: None,
+            stages: None,
         }
     }
 

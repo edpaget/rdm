@@ -269,7 +269,7 @@ command that failed.
 ```bash
 cargo run -q -p rdm-devtools --bin rdm-measure -- scbench report \
   --run bench/scbench/runs/<name> [--format markdown|json] \
-  [--save-baseline <name>] [--baseline <name>]
+  [--save-baseline <name>] [--baseline <name>] [--lift-against <arm>]
 ```
 
 `scbench report` makes no call. It reads the run record and each finished
@@ -326,9 +326,11 @@ Each set's erosion metrics are recomputed from SCBench's per-file
 (`files.jsonl`) and per-symbol (`symbols.jsonl`) rows, a symbol going with
 its file, using SCBench's own rules: `sloc`, `lint_errors`,
 `single_use_functions` and `trivial_wrappers` are summed over the files and
-`mi_mean` is their mean MI; `cc_max`, `cc_high_count` (complexity above 10)
-and `max_nesting_depth` are taken over the `function` and `method` symbols.
-Over both sets together this reproduces SCBench's `overall_quality.json`.
+`mi_mean` is their mean MI; `lint_per_loc` is the lint findings over the
+files' total lines (blank and comment lines included); `cc_max`, `cc_mean`,
+`cc_high_count` (complexity above 10) and `max_nesting_depth` are taken over
+the `function` and `method` symbols. Over both sets together this reproduces
+SCBench's `overall_quality.json`.
 
 - **Application code** (`app_<metric>_final`, `app_<metric>_change`, and
   `application` per checkpoint) is the headline quality comparison between
@@ -358,9 +360,12 @@ Over both sets together this reproduces SCBench's `overall_quality.json`.
 SCBench's other measures cannot be split, since its output gives them only
 over the whole snapshot: `erosion`, `verbosity`, `cloned_pct`, the `graph_*`
 dependency metrics and the complexity distribution measures
-(`cc_concentration`, `cc_top20`, `cc_normalized`). The report does not read
-them; if it ever does, they must be labelled "SCBench snapshot (includes
-tests)".
+(`cc_concentration`, `cc_top20`, `cc_normalized`). The report (schema 3)
+reads the first three from the unit's run-level `checkpoint_results.jsonl`
+as `scb_erosion_*`, `scb_verbosity_*` and `scb_cloned_pct_*` (`_final` and
+`_change`, lower is better), with `scope: "snapshot"` and the row label
+"(SCBench snapshot, includes tests)". A unit without that file, or a line
+without a field, has no value for it.
 
 A checkpoint without both `files.jsonl` and `symbols.jsonl` (older SCBench
 output) has no split: its application and tests figures are `null` (`—`),
@@ -370,6 +375,97 @@ regression values: those rows show no baseline, the comparison's
 `baseline_has_split` is `false`, and the markdown notes that the baseline
 predates the split; compare the snapshot rows instead. This is not a pin
 difference and does not make the run not comparable.
+
+### Cost per lift and cost by lane stage
+
+The report (schema 3) also says what each arm's quality costs.
+
+**Cost per lift** (`cost_per_lift`, `## Cost per lift against <arm>`)
+sets every other arm of the same run against one baseline arm:
+`--lift-against <arm>`, default `just-solve`. It is not `--baseline`, which
+compares with a saved run file. An explicitly named arm the run does not
+report is an error naming the run's arms; when the default is missing,
+`cost_per_lift` is `null` and the markdown says to pass `--lift-against`.
+
+The measures are the hidden-test `pass_rate`, `app_cc_mean_final`,
+`app_cc_high_count_final`, `app_max_nesting_depth_final` and
+`app_lint_per_loc_final` (application code), and `scb_erosion_final`,
+`scb_cloned_pct_final` and `scb_verbosity_final` (whole snapshot, tests
+included: SCBench gives no application-only figure for them). There is one
+table per measure, and a row reads:
+
+- **lift [CI]**: the arm's mean over seeds minus the baseline's, turned so
+  positive is better (negated for a lower-is-better measure), with the
+  unpaired seed-bootstrap interval and the seed counts `n (arm/baseline)`.
+  Pass rate is in units of 1.0, so +0.1 is 10 points.
+- **extra cost / checkpoint [CI]**: `cost_per_checkpoint_usd` (an arm's
+  recorded cost over the checkpoints it ran, so arms that reached different
+  numbers of checkpoints compare per checkpoint) of the arm minus the
+  baseline's.
+- **cost per unit of lift**: extra cost per checkpoint over lift, in USD per
+  checkpoint per unit of the measure. The ratio has no interval; read it
+  beside the two intervals it divides.
+
+The price is withheld, with the reason in words, when either side has no
+value (`no_data`), either side has fewer than 2 seeds (`no_interval`), the
+lift's interval includes 0 (`includes_zero`: noise is never shown as a
+price) or lies below 0 (`worse`), and it reads "lift at no extra cost"
+(`no_extra_cost`) when the lift excludes 0 and the arm costs no more.
+
+Extra cost is per checkpoint while lift is on each problem's final state, so
+a price says "this much more per checkpoint bought this much better final
+code", not a marginal price per checkpoint. Its limits:
+
+- **Small seed counts.** With 3 seeds an arm has only 10 distinct resample
+  means, so intervals are coarse and too narrow; a priced lift at 3 seeds is
+  a lead, not a finding.
+- **Per-problem variance.** Each figure is a mean over problems, which pools
+  easy and hard problems; one problem can drive a delta. Check the
+  per-checkpoint tables before trusting a price.
+- **List-price cost.** The cost is SCBench's, the model file's list prices,
+  not what a subscription bills (see "Cost figures under a subscription").
+
+**Cost by lane stage** (`arms[].stage_costs`, `checkpoints[].stages`,
+`## Cost by lane stage`) splits each rdm arm's checkpoints into `planning`,
+`plan_review`, `implementation`, `verification`, `code_review`, `triage`,
+`other` and `unattributed`, with each stage's cost and tokens per
+checkpoint and its share of the arm's recorded cost. Control arms have none.
+The split comes from the Claude Code trace files SCBench copies to
+`<checkpoint>/agent/workspace/projects/` (`agent/stdout.jsonl` cannot be
+used: it repeats one event per content block with a stale output count and
+never shows workflow agents). The rule, defined once in
+`rdm-devtools/src/measure/scbench/stages.rs`:
+
+- Every assistant message counts once (deduplicated by `message.id`, last
+  line wins).
+- A main-thread message counts toward the most recently opened stage, a
+  dispatching turn toward the stage it opens. An `rdm-effort-*` `Agent`
+  opens `planning` when its prompt contains `plan create`, `triage` after a
+  code-review workflow, else `implementation`; the `rdm-wf-plan-review` and
+  `rdm-wf-review-refute-fix` workflows open `plan_review` and `code_review`;
+  a `Bash` call running `verify run` opens `verification`; the `land` skill
+  opens `other`. So verification counts only when the lane runs
+  `rdm verify run`: a fallback verification counts toward the stage that was
+  open, and the main thread's triage of review comments before the first
+  fix dispatch counts as `code_review`.
+- A subagent takes its spawning `Agent` call's stage (another subagent type
+  from the main thread is `other`; one spawned inside a subagent inherits
+  its stage); a workflow agent takes its run's workflow. One that cannot be
+  traced to a call or a run is `unattributed`.
+
+Dollars are each message's tokens at the run's model-file prices (recorded
+as `model_file.source`), with a 1-hour cache write at 2x input; with no
+model file all stage dollars are `null` and only tokens split. Then
+`unattributed` is the checkpoint's recorded cost and tokens minus every
+other stage, so the stages always sum to the recorded totals. It holds
+Claude Code's own haiku side calls (always: they are in the recorded totals
+but never traced), models the model file does not price, and any usage
+whose trace file the export did not copy into the checkpoint (only new
+trace files are exported); a checkpoint without a trace directory (a failed
+export) is wholly `unattributed`. A negative
+`unattributed` means the traces hold usage the final result does not (for
+example a trace carried over from an earlier checkpoint's session); treat
+that checkpoint's split as suspect.
 
 ## rdm-equipped image
 
