@@ -1657,6 +1657,32 @@ prompt = "configs/prompts/anti_slop.jinja"
     }
 
     #[test]
+    fn a_sweep_without_base_fails() {
+        variant_fails(
+            "[[arm]]\nname = \"v\"\nprompt = \"y.jinja\"\n\
+             sweep = { setting = \"config.max_refutations\", values = [1] }\n",
+            &["arm v", "a sweep needs base"],
+        );
+    }
+
+    #[test]
+    fn a_variant_without_name_or_sweep_fails() {
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\n",
+            &["a variant of full-lane needs a name (or a sweep)"],
+        );
+    }
+
+    #[test]
+    fn a_sweep_value_that_is_not_a_number_or_string_fails() {
+        variant_fails(
+            "[[arm]]\nbase = \"full-lane\"\n\
+             sweep = { setting = \"step_limit\", values = [true] }\n",
+            &["step_limit", "must be a number or a string"],
+        );
+    }
+
+    #[test]
     fn a_sweep_generates_one_arm_per_value_in_place_and_in_order() {
         let m = parse(&variants(
             "[[arm]]\nbase = \"full-lane\"\n\
