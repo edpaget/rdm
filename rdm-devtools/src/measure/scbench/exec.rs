@@ -14,6 +14,7 @@ use super::environment;
 use super::lane::{self, LaneRecord};
 use super::manifest::{ArmGroup, ArmImage, Manifest};
 use super::plan::{self, CommandSpec, Paths, RunPlan, Tools};
+use super::redact;
 
 /// The run record's schema version: 2 records one [`ArmRecord`] per arm and
 /// seed. A record without `schema` (phases 1-4) has one per arm, at seed 1.
@@ -311,7 +312,11 @@ pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 /// arm's run and its eval, its plan repos are copied out and classified
 /// (`lane::collect`) and a `<landed>/<total>` line goes to `stderr`. An arm's
 /// agent config, agent template and prompt are written once, before its
-/// first unit; each unit writes its own run config.
+/// first unit; each unit writes its own run config. After each unit's run and
+/// eval, whatever its exit status, the unit's `seed-<n>` directory is
+/// scrubbed of the provider's credential ([`redact::scrub_tree`]); the run
+/// scrub comes before the plan repos are copied out, so their copies are
+/// made from clean tars.
 ///
 /// # Errors
 ///
@@ -330,6 +335,7 @@ pub fn execute(
     prompts: &BTreeMap<String, String>,
     stderr: &mut dyn Write,
 ) -> Result<RunPlan, String> {
+    let secret = redact::Secret::for_provider(&manifest.agent.provider);
     let out_dir = &paths.out_dir;
     std::fs::create_dir_all(out_dir)
         .map_err(|e| format!("cannot create --out {}: {e}", out_dir.display()))?;
@@ -453,7 +459,10 @@ pub fn execute(
             }
         }
         write_json(&arm.run_config_path, &arm.run_config)?;
-        let ran = ex.spawn(&arm.run, Io::Inherit)?;
+        let seed_dir = arm.run_dir.parent().unwrap_or(&arm.run_dir);
+        let ran = ex.spawn(&arm.run, Io::Inherit);
+        redact::scrub_tree(seed_dir, secret.as_ref(), "scbench run", stderr);
+        let ran = ran?;
         if !ran.ok() {
             return Err(format!("arm {unit}: run {}", ran.describe()));
         }
@@ -474,7 +483,9 @@ pub fn execute(
                 "scbench run: {unit}: {landed}/{total} checkpoints landed"
             );
         }
-        let ran = ex.spawn(&arm.eval, Io::Inherit)?;
+        let ran = ex.spawn(&arm.eval, Io::Inherit);
+        redact::scrub_tree(seed_dir, secret.as_ref(), "scbench run", stderr);
+        let ran = ran?;
         if !ran.ok() {
             return Err(format!("arm {unit}: eval {}", ran.describe()));
         }

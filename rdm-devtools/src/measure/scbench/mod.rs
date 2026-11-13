@@ -30,7 +30,9 @@
 //!    `uv run slop-code --seed <n> run --no-evaluate`; for an rdm arm, copies
 //!    each checkpoint's plan repo to `<out>/<arm>/seed-<n>/plan-repos/` and
 //!    classifies the checkpoint ([`lane`]); then runs
-//!    `uv run slop-code --seed <n> eval`.
+//!    `uv run slop-code --seed <n> eval`. After each `slop-code` run and
+//!    eval, whatever its exit status, the unit's `seed-<n>` directory is
+//!    scrubbed of the provider's credential ([`redact`]).
 //!
 //! The run record `<out>/rdm-scbench-run.json` ([`exec::RunRecord`]) is
 //! rewritten after every command, so a failed run still records the command
@@ -62,6 +64,7 @@ pub mod manifest;
 pub mod outputs;
 pub mod plan;
 pub mod rdm_image;
+pub mod redact;
 pub mod report;
 pub mod stats;
 

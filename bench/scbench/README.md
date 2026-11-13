@@ -51,12 +51,35 @@ SCBench checkout.
     Or keep it in 1Password and run every subcommand through
     `bench/scbench/run.sh <subcommand> ...`, which loads it with `op run`
     from `op://rdm-dev/claude-token/credential` (override with
-    `SCBENCH_CLAUDE_TOKEN_REF`) into the run's environment only.
+    `SCBENCH_CLAUDE_TOKEN_REF`) into the run's environment and masks it in
+    the live output. The token still reaches disk in SlopCodeBench's logs;
+    see "Credential scrub" below.
   - **API key**: set `provider = "anthropic"` in the manifest and export
     `ANTHROPIC_API_KEY`. Do not pair `anthropic` with
     `CLAUDE_CODE_OAUTH_TOKEN`; SCBench would pass the token as an API key.
 - The host `claude` CLI. The runner records its version. The agent image
   installs the manifest's `claude_code_version` itself.
+
+### Credential scrub
+
+SlopCodeBench logs the whole `docker exec` line, credential included, into
+each problem's `infer.log`, and the pinned checkout is not patched. So after
+every `slop-code` call the runner makes (`run`, `eval`, and `build-agent`
+under `scbench image build`), whatever its exit status, it reads the
+provider's credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`) from
+its own environment and rewrites every regular file under that call's
+directory: `<out>/<arm>/seed-<n>/` for a run or eval, `<cache>/scbench-home`
+and `<cache>/rdm-image/<sha>/` for an image build. Each occurrence becomes
+`***redacted***`. Gzip files are decoded, scrubbed and re-encoded; tar
+archives (the exported plan repos) are masked at the value's length, so they
+still extract. Symlinks are not followed, and an unset or empty credential
+changes nothing.
+
+Not covered: a run stopped by an interrupt (until the interrupt teardown
+lands), and a value inside a zlib-compressed git object within a plan-repo
+tar. A `cannot scrub the credential from <path>` line on stderr means that
+file could not be read or rewritten and may still hold the credential:
+delete it by hand.
 
 ## Running
 

@@ -108,6 +108,16 @@ fn hermetic(cmd: &mut Command, home: &Path) {
         .env("XDG_CONFIG_HOME", home.join(".config"));
 }
 
+/// Sets each `(name, Some(value))` and removes each `(name, None)`.
+fn apply_env(cmd: &mut Command, env: &[(&str, Option<&str>)]) {
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+}
+
 fn git(home: &Path, dir: &Path, args: &[&str]) -> String {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
@@ -353,6 +363,20 @@ project = "bench"
     }
 
     fn run_into(&self, out: &Path, extra: &[&str]) -> Output {
+        self.run_command(out, extra)
+            .output()
+            .expect("rdm-measure runs")
+    }
+
+    /// Runs `scbench run` into `--out` with `env` applied over the hermetic
+    /// environment (`None` removes a variable).
+    fn run_env(&self, extra: &[&str], env: &[(&str, Option<&str>)]) -> Output {
+        let mut cmd = self.run_command(&self.out, extra);
+        apply_env(&mut cmd, env);
+        cmd.output().expect("rdm-measure runs")
+    }
+
+    fn run_command(&self, out: &Path, extra: &[&str]) -> Command {
         let mut cmd = Command::new(measure_bin());
         cmd.args(["scbench", "run", "--manifest"])
             .arg(&self.manifest)
@@ -369,7 +393,7 @@ project = "bench"
             .args(extra)
             .current_dir(&self.root);
         hermetic(&mut cmd, &self.home());
-        cmd.output().expect("rdm-measure runs")
+        cmd
     }
 
     /// Runs `scbench ladder` into `out` with the fakes. The credential
@@ -395,12 +419,7 @@ project = "bench"
         hermetic(&mut cmd, &self.home());
         cmd.env("CLAUDE_CODE_OAUTH_TOKEN", "fake-token")
             .env_remove("ANTHROPIC_API_KEY");
-        for (k, v) in env {
-            match v {
-                Some(v) => cmd.env(k, v),
-                None => cmd.env_remove(k),
-            };
-        }
+        apply_env(&mut cmd, env);
         cmd.output().expect("rdm-measure runs")
     }
 
@@ -417,6 +436,12 @@ project = "bench"
 
     /// Runs `scbench image <sub>` with the fakes.
     fn image(&self, sub: &str, extra: &[&str]) -> Output {
+        self.image_env(sub, extra, &[])
+    }
+
+    /// [`Bench::image`] with `env` applied over the hermetic environment
+    /// (`None` removes a variable).
+    fn image_env(&self, sub: &str, extra: &[&str], env: &[(&str, Option<&str>)]) -> Output {
         let mut cmd = Command::new(measure_bin());
         cmd.args(["scbench", "image", sub, "--manifest"])
             .arg(&self.manifest)
@@ -429,6 +454,7 @@ project = "bench"
         }
         cmd.args(extra).current_dir(&self.root);
         hermetic(&mut cmd, &self.home());
+        apply_env(&mut cmd, env);
         cmd.output().expect("rdm-measure runs")
     }
 
@@ -1694,7 +1720,9 @@ impl PlanRepo {
 
     /// Commits the plan repo and archives it (with `.git` and a `marker`
     /// file) to `tar`, as the wrapper's `tar -C "$RDM_ROOT" -cf <tar> .`.
-    fn snapshot(&self, tar: &Path, marker: &str) -> PathBuf {
+    /// Each `extra` `(name, text)` is written next to the marker after the
+    /// commit, so it is a plain tar member only.
+    fn snapshot(&self, tar: &Path, marker: &str, extra: &[(&str, &str)]) -> PathBuf {
         git(&self.home, &self.dir, &["add", "-A"]);
         git(
             &self.home,
@@ -1703,6 +1731,9 @@ impl PlanRepo {
         );
         let marker_path = self.dir.join(marker);
         write(&marker_path, "marker\n");
+        for (name, text) in extra {
+            write(&self.dir.join(name), text);
+        }
         std::fs::create_dir_all(tar.parent().expect("tar parent")).expect("mkdir tars");
         let o = Command::new("tar")
             .arg("-C")
@@ -1718,6 +1749,9 @@ impl PlanRepo {
             String::from_utf8_lossy(&o.stderr)
         );
         std::fs::remove_file(&marker_path).expect("remove marker");
+        for (name, _) in extra {
+            std::fs::remove_file(self.dir.join(name)).expect("remove extra");
+        }
         tar.to_path_buf()
     }
 }
@@ -1801,14 +1835,14 @@ fn copy_out_run() -> Bench {
     let tars = b.root.join("tars");
     let mut mv = PlanRepo::new(&home, &b.root.join("fixture/mvvault"));
     mv.add(1, Done, None);
-    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "MARKER-000001");
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "MARKER-000001", &[]);
     mv.add(2, InProgress, None);
-    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "MARKER-000002");
+    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "MARKER-000002", &[]);
     mv.set(2, Done, None);
-    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "MARKER-000003");
+    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "MARKER-000003", &[]);
     let mut xjq = PlanRepo::new(&home, &b.root.join("fixture/xjq"));
     xjq.add(1, Done, None);
-    let x1 = xjq.snapshot(&tars.join("x-1.tar"), "MARKER-XJQ-1");
+    let x1 = xjq.snapshot(&tars.join("x-1.tar"), "MARKER-XJQ-1", &[]);
     full_lane_bench(
         &b,
         &[
@@ -1940,15 +1974,15 @@ fn full_lane_classifies_each_checkpoint() {
     let tars = b.root.join("tars");
     let mut mv = PlanRepo::new(&home, &b.root.join("fixture/mvvault"));
     mv.add(1, Done, None);
-    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1");
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1", &[]);
     mv.add(2, Blocked, Some("[code] rework budget exhausted"));
-    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "M2");
+    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "M2", &[]);
     mv.add(3, Reviewed, None);
-    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "M3");
-    let mv4 = mv.snapshot(&tars.join("mv-4.tar"), "M4");
+    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "M3", &[]);
+    let mv4 = mv.snapshot(&tars.join("mv-4.tar"), "M4", &[]);
     let mut xjq = PlanRepo::new(&home, &b.root.join("fixture/xjq"));
     xjq.add(1, InProgress, None);
-    let x2 = xjq.snapshot(&tars.join("x-2.tar"), "X2");
+    let x2 = xjq.snapshot(&tars.join("x-2.tar"), "X2", &[]);
     let cp = |problem, name, order, tars| Checkpoint {
         problem,
         name,
@@ -2083,17 +2117,17 @@ fn unreadable_plan_repo_keeps_previous_phases() {
     let tars = b.root.join("tars");
     let mut mv = PlanRepo::new(&home, &b.root.join("fixture/mvvault"));
     mv.add(1, Done, None);
-    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1");
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1", &[]);
     // A phase file rdm-core cannot parse makes the whole roadmap unreadable.
     let corrupt = mv
         .dir
         .join("projects/bench/roadmaps/solution/phase-2-corrupt.md");
     write(&corrupt, "---\nphase: [not a number\n---\n");
-    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "M2");
+    let mv2 = mv.snapshot(&tars.join("mv-2.tar"), "M2", &[]);
     std::fs::remove_file(&corrupt).expect("remove corrupt phase");
     // Back to checkpoint 1's phases: with `prev` carried over the unreadable
     // checkpoint, nothing is new.
-    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "M3");
+    let mv3 = mv.snapshot(&tars.join("mv-3.tar"), "M3", &[]);
     let cp = |name, order, tars| Checkpoint {
         problem: "mvvault",
         name,
@@ -2188,10 +2222,10 @@ fn rdm_arm_collects_plan_repos_per_seed() {
     let tars = b.root.join("tars");
     let mut one = PlanRepo::new(&home, &b.root.join("fixture/seed-1"));
     one.add(1, Done, None);
-    let t1 = one.snapshot(&tars.join("s1.tar"), "SEED-1");
+    let t1 = one.snapshot(&tars.join("s1.tar"), "SEED-1", &[]);
     let mut two = PlanRepo::new(&home, &b.root.join("fixture/seed-2"));
     two.add(1, Blocked, Some("[plan] escalated"));
-    let t2 = two.snapshot(&tars.join("s2.tar"), "SEED-2");
+    let t2 = two.snapshot(&tars.join("s2.tar"), "SEED-2", &[]);
     let cp = |tar: &PathBuf| {
         vec![Checkpoint {
             problem: "mvvault",
@@ -2634,4 +2668,303 @@ fn ladder_report_failure_hints_that_the_run_finished() {
     );
     assert!(b.out.join("rdm-scbench-run.json").is_file());
     assert!(!b.out.join("rdm-scbench-report.json").exists());
+}
+
+/// A fake credential value; never a real one.
+const TOKEN: &str = "sk-ant-oat01-fake-SCRUBME-0123456789";
+
+/// The credential environment the scrub tests run with.
+const WITH_TOKEN: &[(&str, Option<&str>)] = &[
+    ("CLAUDE_CODE_OAUTH_TOKEN", Some(TOKEN)),
+    ("ANTHROPIC_API_KEY", None),
+];
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(bytes).expect("gzip");
+    enc.finish().expect("gzip finish")
+}
+
+fn gunzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::MultiGzDecoder::new(bytes)
+        .read_to_end(&mut out)
+        .expect("gunzip");
+    out
+}
+
+fn holds(data: &[u8], needle: &[u8]) -> bool {
+    data.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Asserts that no regular file under `dir` (gzip decoded) holds [`TOKEN`].
+fn assert_no_token(dir: &Path) {
+    for entry in std::fs::read_dir(dir).expect("read dir").flatten() {
+        let path = entry.path();
+        let meta = std::fs::symlink_metadata(&path).expect("metadata");
+        if meta.is_dir() {
+            assert_no_token(&path);
+        } else if meta.is_file() {
+            let mut bytes = std::fs::read(&path).expect("read");
+            if bytes.starts_with(&[0x1f, 0x8b]) {
+                bytes = gunzip(&bytes);
+            }
+            assert!(
+                !holds(&bytes, TOKEN.as_bytes()),
+                "{} holds the token",
+                path.display()
+            );
+        }
+    }
+}
+
+/// One file the fake `slop-code run` leaves: its path under the unit's
+/// `output/` and its staged bytes.
+struct Leak {
+    rel: &'static str,
+    bytes: Vec<u8>,
+}
+
+fn leaks() -> Vec<Leak> {
+    vec![
+        Leak {
+            rel: "p1/infer.log",
+            bytes: format!(
+                "exec: docker exec --env CLAUDE_CODE_OAUTH_TOKEN={TOKEN} --env X=1 box\nnext line\n"
+            )
+            .into_bytes(),
+        },
+        Leak {
+            rel: "p1/checkpoint_1/deep/nested/trace.json",
+            bytes: format!("{{\"t\":\"{TOKEN}\",\"again\":\"{TOKEN}\"}}\n").into_bytes(),
+        },
+        Leak {
+            rel: "p1/checkpoint_1/blob.jsonl.gz",
+            bytes: gzip(format!("{{\"line\":\"pre {TOKEN} post\"}}\n").as_bytes()),
+        },
+    ]
+}
+
+/// Stages `files` and has the fake `uv`'s `just-solve/seed-1` run place them
+/// under that unit's `output/`, then exit `exit`. Returns each placed path.
+fn leaky_run(b: &Bench, files: &[Leak], exit: u64) -> Vec<PathBuf> {
+    let staged = b.root.join("staged-leaks");
+    let output = b.out.join("just-solve/seed-1/output");
+    let mut place = Vec::new();
+    let mut placed = Vec::new();
+    for (i, f) in files.iter().enumerate() {
+        let from = staged.join(i.to_string());
+        std::fs::create_dir_all(&staged).expect("mkdir staged");
+        std::fs::write(&from, &f.bytes).expect("stage");
+        let to = output.join(f.rel);
+        place.push(json!({ "from": from, "to": to }));
+        placed.push(to);
+    }
+    b.scenario(
+        "uv",
+        &json!({ "default": { "exit": 0 } }),
+        &[
+            (&["--version"], json!({ "stdout": "uv 0.0.0-fake\n" })),
+            (
+                &["just-solve/seed-1/run.yaml"],
+                json!({ "place": place, "exit": exit }),
+            ),
+        ],
+    );
+    placed
+}
+
+/// `bytes` with every [`TOKEN`] replaced by the plain placeholder.
+fn redacted(bytes: &[u8]) -> Vec<u8> {
+    String::from_utf8(bytes.to_vec())
+        .expect("utf-8")
+        .replace(TOKEN, "***redacted***")
+        .into_bytes()
+}
+
+#[test]
+fn scrub_removes_credential_from_log_nested_file_and_gzip_member() {
+    let b = Bench::new(&Spec::default());
+    let files = leaks();
+    let placed = leaky_run(&b, &files, 0);
+    let o = b.run_env(&[], WITH_TOKEN);
+    ok(&o);
+    assert_no_token(&b.out);
+    for (f, path) in files.iter().zip(&placed) {
+        let now = std::fs::read(path).expect("placed file");
+        if f.rel.ends_with(".gz") {
+            assert_eq!(gunzip(&now), redacted(&gunzip(&f.bytes)), "{}", f.rel);
+        } else {
+            assert_eq!(now, redacted(&f.bytes), "{}", f.rel);
+        }
+    }
+    let err = stderr(&o);
+    assert!(!err.contains(TOKEN));
+    assert!(
+        err.contains("scbench run: scrubbed the credential from 3 file(s)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn scrub_runs_when_slop_code_run_exits_nonzero() {
+    let b = Bench::new(&Spec::default());
+    leaky_run(&b, &leaks(), 3);
+    let o = b.run_env(&[], WITH_TOKEN);
+    let err = fails(&o);
+    assert!(
+        err.contains("arm just-solve seed 1: run exited 3"),
+        "stderr: {err}"
+    );
+    assert!(!err.contains(TOKEN));
+    assert_no_token(&b.out);
+}
+
+#[test]
+fn scrub_without_credential_changes_no_file() {
+    for value in [None, Some("")] {
+        let b = Bench::new(&Spec::default());
+        let files = leaks();
+        let placed = leaky_run(&b, &files, 0);
+        let o = b.run_env(
+            &[],
+            &[
+                ("CLAUDE_CODE_OAUTH_TOKEN", value),
+                ("ANTHROPIC_API_KEY", None),
+            ],
+        );
+        ok(&o);
+        for (f, path) in files.iter().zip(&placed) {
+            assert_eq!(
+                std::fs::read(path).expect("placed"),
+                f.bytes,
+                "{value:?} {}",
+                f.rel
+            );
+        }
+        assert!(!stderr(&o).contains("scrubbed"), "{}", stderr(&o));
+    }
+}
+
+#[test]
+fn scrub_names_unwritable_file_and_keeps_exit_status() {
+    use std::os::unix::fs::PermissionsExt;
+    // Root ignores mode bits, so a read-only file is writable there.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let b = Bench::new(&Spec::default());
+    let files = vec![
+        Leak {
+            rel: "p1/locked.log",
+            bytes: format!("token {TOKEN}\n").into_bytes(),
+        },
+        Leak {
+            rel: "p1/open.log",
+            bytes: format!("token {TOKEN}\n").into_bytes(),
+        },
+    ];
+    let placed = leaky_run(&b, &files, 0);
+    let staged_locked = b.root.join("staged-leaks/0");
+    std::fs::set_permissions(&staged_locked, std::fs::Permissions::from_mode(0o444))
+        .expect("chmod");
+    let o = b.run_env(&[], WITH_TOKEN);
+    ok(&o);
+    let err = stderr(&o);
+    assert!(
+        err.contains(&format!(
+            "cannot scrub the credential from {}",
+            p(&placed[0])
+        )),
+        "{err}"
+    );
+    assert!(!err.contains(TOKEN));
+    assert_eq!(
+        std::fs::read(&placed[1]).expect("open.log"),
+        redacted(&files[1].bytes)
+    );
+}
+
+#[test]
+fn scrub_runs_after_failing_build_agent() {
+    let b = Bench::new(&Spec::default());
+    let staged = b.root.join("staged-leaks/home.log");
+    write(
+        &staged,
+        &format!("docker --env CLAUDE_CODE_OAUTH_TOKEN={TOKEN}\n"),
+    );
+    let leaked = b.cache.join("scbench-home/logs/build.log");
+    b.scenario(
+        "uv",
+        &json!({ "default": { "exit": 0 } }),
+        &[(
+            &["build-agent"],
+            json!({ "place": [{ "from": staged, "to": leaked }], "exit": 2 }),
+        )],
+    );
+    let o = b.image_env("build", &[], WITH_TOKEN);
+    let err = fails(&o);
+    assert!(
+        err.contains("slop-code docker build-agent") && err.contains("exited 2"),
+        "stderr: {err}"
+    );
+    assert!(!err.contains(TOKEN));
+    assert_eq!(
+        std::fs::read_to_string(&leaked).expect("leaked log"),
+        "docker --env CLAUDE_CODE_OAUTH_TOKEN=***redacted***\n"
+    );
+}
+
+#[test]
+fn scrub_masks_plan_repo_tar_and_lane_still_extracts() {
+    use rdm_core::model::PhaseStatus::Done;
+    let b = Bench::new(&full_lane_spec());
+    let tars = b.root.join("tars");
+    let mut mv = PlanRepo::new(&b.home(), &b.root.join("fixture/mvvault"));
+    mv.add(1, Done, None);
+    let leak = format!("token={TOKEN}\n");
+    let mv1 = mv.snapshot(&tars.join("mv-1.tar"), "M1", &[("leak.txt", &leak)]);
+    let original_len = std::fs::metadata(&mv1).expect("tar").len();
+    full_lane_bench(
+        &b,
+        &[
+            Checkpoint {
+                problem: "mvvault",
+                name: "checkpoint_1",
+                order: 1,
+                tars: vec![("000001.tar", mv1)],
+            },
+            Checkpoint {
+                problem: "xjq",
+                name: "checkpoint_1",
+                order: 1,
+                tars: vec![],
+            },
+        ],
+    );
+    let o = b.run_env(&[], WITH_TOKEN);
+    ok(&o);
+    assert!(!stderr(&o).contains(TOKEN));
+    let placed = b.out.join(
+        "full-lane/seed-1/output/mvvault/checkpoint_1/agent/workspace/projects/-workspace/rdm-plan/000001.tar",
+    );
+    let tar = std::fs::read(&placed).expect("placed tar");
+    assert_eq!(tar.len() as u64, original_len);
+    assert!(!holds(&tar, TOKEN.as_bytes()));
+    let repos = b.out.join("full-lane/seed-1/plan-repos");
+    let extracted = repos.join("mvvault/checkpoint_1/leak.txt");
+    assert_eq!(
+        std::fs::read_to_string(&extracted)
+            .expect("extracted leak")
+            .len(),
+        leak.len()
+    );
+    assert_no_token(&b.out);
+    let lane = &arm_record(&b.record(), "full-lane")["lane"];
+    assert_eq!(
+        lane["problems"][0]["checkpoints"][0]["outcome"], "landed",
+        "{lane}"
+    );
 }

@@ -15,7 +15,9 @@
 //! 5. writes the rendered agent template and the rdm agent config under
 //!    `<cache>/rdm-image/<HEAD>/`;
 //! 6. runs `uv run slop-code docker build-agent ... --force-build`, which
-//!    builds exactly the agent image a run uses.
+//!    builds exactly the agent image a run uses; then, whatever its exit
+//!    status, scrubs the provider's credential from `<cache>/scbench-home`
+//!    and `<cache>/rdm-image/<HEAD>/` ([`redact`]).
 //!
 //! `check` runs three probes in that agent image with `docker run --rm`: the
 //! recorded [`rdm_image::SHA_FILE`] equals HEAD, `rdm --version` exits 0, and
@@ -34,6 +36,7 @@ use super::exec::{Io, provision, spawn_command, write_file, write_json};
 use super::manifest::{Manifest, Rdm};
 use super::plan::{self, CommandSpec};
 use super::rdm_image;
+use super::redact;
 
 /// Options for [`build`] and [`check`].
 #[derive(Debug, Clone)]
@@ -223,11 +226,23 @@ pub fn build(opts: &ImageOptions, stderr: &mut dyn Write) -> Result<u8, String> 
         ],
     );
     build_agent.cwd = Some(checkout.dir.clone());
+    let scbench_home = t.cache_dir.join("scbench-home");
     build_agent.env.insert(
         "SCBENCH_HOME".to_owned(),
-        t.cache_dir.join("scbench-home").display().to_string(),
+        scbench_home.display().to_string(),
     );
-    inherit("slop-code docker build-agent", &build_agent)?;
+    let (ran, _) = spawn_command(&build_agent, Io::Inherit);
+    let secret = redact::Secret::for_provider(&t.manifest.agent.provider);
+    for root in [&scbench_home, &dir] {
+        redact::scrub_tree(root, secret.as_ref(), "scbench image build", stderr);
+    }
+    if !ran.ok() {
+        return Err(format!(
+            "slop-code docker build-agent (`{}`) {}",
+            build_agent.argv().join(" "),
+            ran.describe()
+        ));
+    }
 
     let _ = writeln!(stderr, "scbench image build: {}", agent_image(&t, &env));
     Ok(0)

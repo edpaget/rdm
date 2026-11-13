@@ -42,6 +42,9 @@ tracking, to planning, or to the rest of the lane.
 - **A credential**, in exactly one of two forms. Never set both:
   - **Subscription** (the manifest's `provider = "claude_code_oauth"`): run
     `claude setup-token` and export the token as `CLAUDE_CODE_OAUTH_TOKEN`.
+    SlopCodeBench writes the credential into its logs, and the runner scrubs
+    it from the run output; see `bench/scbench/README.md` § "Credential
+    scrub".
   - **API key**: set `provider = "anthropic"` in the manifest and export
     `ANTHROPIC_API_KEY`. Do not pair `anthropic` with
     `CLAUDE_CODE_OAUTH_TOKEN`: SCBench would pass the token as an API key.

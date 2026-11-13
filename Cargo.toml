@@ -39,6 +39,7 @@ sha2 = "0.10"
 signal-hook = "0.4"
 rustix = { version = "1", features = ["process"] }
 minijinja = "3"
+flate2 = "1"
 
 # The profile that 'dist' will build with
 [profile.dist]
