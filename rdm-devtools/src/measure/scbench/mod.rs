@@ -10,8 +10,10 @@
 //!
 //! A run, in order:
 //!
-//! 1. loads and validates the manifest ([`manifest`]) and keeps the arms
-//!    `--arms` selects ([`Manifest::select_arms`]);
+//! 1. loads and validates the manifest ([`manifest`]), keeps the arms
+//!    `--arms` selects ([`Manifest::select_arms`]) and the problems
+//!    `--problems` selects ([`Manifest::select_problems`]), refusing an
+//!    unknown name before anything is read or spawned;
 //! 2. refuses an `--out` that exists and is non-empty;
 //! 3. with `--dry-run`, prints the plan ([`plan`]) as JSON and stops;
 //! 4. resolves the rdm SHA (`git -C <manifest dir> rev-parse HEAD`);
@@ -97,6 +99,9 @@ pub struct RunOptions {
     pub tools: Tools,
     /// The arms to run (`--arms`); `None` runs every manifest arm.
     pub arms: Option<Vec<String>>,
+    /// The problems to run (`--problems`), a subset of the manifest's
+    /// `[problems] subset`; `None` runs every subset problem.
+    pub problems: Option<Vec<String>>,
     /// How many seeds each arm runs with (`1..=seeds`).
     pub seeds: u64,
     /// Print the plan; spawn nothing and create nothing.
@@ -162,7 +167,12 @@ pub fn run_with(
     let manifest_path = std::path::absolute(&opts.manifest).unwrap_or(opts.manifest.clone());
     let manifest = Manifest::load(&manifest_path)?
         .select_arms(opts.arms.as_deref())
+        .and_then(|m| m.select_problems(opts.problems.as_deref()))
         .map_err(|e| format!("{e} ({})", manifest_path.display()))?;
+    let problems_filter = opts
+        .problems
+        .as_ref()
+        .map(|_| manifest.problems.subset.clone());
     let seeds: Vec<u64> = (1..=opts.seeds).collect();
     let out = std::path::absolute(&opts.out).unwrap_or(opts.out.clone());
     refuse_used_out(&out)?;
@@ -210,6 +220,7 @@ pub fn run_with(
             "rdm": { "sha": null },
             "seeds": seeds,
             "selected_arms": selected,
+            "problems_filter": problems_filter,
             "projection": plan::projection(&manifest, opts.seeds),
             "plan": plan,
         }))
@@ -231,6 +242,7 @@ pub fn run_with(
         &paths,
         &opts.tools,
         &seeds,
+        problems_filter.as_deref(),
         template.as_deref(),
         &prompts,
         interrupts,

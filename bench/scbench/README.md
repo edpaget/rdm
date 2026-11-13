@@ -116,6 +116,10 @@ cargo run -q -p rdm-devtools --bin rdm-measure -- scbench run \
 # Two arms, three seeds each.
 cargo run -q -p rdm-devtools --bin rdm-measure -- scbench run \
   --arms just-solve,full-lane --seeds 3 --out bench/scbench/runs/<name>
+
+# The cheap plumbing check: one arm, one problem, one seed.
+cargo run -q -p rdm-devtools --bin rdm-measure -- scbench run \
+  --arms just-solve --problems xjq --out bench/scbench/runs/<name>
 ```
 
 `--out` is required and must be missing or empty. The runner refuses a used
@@ -126,6 +130,14 @@ Other flags:
 - `--arms NAME[,NAME...]` (repeatable) runs only those manifest arms, always
   in manifest order whatever order they are listed in; an unknown name is
   refused before anything runs. The default is every arm.
+- `--problems NAME[,NAME...]` (repeatable; `scbench ladder` takes it too)
+  runs only those problems of the manifest's `[problems] subset`, in
+  manifest order. An unknown or empty selection is refused before anything
+  is read, spawned or created, naming the subset's problems. The run behaves
+  as if the manifest's subset (and its `checkpoints`) held only those
+  problems: each unit's `run.yaml`, the `--dry-run` projection, the rdm
+  arms' plan-repo copies, the run record's `manifest` and the report all see
+  only them. The default is every subset problem.
 - `--seeds N` runs each selected arm with seeds 1 to N (default 1). The seed
   reaches SCBench as its global `--seed` option:
   `slop-code --seed <n> run ...` and `slop-code --seed <n> eval ...`.
@@ -233,6 +245,9 @@ The run record `rdm-scbench-run.json` sits beside the arm directories, never
 inside SCBench's `output/` trees. It holds:
 
 - `schema: 2`, `seeds` (`[1, ..., n]`) and `selected_arms`
+- `problems_filter`: the problems `--problems` selected, in manifest order,
+  or `null` without it; the record's `manifest.problems` is then narrowed to
+  them, as its arms are to `--arms`
 - every manifest pin, and the manifest path
 - the rdm SHA
 - the observed `uv`, Docker and `claude` versions
@@ -272,12 +287,20 @@ interval. A unit whose eval never finished is listed under `skipped_runs`
 rather than counted. A phase 1 to 4 run record (one seed, no `schema`) is
 still read.
 
+The report covers the problems the run ran, as its record's
+`manifest.problems` names them, and carries them as `problems` with the
+run's `problems_filter`. A run made with `--problems xjq` reports xjq alone:
+no other problem counts toward the pass-rate denominator, the lane failures
+or the per-checkpoint rows. The markdown header lists the problems, marked
+`(--problems)` when filtered.
+
 `--save-baseline <name>` also writes `baselines/<name>.json` beside the
 run's manifest, keyed by five pins: the rdm, SCBench and `scb-problems` SHAs,
 the model and the Claude Code version. It is refused when a pin is missing
 or the name already exists. `--baseline <name>` renders the run beside that
-baseline and flags any non-rdm pin that differs. Neither changes the exit
-code.
+baseline and flags any non-rdm pin that differs, and a differing problem set
+(a `--problems` run against a full one, say) as `problems`. Neither changes
+the exit code.
 
 ## rdm-equipped image
 

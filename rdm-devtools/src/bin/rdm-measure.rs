@@ -19,10 +19,11 @@
 //!                               [--min-batch-group N] [--allow-underpowered]
 //!                               [--review-lib PATH] [--host-timeout-secs N]
 //! rdm-measure scbench run --out DIR [--manifest PATH] [--cache-dir DIR]
-//!                         [--arms NAME,...] [--seeds N]
+//!                         [--arms NAME,...] [--problems NAME,...] [--seeds N]
 //!                         [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
 //!                         [--stop-grace-secs N] [--dry-run]
 //! rdm-measure scbench ladder --out DIR --seeds N [--manifest PATH] [--cache-dir DIR]
+//!                            [--problems NAME,...]
 //!                            [--uv-bin PATH] [--docker-bin PATH] [--claude-bin PATH]
 //!                            [--stop-grace-secs N] [--baseline NAME] [--dry-run]
 //! rdm-measure scbench report --run DIR [--baseline NAME] [--save-baseline NAME]
@@ -158,6 +159,11 @@ struct ScbenchLadderArgs {
     /// run's cost choice.
     #[arg(long, value_name = "N", value_parser = positive_int)]
     seeds: u64,
+    /// The problems to run, a subset of the manifest's [problems] subset;
+    /// repeatable and comma-separated (default: every subset problem). An
+    /// unknown name is refused before anything runs.
+    #[arg(long, value_name = "NAME", value_parser = flag_value)]
+    problems: Vec<String>,
     /// The `uv` executable.
     #[arg(long, value_name = "PATH", value_parser = flag_value, default_value = "uv")]
     uv_bin: String,
@@ -261,6 +267,11 @@ struct ScbenchRunArgs {
     /// every arm). They always run in manifest order.
     #[arg(long, value_name = "NAME", value_parser = flag_value)]
     arms: Vec<String>,
+    /// The problems to run, a subset of the manifest's [problems] subset;
+    /// repeatable and comma-separated (default: every subset problem). An
+    /// unknown name is refused before anything runs.
+    #[arg(long, value_name = "NAME", value_parser = flag_value)]
+    problems: Vec<String>,
     /// How many seeds each arm runs with (seeds 1..=N).
     #[arg(long, value_name = "N", value_parser = positive_int, default_value = "1")]
     seeds: u64,
@@ -743,6 +754,7 @@ fn scbench_ladder_cmd(a: &ScbenchLadderArgs) -> Result<ExitCode, String> {
             claude: a.claude_bin.clone(),
         },
         seeds: a.seeds,
+        problems: (!a.problems.is_empty()).then(|| comma_split(&a.problems)),
         baseline: a.baseline.clone(),
         dry_run: a.dry_run,
         stop_grace: Duration::from_secs(a.stop_grace_secs),
@@ -789,6 +801,7 @@ fn scbench_cmd(a: &ScbenchArgs) -> Result<ExitCode, String> {
             claude: r.claude_bin.clone(),
         },
         arms: (!r.arms.is_empty()).then(|| comma_split(&r.arms)),
+        problems: (!r.problems.is_empty()).then(|| comma_split(&r.problems)),
         seeds: r.seeds,
         dry_run: r.dry_run,
         stop_grace: Duration::from_secs(r.stop_grace_secs),

@@ -229,6 +229,15 @@ pub struct Report {
     pub run: PathBuf,
     /// The run's pins.
     pub pins: Pins,
+    /// The problems the run ran (its record's `manifest.problems.subset`,
+    /// narrowed by `--problems`); empty in a report saved before it was
+    /// recorded.
+    #[serde(default)]
+    pub problems: Vec<String>,
+    /// The run's `--problems` selection; `None` when it ran every subset
+    /// problem.
+    #[serde(default)]
+    pub problems_filter: Option<Vec<String>>,
     /// The pass policy every checkpoint was judged by.
     pub pass_policy: String,
     /// The bootstrap parameters.
@@ -255,6 +264,7 @@ pub(super) struct RecordView {
     pub(super) manifest_path: Option<PathBuf>,
     rdm: ShaView,
     pub(super) observed: ObservedView,
+    problems_filter: Option<Vec<String>>,
     arms: Vec<ArmView>,
 }
 
@@ -749,6 +759,8 @@ pub(super) fn build(run: &Path, record: &RecordView) -> Result<Report, String> {
             model: m.agent.model.clone(),
             claude_code_version: m.agent.claude_code_version.clone(),
         },
+        problems: m.problems.subset.clone(),
+        problems_filter: record.problems_filter.clone(),
         pass_policy: policy_name,
         bootstrap: Bootstrap {
             unit: "seed".to_owned(),
@@ -839,6 +851,17 @@ pub fn render_markdown(report: &Report) -> String {
     out.push_str(&format!("Run: `{}`\n\n", report.run.display()));
     for (name, value) in report.pins.named() {
         out.push_str(&format!("- {name}: `{}`\n", value.unwrap_or("unknown")));
+    }
+    if !report.problems.is_empty() {
+        out.push_str(&format!(
+            "- problems: `{}`{}\n",
+            report.problems.join(", "),
+            if report.problems_filter.is_some() {
+                " (--problems)"
+            } else {
+                ""
+            }
+        ));
     }
     out.push_str(&format!("- pass_policy: `{}`\n\n", report.pass_policy));
 

@@ -212,7 +212,7 @@ pub fn load(dir: &Path, name: &str) -> Result<Baseline, String> {
 /// Sets `current` beside `saved`.
 pub fn compare(current: &Report, saved: &Baseline) -> BaselineComparison {
     let base = &saved.report;
-    let pin_differences: Vec<PinDifference> = current
+    let mut pin_differences: Vec<PinDifference> = current
         .pins
         .named()
         .into_iter()
@@ -224,6 +224,19 @@ pub fn compare(current: &Report, saved: &Baseline) -> BaselineComparison {
             baseline: b.map(str::to_owned),
         })
         .collect();
+    // A run over a `--problems` subset never reads as comparable with one
+    // over a different problem set. A report saved before the problems were
+    // recorded has none, and is not flagged.
+    if !current.problems.is_empty()
+        && !base.problems.is_empty()
+        && current.problems != base.problems
+    {
+        pin_differences.push(PinDifference {
+            pin: "problems".to_owned(),
+            current: Some(current.problems.join(", ")),
+            baseline: Some(base.problems.join(", ")),
+        });
+    }
     let arms = current
         .arms
         .iter()
@@ -333,5 +346,73 @@ mod tests {
             let e = check_name("--save-baseline", bad).expect_err(bad);
             assert!(e.contains("--save-baseline"), "{e}");
         }
+    }
+
+    fn report_over(problems: &[&str]) -> Report {
+        let some = |s: &str| Some(s.to_owned());
+        Report {
+            schema: report::REPORT_SCHEMA,
+            run: PathBuf::from("/runs/r"),
+            pins: Pins {
+                rdm_sha: some("a"),
+                scbench_sha: some("b"),
+                problems_sha: some("c"),
+                model: some("m"),
+                claude_code_version: some("v"),
+            },
+            problems: problems.iter().map(|&p| p.to_owned()).collect(),
+            problems_filter: None,
+            pass_policy: "all-cases".to_owned(),
+            bootstrap: report::Bootstrap {
+                unit: "seed".to_owned(),
+                method: "percentile".to_owned(),
+                resamples: 1,
+                level: 0.95,
+                rng: "splitmix64".to_owned(),
+                seed_key: "k".to_owned(),
+            },
+            metrics: Vec::new(),
+            arms: Vec::new(),
+            comparisons: Vec::new(),
+            skipped_runs: Vec::new(),
+            baseline: None,
+        }
+    }
+
+    fn saved(report: Report) -> Baseline {
+        Baseline {
+            schema: BASELINE_SCHEMA,
+            name: "b".to_owned(),
+            saved: "2026-01-01T00:00:00Z".to_owned(),
+            pins: report.pins.clone(),
+            observed_claude: None,
+            source_run: PathBuf::from("/runs/b"),
+            report,
+        }
+    }
+
+    #[test]
+    fn a_differing_problem_set_is_not_comparable() {
+        let c = compare(
+            &report_over(&["xjq"]),
+            &saved(report_over(&["mvvault", "xjq"])),
+        );
+        assert_eq!(
+            c.pin_differences,
+            [PinDifference {
+                pin: "problems".to_owned(),
+                current: Some("xjq".to_owned()),
+                baseline: Some("mvvault, xjq".to_owned()),
+            }]
+        );
+        assert!(!c.comparable);
+
+        let same = compare(
+            &report_over(&["mvvault", "xjq"]),
+            &saved(report_over(&["mvvault", "xjq"])),
+        );
+        assert!(same.comparable, "{:?}", same.pin_differences);
+        let unrecorded = compare(&report_over(&["xjq"]), &saved(report_over(&[])));
+        assert!(unrecorded.comparable, "{:?}", unrecorded.pin_differences);
     }
 }

@@ -28,7 +28,9 @@ pub const RECORD_SCHEMA: u32 = 2;
 pub struct RunRecord {
     /// [`RECORD_SCHEMA`].
     pub schema: u32,
-    /// Every pin, as parsed, with the selected arms.
+    /// Every pin, as parsed, with the selected arms and, under `--problems`,
+    /// the selected problems (`problems.subset` and `problems.checkpoints`
+    /// narrowed to them).
     pub manifest: Manifest,
     /// The manifest file the run loaded.
     pub manifest_path: PathBuf,
@@ -42,6 +44,9 @@ pub struct RunRecord {
     pub seeds: Vec<u64>,
     /// The arms `--arms` selected, in manifest order.
     pub selected_arms: Vec<String>,
+    /// The problems `--problems` selected, in manifest order; `null` without
+    /// `--problems`.
+    pub problems_filter: Option<Vec<String>>,
     /// Each unit's (arm and seed's) generated configs and SCBench run
     /// directory, in run order.
     pub arms: Vec<ArmRecord>,
@@ -703,6 +708,7 @@ pub fn execute(
     paths: &Paths,
     tools: &Tools,
     seeds: &[u64],
+    problems_filter: Option<&[String]>,
     template: Option<&str>,
     prompts: &BTreeMap<String, String>,
     interrupts: &Interrupts,
@@ -723,6 +729,7 @@ pub fn execute(
             model_file: None,
             seeds: seeds.to_vec(),
             selected_arms: manifest.arms.iter().map(|a| a.name.clone()).collect(),
+            problems_filter: problems_filter.map(<[String]>::to_vec),
             arms: Vec::new(),
             commands: Vec::new(),
         },

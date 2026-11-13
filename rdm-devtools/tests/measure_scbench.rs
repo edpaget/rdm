@@ -3793,3 +3793,211 @@ fn one_failed_rm_does_not_hide_the_other_removals() {
         json!(["box-b"])
     );
 }
+
+// --- --problems -------------------------------------------------------------
+
+/// A bench whose fake `uv` run of `just-solve` and `full-lane` (seed 1)
+/// leaves evaluated xjq checkpoints 1 and 2 (just-solve passes 1, full-lane
+/// both) and, for full-lane, a landed plan-repo export per checkpoint. The
+/// manifest's subset is mvvault (3) and xjq (2); nothing is placed for
+/// mvvault.
+fn xjq_only_bench() -> Bench {
+    use rdm_core::model::PhaseStatus::Done;
+    let b = Bench::new(&full_lane_spec());
+    let tars = b.root.join("tars");
+    let mut xjq = PlanRepo::new(&b.home(), &b.root.join("fixture/xjq"));
+    xjq.add(1, Done, None);
+    let x1 = xjq.snapshot(&tars.join("x-1.tar"), "X1", &[]);
+    xjq.add(2, Done, None);
+    let x2 = xjq.snapshot(&tars.join("x-2.tar"), "X2", &[]);
+    let staged = b.root.join("staged-problems");
+    let mut responses: Vec<(String, Value)> = Vec::new();
+    let mut n = 0;
+    for arm in ["just-solve", "full-lane"] {
+        let unit = b.out.join(arm).join("seed-1");
+        let run_dir = unit.join("output");
+        let mut place = Vec::new();
+        for (c, tar) in [(1, &x1), (2, &x2)] {
+            let mut cp = scbench_support::simple("xjq", &format!("checkpoint_{c}"), c);
+            if arm == "just-solve" && c == 2 {
+                cp.eval = Some(scbench_support::Eval {
+                    passed: false,
+                    infra: false,
+                });
+            }
+            for (rel, text) in scbench_support::files(&run_dir, &cp) {
+                n += 1;
+                let from = staged.join(format!("{n}"));
+                write(&from, &text);
+                place.push(json!({ "from": from, "to": run_dir.join(rel) }));
+            }
+            if arm == "full-lane" {
+                let to = run_dir
+                    .join(format!("xjq/checkpoint_{c}"))
+                    .join("agent/workspace/projects/-workspace/rdm-plan/000001.tar");
+                place.push(json!({ "from": tar, "to": to }));
+            }
+        }
+        responses.push((p(&unit.join("run.yaml")), json!({ "place": place })));
+    }
+    let version = ["--version"];
+    let needles: Vec<[&str; 1]> = responses.iter().map(|(n, _)| [n.as_str()]).collect();
+    let mut all: Vec<(&[&str], Value)> = vec![(&version, json!({ "stdout": "uv 0.0.0-fake\n" }))];
+    all.extend(
+        needles
+            .iter()
+            .zip(&responses)
+            .map(|(n, (_, r))| (&n[..], r.clone())),
+    );
+    b.scenario("uv", &json!({ "default": { "exit": 0 } }), &all);
+    b
+}
+
+const XJQ_ONLY: &[&str] = &["--arms", "just-solve,full-lane", "--problems", "xjq"];
+
+#[test]
+fn run_problems_runs_only_the_selected_problem() {
+    let b = xjq_only_bench();
+    ok(&b.run(XJQ_ONLY));
+    for arm in ["just-solve", "full-lane"] {
+        let run_config = read_json(&b.out.join(arm).join("seed-1/run.yaml"));
+        assert_eq!(run_config["problems"], json!(["xjq"]), "{arm}");
+    }
+    let record = b.record();
+    assert_eq!(record["problems_filter"], json!(["xjq"]));
+    assert_eq!(record["manifest"]["problems"]["subset"], json!(["xjq"]));
+    assert_eq!(
+        record["manifest"]["problems"]["checkpoints"],
+        json!({ "xjq": 2 })
+    );
+    let lane = &arm_record(&record, "full-lane")["lane"];
+    let problems: Vec<Value> = lane["problems"]
+        .as_array()
+        .expect("lane problems")
+        .iter()
+        .map(|p| p["problem"].clone())
+        .collect();
+    assert_eq!(problems, [json!("xjq")]);
+
+    let unfiltered = b.root.join("out-all");
+    ok(&b.run_into(&unfiltered, &["--arms", "just-solve"]));
+    assert_eq!(b.record_at(&unfiltered)["problems_filter"], Value::Null);
+}
+
+#[test]
+fn run_refuses_an_unknown_problem_before_spawning() {
+    let b = Bench::new(&Spec::default());
+    let err = fails(&b.run(&["--problems", "xjq,nope"]));
+    assert!(
+        err.contains("--problems") && err.contains("\"nope\"") && err.contains("mvvault, xjq"),
+        "stderr: {err}"
+    );
+    for role in ["uv", "docker", "claude"] {
+        assert!(b.calls(role).is_none(), "{role} was spawned");
+    }
+    assert!(!b.out.exists() && !b.cache.exists());
+
+    let err = fails(&b.ladder(&b.out, &["--seeds", "1", "--problems", "nope"], &[]));
+    assert!(
+        err.contains("--problems") && err.contains("\"nope\"") && err.contains("mvvault, xjq"),
+        "stderr: {err}"
+    );
+    assert!(!err.contains("ladder preflight"), "stderr: {err}");
+    for role in ["uv", "docker", "claude"] {
+        assert!(b.calls(role).is_none(), "{role} was probed");
+    }
+    assert!(!b.out.exists() && !b.cache.exists());
+}
+
+#[test]
+fn ladder_problems_dry_run_prints_the_reduced_count() {
+    let b = Bench::new(&Spec::default());
+    let o = b.ladder(
+        &b.out,
+        &["--seeds", "3", "--problems", "xjq", "--dry-run"],
+        &[],
+    );
+    let body = json(&ok(&o));
+    let reduced = json!({
+        "arms": 2,
+        "seeds": 3,
+        "problems": { "xjq": 2 },
+        "checkpoints": 2,
+        "sessions": 6,
+        "checkpoint_runs": 12,
+    });
+    assert_eq!(body["projection"], reduced);
+    assert_eq!(body["plan"]["projection"], reduced);
+    assert_eq!(body["plan"]["problems_filter"], json!(["xjq"]));
+    assert!(
+        stderr(&o).contains(
+            "scbench ladder: projected 12 checkpoint runs (2 arms × 3 seeds × 2 checkpoints over 1 problems), 6 problem sessions"
+        ),
+        "{}",
+        stderr(&o)
+    );
+    for role in ["uv", "docker", "claude"] {
+        assert!(b.calls(role).is_none(), "{role} was spawned");
+    }
+    assert!(!b.out.exists() && !b.cache.exists());
+
+    let run = json(&ok(&b.run(&[
+        "--seeds",
+        "3",
+        "--problems",
+        "xjq",
+        "--dry-run",
+    ])));
+    assert_eq!(run["projection"], reduced);
+    assert_eq!(run["problems_filter"], json!(["xjq"]));
+    assert_eq!(run["manifest"]["problems"]["subset"], json!(["xjq"]));
+    let all = json(&ok(&b.run(&["--dry-run"])));
+    assert_eq!(all["problems_filter"], Value::Null);
+    assert!(!b.out.exists());
+}
+
+#[test]
+fn problems_filter_run_then_report_covers_only_xjq() {
+    let b = xjq_only_bench();
+    ok(&b.run(XJQ_ONLY));
+    let o = b.report(&b.out, &["--format", "json"]);
+    let r = json(&ok(&o));
+    assert_eq!(r["problems"], json!(["xjq"]));
+    assert_eq!(r["problems_filter"], json!(["xjq"]));
+    assert_eq!(r["skipped_runs"], json!([]));
+    for a in r["arms"].as_array().expect("arms") {
+        let problems: Vec<&Value> = a["checkpoints"]
+            .as_array()
+            .expect("checkpoints")
+            .iter()
+            .map(|c| &c["problem"])
+            .collect();
+        assert_eq!(problems, [&json!("xjq"), &json!("xjq")], "{}", a["name"]);
+    }
+    let arm = |name: &str| {
+        r["arms"]
+            .as_array()
+            .expect("arms")
+            .iter()
+            .find(|a| a["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no arm {name}"))
+    };
+    // The denominator is xjq's 2 checkpoints, not 2 + mvvault's 3.
+    assert_eq!(
+        arm("just-solve")["summary"]["pass_rate"]["samples"],
+        json!([{ "seed": 1, "value": 0.5 }])
+    );
+    let fl = arm("full-lane");
+    assert_eq!(
+        fl["summary"]["pass_rate"]["samples"],
+        json!([{ "seed": 1, "value": 1.0 }])
+    );
+    assert_eq!(
+        fl["summary"]["lane_failures"]["samples"],
+        json!([{ "seed": 1, "value": 0.0 }])
+    );
+    assert_eq!(fl["lane_failure_reasons"], json!({}));
+    let md = std::fs::read_to_string(b.out.join("rdm-scbench-report.md")).expect("md report");
+    assert!(md.contains("- problems: `xjq` (--problems)"), "{md}");
+}

@@ -113,6 +113,20 @@ over the given seeds, then the report.
    be missing or empty. The ladder also takes `--manifest`, `--cache-dir`,
    `--uv-bin`, `--docker-bin`, `--claude-bin` and `--baseline <name>`.
 
+   For a cheap plumbing check before the full ladder, `--problems
+   NAME[,NAME...]` (on `ladder` and `run`) runs only those problems of the
+   manifest's subset, without editing the manifest. An unknown name is
+   refused before the preflight and before anything is spawned, and
+   `--dry-run` projects the reduced count:
+
+   ```bash
+   cargo run -q -p rdm-devtools --bin rdm-measure -- scbench ladder \
+     --seeds 1 --problems xjq --out bench/scbench/runs/<name> --dry-run
+   ```
+
+   The run record carries the selection as `problems_filter`, and the
+   report covers only the problems that ran.
+
 4. **Read a preflight failure.** The preflight runs cheapest first and stops
    at the first failure, before any `slop-code` command and before `--out`
    is created. Each prints `error: ladder preflight: ...` and exits 1:
@@ -323,7 +337,10 @@ are shown side by side, with the difference and its interval. The rdm SHA is
 expected to differ, since it is the treatment. Any other pin that differs is
 flagged as **not comparable**, with both values: the runs measured different
 SCBench code, problems, models or Claude Code. Re-baseline then, rather than
-reading the difference. Arms present in only one run are listed.
+reading the difference. Arms present in only one run are listed. A
+differing problem set is flagged the same way, as `problems`: a `--problems`
+plumbing run is never silently compared with a baseline over the full
+subset.
 
 A baseline comparison never gates anything and never changes the exit code.
 

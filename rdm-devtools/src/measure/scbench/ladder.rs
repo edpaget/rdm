@@ -53,6 +53,9 @@ pub struct LadderOptions {
     pub tools: Tools,
     /// How many seeds every arm runs with.
     pub seeds: u64,
+    /// The problems to run (`--problems`, [`RunOptions::problems`]); `None`
+    /// runs every subset problem.
+    pub problems: Option<Vec<String>>,
     /// A baseline the report renders the run beside.
     pub baseline: Option<String>,
     /// Print the projection, preflight and plan; spawn nothing and create
@@ -160,7 +163,9 @@ pub fn run(
         baseline::check_name("--baseline", name)?;
     }
     let manifest_path = std::path::absolute(&opts.manifest).unwrap_or(opts.manifest.clone());
-    let manifest = Manifest::load(&manifest_path)?;
+    let manifest = Manifest::load(&manifest_path)?
+        .select_problems(opts.problems.as_deref())
+        .map_err(|e| format!("{e} ({})", manifest_path.display()))?;
     let out = std::path::absolute(&opts.out).unwrap_or(opts.out.clone());
     refuse_used_out(&out)?;
     let projection = plan::projection(&manifest, opts.seeds);
@@ -182,6 +187,7 @@ pub fn run(
         out: out.clone(),
         tools: opts.tools.clone(),
         arms: None,
+        problems: opts.problems.clone(),
         seeds: opts.seeds,
         dry_run,
         stop_grace: opts.stop_grace,

@@ -297,6 +297,43 @@ impl Manifest {
         Ok(selected)
     }
 
+    /// A copy whose `[problems] subset` holds only the problems `names`
+    /// selects, in manifest order (duplicates collapse), with
+    /// `checkpoints` narrowed to the same problems; `None` selects every
+    /// problem.
+    ///
+    /// # Errors
+    ///
+    /// When a name is not in the manifest's `[problems] subset`, or `names`
+    /// selects none; the message names the flag (`--problems`), the name and
+    /// the subset's problems.
+    pub fn select_problems(&self, names: Option<&[String]>) -> Result<Self, String> {
+        let Some(names) = names else {
+            return Ok(self.clone());
+        };
+        let known = || self.problems.subset.join(", ");
+        if names.is_empty() {
+            return Err(format!(
+                "--problems: no problem selected; problems: {}",
+                known()
+            ));
+        }
+        if let Some(unknown) = names.iter().find(|n| !self.problems.subset.contains(n)) {
+            return Err(format!(
+                "--problems: no problem \"{unknown}\" in the manifest's [problems] subset; \
+                 problems: {}",
+                known()
+            ));
+        }
+        let mut selected = self.clone();
+        selected.problems.subset.retain(|p| names.contains(p));
+        selected
+            .problems
+            .checkpoints
+            .retain(|p, _| names.contains(p));
+        Ok(selected)
+    }
+
     /// The absolute path of `arm`'s prompt when it is a
     /// [`PromptFrom::Manifest`] prompt; `None` for an SCBench prompt.
     pub fn manifest_prompt_source(&self, arm: &Arm) -> Option<PathBuf> {
@@ -826,6 +863,40 @@ prompt = "configs/prompts/anti_slop.jinja"
         );
         let e = m.select_arms(Some(&[])).expect_err("empty");
         assert!(e.contains("--arms"), "{e}");
+    }
+
+    #[test]
+    fn select_problems_keeps_manifest_order_collapses_duplicates_and_narrows_checkpoints() {
+        let m = parse(&text()).expect("valid");
+        let names = ["xjq", "mvvault", "xjq"].map(str::to_owned);
+        let both = m.select_problems(Some(&names)).expect("selected");
+        assert_eq!(both.problems.subset, ["mvvault", "xjq"]);
+        assert_eq!(both.problems.checkpoints, m.problems.checkpoints);
+        let one = m
+            .select_problems(Some(&["xjq".to_owned(), "xjq".to_owned()]))
+            .expect("selected");
+        assert_eq!(one.problems.subset, ["xjq"]);
+        assert_eq!(
+            one.problems.checkpoints,
+            BTreeMap::from([("xjq".to_owned(), 5)])
+        );
+        assert_eq!(one.arms, m.arms);
+        assert_eq!(m.select_problems(None).expect("all"), m);
+    }
+
+    #[test]
+    fn select_problems_refuses_an_unknown_or_empty_selection() {
+        let m = parse(&text()).expect("valid");
+        let e = m
+            .select_problems(Some(&["nope".to_owned()]))
+            .expect_err("unknown");
+        assert_eq!(
+            e,
+            "--problems: no problem \"nope\" in the manifest's [problems] subset; \
+             problems: mvvault, xjq"
+        );
+        let e = m.select_problems(Some(&[])).expect_err("empty");
+        assert_eq!(e, "--problems: no problem selected; problems: mvvault, xjq");
     }
 
     #[test]
