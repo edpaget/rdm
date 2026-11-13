@@ -107,6 +107,12 @@ pub struct BaselineComparison {
     pub arms: Vec<BaselineArm>,
     /// The arms only one run has.
     pub unmatched_arms: UnmatchedArms,
+    /// Whether the baseline's report splits application code from tests
+    /// (report schema 2 or later). Without the split its application,
+    /// tests and regression metrics have no baseline value; this is not a
+    /// pin difference and leaves `comparable` alone.
+    #[serde(default)]
+    pub baseline_has_split: bool,
 }
 
 /// Refuses a baseline name that is not `[A-Za-z0-9][A-Za-z0-9._-]*`.
@@ -287,6 +293,7 @@ pub fn compare(current: &Report, saved: &Baseline) -> BaselineComparison {
             current_only: only(current, base),
             baseline_only: only(base, current),
         },
+        baseline_has_split: base.schema >= 2,
     }
 }
 
@@ -306,6 +313,14 @@ pub(super) fn render_markdown(out: &mut String, b: &BaselineComparison, metrics:
         b.rdm_sha.current.as_deref().unwrap_or("unknown"),
         b.rdm_sha.baseline.as_deref().unwrap_or("unknown"),
     ));
+    if !b.baseline_has_split {
+        out.push_str(&format!(
+            "> baseline `{}` predates the application/tests split (report schema 1): \
+             application, tests and regression metrics have no baseline value; compare the \
+             SCBench snapshot (includes tests) rows.\n\n",
+            b.name
+        ));
+    }
     for arm in &b.arms {
         out.push_str(&format!("### {}\n\n", arm.name));
         let header = ["metric", "current", "baseline", "Δ"].map(str::to_owned);
@@ -314,7 +329,7 @@ pub(super) fn render_markdown(out: &mut String, b: &BaselineComparison, metrics:
             .filter_map(|m| {
                 let x = arm.metrics.get(&m.key)?;
                 Some(vec![
-                    m.key.clone(),
+                    m.label(),
                     report::cell(x.current.as_ref()),
                     report::cell(x.baseline.as_ref()),
                     report::delta_cell(x.delta.as_ref()),
@@ -414,5 +429,50 @@ mod tests {
         assert!(same.comparable, "{:?}", same.pin_differences);
         let unrecorded = compare(&report_over(&["xjq"]), &saved(report_over(&[])));
         assert!(unrecorded.comparable, "{:?}", unrecorded.pin_differences);
+    }
+
+    /// A baseline saved by a schema-1 report: no `scope` on its metrics, no
+    /// split or regression fields on its checkpoints.
+    const SCHEMA_1_BASELINE: &str = r#"{
+      "schema": 1, "name": "old", "saved": "2026-01-01T00:00:00Z",
+      "pins": {"rdm_sha": "a", "scbench_sha": "b", "problems_sha": "c", "model": "m",
+               "claude_code_version": "v"},
+      "observed_claude": null, "source_run": "/runs/old",
+      "report": {
+        "schema": 1, "run": "/runs/old",
+        "pins": {"rdm_sha": "a", "scbench_sha": "b", "problems_sha": "c", "model": "m",
+                 "claude_code_version": "v"},
+        "pass_policy": "all-cases",
+        "bootstrap": {"unit": "seed", "method": "percentile", "resamples": 1, "level": 0.95,
+                      "rng": "splitmix64", "seed_key": "k"},
+        "metrics": [{"key": "pass_rate", "better": "higher"},
+                    {"key": "cc_max_final", "better": "lower"}],
+        "arms": [{"name": "x", "group": "control", "image": "stock", "seeds": [1],
+                  "summary": {"pass_rate": null, "cc_max_final": null},
+                  "lane_failure_reasons": null,
+                  "checkpoints": [{"problem": "p", "checkpoint": "checkpoint_1", "order": 1,
+                                   "passed": null, "metrics": {"cc_max": null},
+                                   "delta": {"cc_max": null}}]}],
+        "comparisons": [], "skipped_runs": [], "baseline": null
+      }
+    }"#;
+
+    #[test]
+    fn a_schema_1_baseline_loads_and_is_flagged_as_predating_the_split() {
+        let old: Baseline = serde_json::from_str(SCHEMA_1_BASELINE).expect("schema-1 baseline");
+        assert_eq!(old.report.metrics[1].scope, None);
+        assert!(old.report.arms[0].checkpoints[0].application.is_empty());
+        let c = compare(&report_over(&[]), &old);
+        assert!(!c.baseline_has_split);
+        assert!(c.comparable);
+        let mut md = String::new();
+        render_markdown(&mut md, &c, &[]);
+        assert!(md.contains("predates the application/tests split"), "{md}");
+
+        let new = compare(&report_over(&[]), &saved(report_over(&[])));
+        assert!(new.baseline_has_split);
+        let mut md = String::new();
+        render_markdown(&mut md, &new, &[]);
+        assert!(!md.contains("predates"), "{md}");
     }
 }

@@ -273,15 +273,18 @@ cargo run -q -p rdm-devtools --bin rdm-measure -- scbench report \
 
 `scbench report` makes no call. It reads the run record and each finished
 unit's SCBench checkpoint tree (`evaluation.json`,
-`quality_analysis/overall_quality.json` and `inference_result.json` per
+`quality_analysis/overall_quality.json`, `quality_analysis/files.jsonl`,
+`quality_analysis/symbols.jsonl` and `inference_result.json` per
 checkpoint, plus the token totals of the final `result` event in
 `agent/stdout.jsonl` when the checkpoint has one), then writes `rdm-scbench-report.json` and
 `rdm-scbench-report.md` beside the run record and prints the chosen format
 (default markdown). Per arm it gives the checkpoint pass rate (under the
-manifest's `pass_policy`), the erosion metrics at the last checkpoint and
-their change since the first, every erosion metric per checkpoint with its
-change from the previous one, cost, tokens, agent wall-clock and the
-lane-failure count. Each figure carries a 95% bootstrap interval over seeds.
+manifest's `pass_policy`), the hidden regression tests' outcome, the
+erosion metrics at the last checkpoint and their change since the first
+(for application code, for the tests, and as SCBench scored the whole
+snapshot), the application erosion per checkpoint with its change from the
+previous one, cost, tokens, agent wall-clock and the lane-failure count.
+Each figure carries a 95% bootstrap interval over seeds.
 It also gives every `rdm` arm's difference from every `control` arm, with an
 interval. A unit whose eval never finished is listed under `skipped_runs`
 rather than counted. A phase 1 to 4 run record (one seed, no `schema`) is
@@ -301,6 +304,71 @@ or the name already exists. `--baseline <name>` renders the run beside that
 baseline and flags any non-rdm pin that differs, and a differing problem set
 (a `--problems` run against a full one, say) as `problems`. Neither changes
 the exit code.
+
+### Application code, tests and regressions
+
+SCBench scores every Python file in a checkpoint's snapshot, including the
+tests the agent wrote. The rdm arms write tests and the control arms mostly
+do not, so whole-snapshot quality compares different bodies of code: simple
+test functions pull mean complexity down, and test asserts add lint. The
+report (schema 2) therefore splits each checkpoint's analysed files into two
+sets, by one rule (`outputs::is_test_file`):
+
+- a `\` in the path is read as `/`;
+- a file is **test code** when any directory component is `tests` or `test`
+  (`tests/conftest.py`, `pkg/tests/util.py`, `src/test/helpers.py`), or its
+  name is `conftest.py`, `test_*.py` or `*_test.py`;
+- every other analysed file is **application code**, including
+  `xjqlib/testing.py`, `contest.py` and a top-level `tests.py`.
+
+Each set's erosion metrics are recomputed from SCBench's per-file
+(`files.jsonl`) and per-symbol (`symbols.jsonl`) rows, a symbol going with
+its file, using SCBench's own rules: `sloc`, `lint_errors`,
+`single_use_functions` and `trivial_wrappers` are summed over the files and
+`mi_mean` is their mean MI; `cc_max`, `cc_high_count` (complexity above 10)
+and `max_nesting_depth` are taken over the `function` and `method` symbols.
+Over both sets together this reproduces SCBench's `overall_quality.json`.
+
+- **Application code** (`app_<metric>_final`, `app_<metric>_change`, and
+  `application` per checkpoint) is the headline quality comparison between
+  arms (`## Application code`).
+- **Tests** (`tests_<metric>_final`, `tests_file_count_final`,
+  `tests_code_ratio_final`, and `tests` per checkpoint) are context only and
+  never mixed into the code-quality figures (`## Tests`): test lines, test
+  files, test lines per application line, and the same lint, complexity,
+  nesting and MI measures over the test set alone.
+- **Regression tests** (`## Regression tests`): `regression_pass_rate` is
+  the hidden `Regression` tests passed over those run, summed over the
+  evaluated checkpoints (SCBench's own `pass_counts` / `total_counts`), and
+  per checkpoint `regression_passed` / `regression_total`. A regression is a
+  test in a `Regression` group that fails after it last passed. It counts
+  once, at the checkpoint where it first fails (`regressions_new`), stays
+  open while it keeps failing (`regressions_open`) and counts again only if
+  it fails after passing again. `regressions` totals the onsets and
+  `regressions_persisting` those still open at the last evaluated
+  checkpoint. A test that never passed is not a regression.
+- **SCBench snapshot** (`<metric>_final`, `<metric>_change`, and `metrics` /
+  `delta` per checkpoint): SCBench's whole-snapshot figures, tests included,
+  under their schema-1 keys so an old report still compares with a new one.
+  Their metric `scope` is `snapshot`, and their rows read
+  "(SCBench snapshot, includes tests)" (`## SCBench snapshot (includes
+  tests)`).
+
+SCBench's other measures cannot be split, since its output gives them only
+over the whole snapshot: `erosion`, `verbosity`, `cloned_pct`, the `graph_*`
+dependency metrics and the complexity distribution measures
+(`cc_concentration`, `cc_top20`, `cc_normalized`). The report does not read
+them; if it ever does, they must be labelled "SCBench snapshot (includes
+tests)".
+
+A checkpoint without both `files.jsonl` and `symbols.jsonl` (older SCBench
+output) has no split: its application and tests figures are `null` (`—`),
+and when no arm has any, the Application code and Tests sections say so in
+one line. A baseline saved by a schema-1 report has no application, tests or
+regression values: those rows show no baseline, the comparison's
+`baseline_has_split` is `false`, and the markdown notes that the baseline
+predates the split; compare the snapshot rows instead. This is not a pin
+difference and does not make the run not comparable.
 
 ## rdm-equipped image
 

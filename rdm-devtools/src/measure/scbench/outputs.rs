@@ -3,10 +3,16 @@
 //!
 //! `slop-code run` writes `<run_dir>/<problem>/<checkpoint>/`
 //! ([`lane::CHECKPOINT_FILE`] and [`INFERENCE_FILE`]); `slop-code eval` adds
-//! [`EVALUATION_FILE`] and [`QUALITY_FILE`]. Only the fields the report uses
+//! [`EVALUATION_FILE`], [`QUALITY_FILE`] and the per-file and per-symbol
+//! rows ([`FILES_FILE`], [`SYMBOLS_FILE`]). Only the fields the report uses
 //! are read (the names SCBench's own `metrics/checkpoint/extractors.py`
 //! reads), and unknown fields are ignored. A missing file is missing data; a
 //! file that exists but does not parse is an error naming it.
+//!
+//! [`QUALITY_FILE`] scores the whole snapshot, tests the agent wrote
+//! included. The per-file rows let the report recompute the same erosion
+//! metrics for application code and for test code separately
+//! ([`is_test_file`], [`QualitySplit`]).
 //!
 //! The token figures come from the checkpoint's agent stream
 //! ([`STREAM_FILE`]) when it has one: its final `result` event's
@@ -17,7 +23,7 @@
 //! final result's cumulative `total_cost_usd`, and its `usage.steps` counts
 //! every assistant message of every `claude` process in the invocation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -29,6 +35,14 @@ use super::lane;
 pub const EVALUATION_FILE: &str = "evaluation.json";
 /// SCBench's `QUALITY_DIR`/`QUALITY_METRIC_SAVENAME` (`SnapshotMetrics`).
 pub const QUALITY_FILE: &str = "quality_analysis/overall_quality.json";
+/// SCBench's per-file quality rows (`FileMetrics`, one JSON object a line).
+pub const FILES_FILE: &str = "quality_analysis/files.jsonl";
+/// SCBench's per-symbol quality rows (`SymbolMetrics`, one JSON object a
+/// line).
+pub const SYMBOLS_FILE: &str = "quality_analysis/symbols.jsonl";
+/// SCBench's `HIGH_CC_THRESHOLD`: a function or method counts toward
+/// `cc_high_count` when its complexity is above this.
+pub const HIGH_CC_THRESHOLD: f64 = 10.0;
 /// SCBench's `INFERENCE_RESULT_FILENAME` (`CheckpointInferenceResult`).
 pub const INFERENCE_FILE: &str = "inference_result.json";
 /// The claude_code agent's stream-json stdout (`STDOUT_FILENAME` under the
@@ -117,10 +131,34 @@ impl PassPolicy {
     }
 }
 
-/// One checkpoint's quality figures (from [`QUALITY_FILE`]).
+/// Whether the analysed file at `path` is test code rather than
+/// application code. The one rule the report splits by:
+///
+/// - a `\` is read as `/`;
+/// - any directory component named `tests` or `test` makes it a test file
+///   (`tests/conftest.py`, `pkg/tests/util.py`, `src/test/helpers.py`);
+/// - so does a file name `conftest.py`, `test_*.py` or `*_test.py`.
+///
+/// Everything else is application code, including `xjqlib/testing.py`,
+/// `contest.py` and a top-level `tests.py`.
+pub fn is_test_file(path: &str) -> bool {
+    let path = path.replace('\\', "/");
+    let mut parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    let Some(name) = parts.pop() else {
+        return false;
+    };
+    parts.iter().any(|d| matches!(*d, "tests" | "test"))
+        || name == "conftest.py"
+        || (name.starts_with("test_") && name.ends_with(".py"))
+        || name.ends_with("_test.py")
+}
+
+/// One checkpoint's quality figures (from [`QUALITY_FILE`], or recomputed
+/// from a set of [`FILES_FILE`] / [`SYMBOLS_FILE`] rows).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Quality {
     values: BTreeMap<&'static str, f64>,
+    file_count: u64,
 }
 
 impl Quality {
@@ -129,6 +167,135 @@ impl Quality {
     pub fn get(&self, key: &str) -> Option<f64> {
         self.values.get(key).copied()
     }
+
+    /// The number of files measured.
+    pub fn file_count(&self) -> u64 {
+        self.file_count
+    }
+
+    /// The erosion metrics of exactly `files` and `symbols`, by SCBench's
+    /// own rules: line, lint, waste counts and MI summed over the files
+    /// (`mi_mean` their mean, absent with no file); `cc_max`,
+    /// `cc_high_count` (complexity above [`HIGH_CC_THRESHOLD`]) and
+    /// `max_nesting_depth` over the `function` and `method` symbols, 0 with
+    /// none.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn from_rows(files: &[&FileRow], symbols: &[&SymbolRow]) -> Self {
+        let sum = |f: &dyn Fn(&FileRow) -> f64| files.iter().map(|r| f(r)).sum::<f64>();
+        let functions: Vec<&&SymbolRow> = symbols
+            .iter()
+            .filter(|s| matches!(s.kind.as_str(), "function" | "method"))
+            .collect();
+        let max =
+            |f: &dyn Fn(&SymbolRow) -> f64| functions.iter().map(|s| f(s)).fold(0.0_f64, f64::max);
+        let mut values = BTreeMap::from([
+            ("cc_max", max(&|s| s.complexity)),
+            (
+                "cc_high_count",
+                functions
+                    .iter()
+                    .filter(|s| s.complexity > HIGH_CC_THRESHOLD)
+                    .count() as f64,
+            ),
+            ("max_nesting_depth", max(&|s| s.max_nesting_depth)),
+            ("lint_errors", sum(&|r| r.lint_errors)),
+            ("single_use_functions", sum(&|r| r.single_use_count)),
+            ("trivial_wrappers", sum(&|r| r.trivial_wrapper_count)),
+            ("sloc", sum(&|r| r.loc)),
+        ]);
+        if !files.is_empty() {
+            values.insert(
+                "mi_mean",
+                sum(&|r| r.mi.unwrap_or(0.0)) / files.len() as f64,
+            );
+        }
+        Self {
+            values,
+            file_count: files.len() as u64,
+        }
+    }
+}
+
+/// One row of [`FILES_FILE`]; only the fields the report uses.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct FileRow {
+    /// The file's path in the snapshot.
+    pub file_path: String,
+    /// Source lines.
+    #[serde(default)]
+    pub loc: f64,
+    /// Lint findings.
+    #[serde(default)]
+    pub lint_errors: f64,
+    /// Maintainability index; `null` when SCBench computed none.
+    #[serde(default)]
+    pub mi: Option<f64>,
+    /// Functions called from exactly one place.
+    #[serde(default)]
+    pub single_use_count: f64,
+    /// Functions that only forward to another call.
+    #[serde(default)]
+    pub trivial_wrapper_count: f64,
+}
+
+/// One row of [`SYMBOLS_FILE`]; only the fields the report uses.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SymbolRow {
+    /// The file the symbol is in.
+    pub file_path: String,
+    /// `function`, `method`, `class`, `variable`, ...
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    /// Cyclomatic complexity.
+    #[serde(default)]
+    pub complexity: f64,
+    /// Deepest nesting inside the symbol.
+    #[serde(default)]
+    pub max_nesting_depth: f64,
+}
+
+/// A checkpoint's quality split by [`is_test_file`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct QualitySplit {
+    /// Every analysed file that is not test code.
+    pub application: Quality,
+    /// The test files alone.
+    pub tests: Quality,
+}
+
+impl QualitySplit {
+    /// Splits `files` and `symbols` (a symbol goes with its `file_path`).
+    pub fn from_rows(files: &[FileRow], symbols: &[SymbolRow]) -> Self {
+        let (tests, app): (Vec<&FileRow>, Vec<&FileRow>) =
+            files.iter().partition(|f| is_test_file(&f.file_path));
+        let (test_symbols, app_symbols): (Vec<&SymbolRow>, Vec<&SymbolRow>) =
+            symbols.iter().partition(|s| is_test_file(&s.file_path));
+        Self {
+            application: Quality::from_rows(&app, &app_symbols),
+            tests: Quality::from_rows(&tests, &test_symbols),
+        }
+    }
+
+    /// The number of test files.
+    pub fn tests_file_count(&self) -> u64 {
+        self.tests.file_count()
+    }
+
+    /// Test lines per application line; `None` when there is no application
+    /// line.
+    pub fn code_ratio(&self) -> Option<f64> {
+        let app = self.application.get("sloc")?;
+        (app > 0.0).then(|| self.tests.get("sloc").unwrap_or(0.0) / app)
+    }
+}
+
+/// A checkpoint's hidden `Regression` tests: SCBench's own counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegressionCounts {
+    /// `pass_counts["Regression"]`.
+    pub passed: u64,
+    /// `total_counts["Regression"]`.
+    pub total: u64,
 }
 
 /// One checkpoint's agent usage (from [`INFERENCE_FILE`], with the tokens
@@ -169,8 +336,19 @@ pub struct CheckpointOutput {
     pub passed: bool,
     /// Whether it has an [`EVALUATION_FILE`].
     pub evaluated: bool,
-    /// Its quality figures, when evaluated.
+    /// Its whole-snapshot quality figures (tests included), when evaluated.
     pub quality: Option<Quality>,
+    /// Its quality split into application and test code; `Some` only when
+    /// both [`FILES_FILE`] and [`SYMBOLS_FILE`] exist.
+    pub split: Option<QualitySplit>,
+    /// Its `Regression` test counts, when evaluated with any.
+    pub regression: Option<RegressionCounts>,
+    /// Every test's outcome, keyed `<origin checkpoint>/<test name>`: `true`
+    /// passed, `false` failed; skipped tests are left out.
+    pub test_outcomes: BTreeMap<String, bool>,
+    /// The keys of [`CheckpointOutput::test_outcomes`] that ran in a
+    /// `*-Regression` group.
+    pub regression_tests: BTreeSet<String>,
     /// Its agent usage, when recorded.
     pub inference: Option<Inference>,
 }
@@ -192,6 +370,46 @@ struct EvaluationJson {
     total_counts: BTreeMap<String, u64>,
     #[serde(default)]
     infrastructure_failure: bool,
+    #[serde(default)]
+    tests: BTreeMap<String, TestGroup>,
+}
+
+/// One `evaluation.json` `tests` entry, keyed `<origin>-<GroupType>`.
+#[derive(Default, Deserialize)]
+struct TestGroup {
+    #[serde(default)]
+    passed: Vec<String>,
+    #[serde(default)]
+    failed: Vec<String>,
+}
+
+impl EvaluationJson {
+    fn regression(&self) -> Option<RegressionCounts> {
+        let total = *self.total_counts.get("Regression")?;
+        Some(RegressionCounts {
+            passed: self.pass_counts.get("Regression").copied().unwrap_or(0),
+            total,
+        })
+    }
+
+    /// Every test's outcome, and the ids that ran as `Regression`.
+    fn outcomes(&self) -> (BTreeMap<String, bool>, BTreeSet<String>) {
+        let mut out = BTreeMap::new();
+        let mut regression = BTreeSet::new();
+        for (key, group) in &self.tests {
+            let (origin, kind) = key.rsplit_once('-').unwrap_or((key.as_str(), ""));
+            for (names, passed) in [(&group.passed, true), (&group.failed, false)] {
+                for name in names {
+                    let id = format!("{origin}/{name}");
+                    if kind == "Regression" {
+                        regression.insert(id.clone());
+                    }
+                    out.insert(id, passed);
+                }
+            }
+        }
+        (out, regression)
+    }
 }
 
 #[derive(Deserialize)]
@@ -353,6 +571,89 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     })
 }
 
+/// Reads the JSON-lines file at `path` as rows of `T`; `None` when it does
+/// not exist. Blank lines are skipped.
+fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Option<Vec<T>>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let mut rows = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        rows.push(serde_json::from_str(line).map_err(|e| {
+            format!(
+                "cannot parse {} line {}: {e} (re-run `slop-code eval ... --overwrite` to \
+                 regenerate it)",
+                path.display(),
+                i + 1
+            )
+        })?);
+    }
+    Ok(Some(rows))
+}
+
+/// One outcome step of [`regressions`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RegressionStep {
+    /// Regressions first seen at this checkpoint.
+    pub new: u64,
+    /// Regressions open after this checkpoint (new ones included).
+    pub open: u64,
+}
+
+/// One problem's regressions over its checkpoints.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RegressionTrack {
+    /// Per checkpoint, in [`ProblemOutput::checkpoints`] order; `None` for a
+    /// checkpoint that was not evaluated.
+    pub steps: Vec<Option<RegressionStep>>,
+    /// Every regression onset.
+    pub onsets: u64,
+    /// Onsets still open at the last evaluated checkpoint.
+    pub persisting: u64,
+}
+
+/// Tracks `problem`'s regressions: a test in a `*-Regression` group that
+/// fails after its last observed outcome was a pass is one regression,
+/// counted once at that checkpoint and open until the test passes again (a
+/// later failure is then a new one). A test that never passed is no
+/// regression, and an unevaluated checkpoint changes no outcome.
+pub fn regressions(problem: &ProblemOutput) -> RegressionTrack {
+    let mut last: BTreeMap<&str, bool> = BTreeMap::new();
+    let mut open: BTreeSet<&str> = BTreeSet::new();
+    let mut track = RegressionTrack::default();
+    for c in &problem.checkpoints {
+        if !c.evaluated {
+            track.steps.push(None);
+            continue;
+        }
+        let mut new = 0;
+        for (id, &passed) in &c.test_outcomes {
+            let id = id.as_str();
+            if passed {
+                open.remove(id);
+            } else if c.regression_tests.contains(id)
+                && last.get(id) == Some(&true)
+                && open.insert(id)
+            {
+                new += 1;
+            }
+            last.insert(id, passed);
+        }
+        track.onsets += new;
+        track.steps.push(Some(RegressionStep {
+            new,
+            open: open.len() as u64,
+        }));
+    }
+    track.persisting = open.len() as u64;
+    track
+}
+
 impl From<QualityJson> for Quality {
     #[allow(clippy::cast_precision_loss)]
     fn from(q: QualityJson) -> Self {
@@ -368,7 +669,10 @@ impl From<QualityJson> for Quality {
         if q.file_count > 0 {
             values.insert("mi_mean", q.complexity.mi_sum / q.file_count as f64);
         }
-        Self { values }
+        Self {
+            values,
+            file_count: q.file_count,
+        }
     }
 }
 
@@ -391,6 +695,16 @@ pub fn read_unit(
             let eval: Option<EvaluationJson> = read_json(&dir.join(EVALUATION_FILE))?;
             let quality: Option<QualityJson> = read_json(&dir.join(QUALITY_FILE))?;
             let inference: Option<InferenceJson> = read_json(&dir.join(INFERENCE_FILE))?;
+            let files: Option<Vec<FileRow>> = read_jsonl(&dir.join(FILES_FILE))?;
+            let symbols: Option<Vec<SymbolRow>> = read_jsonl(&dir.join(SYMBOLS_FILE))?;
+            let split = match (files, symbols) {
+                (Some(f), Some(s)) => Some(QualitySplit::from_rows(&f, &s)),
+                _ => None,
+            };
+            let (test_outcomes, regression_tests) = eval
+                .as_ref()
+                .map(EvaluationJson::outcomes)
+                .unwrap_or_default();
             let totals = match inference {
                 Some(_) => final_result(&dir.join(STREAM_FILE))?,
                 None => None,
@@ -403,6 +717,10 @@ pub fn read_unit(
                 }),
                 evaluated: eval.is_some(),
                 quality: quality.map(Quality::from),
+                split,
+                regression: eval.as_ref().and_then(EvaluationJson::regression),
+                test_outcomes,
+                regression_tests,
                 inference: inference.map(|i| {
                     let net = &i.usage.net_tokens;
                     let t = totals.unwrap_or(ResultTotals {
@@ -631,5 +949,328 @@ mod tests {
         assert_eq!(quality(0).get("mi_mean"), None);
         assert_eq!(quality(0).get("cc_max"), Some(9.0));
         assert_eq!(quality(2).get("max_nesting_depth"), Some(4.0));
+    }
+
+    #[test]
+    fn test_files_follow_the_one_rule() {
+        for path in [
+            "tests/conftest.py",
+            "pkg/tests/util.py",
+            "src/test/helpers.py",
+            "test_a.py",
+            "a/b/test_x.py",
+            "a_test.py",
+            "conftest.py",
+            "tests\\win.py",
+        ] {
+            assert!(is_test_file(path), "{path}");
+        }
+        for path in [
+            "xjq.py",
+            "xjqlib/testing.py",
+            "latest.py",
+            "contest.py",
+            "tests.py",
+            "attest_x.py",
+        ] {
+            assert!(!is_test_file(path), "{path}");
+        }
+    }
+
+    fn file(path: &str, loc: f64, lint: f64, mi: f64, single_use: f64, trivial: f64) -> FileRow {
+        FileRow {
+            file_path: path.to_owned(),
+            loc,
+            lint_errors: lint,
+            mi: Some(mi),
+            single_use_count: single_use,
+            trivial_wrapper_count: trivial,
+        }
+    }
+
+    fn symbol(path: &str, kind: &str, complexity: f64, depth: f64) -> SymbolRow {
+        SymbolRow {
+            file_path: path.to_owned(),
+            kind: kind.to_owned(),
+            complexity,
+            max_nesting_depth: depth,
+        }
+    }
+
+    fn metrics(q: &Quality) -> Vec<(&'static str, Option<f64>)> {
+        EROSION.iter().map(|&e| (e, q.get(e))).collect()
+    }
+
+    #[test]
+    fn a_split_gives_each_set_only_its_own_rows() {
+        let files = [
+            file("main.py", 100.0, 3.0, 60.0, 2.0, 1.0),
+            file("lib/core.py", 200.0, 5.0, 40.0, 1.0, 0.0),
+            file("tests/test_core.py", 300.0, 20.0, 30.0, 10.0, 0.0),
+            file("tests/conftest.py", 50.0, 4.0, 50.0, 1.0, 0.0),
+            file("test_cli.py", 70.0, 6.0, 40.0, 3.0, 1.0),
+        ];
+        let symbols = [
+            symbol("main.py", "function", 11.0, 3.0),
+            symbol("lib/core.py", "method", 10.0, 4.0),
+            symbol("lib/core.py", "function", 12.0, 2.0),
+            symbol("lib/core.py", "class", 30.0, 9.0),
+            symbol("lib/core.py", "variable", 40.0, 8.0),
+            symbol("tests/test_core.py", "function", 2.0, 1.0),
+            symbol("tests/test_core.py", "function", 15.0, 5.0),
+            symbol("tests/conftest.py", "function", 1.0, 1.0),
+            symbol("test_cli.py", "method", 3.0, 2.0),
+        ];
+        let split = QualitySplit::from_rows(&files, &symbols);
+        assert_eq!(
+            metrics(&split.application),
+            [
+                ("cc_max", Some(12.0)),
+                // 11 and 12 count; exactly 10 does not.
+                ("cc_high_count", Some(2.0)),
+                ("mi_mean", Some(50.0)),
+                ("max_nesting_depth", Some(4.0)),
+                ("lint_errors", Some(8.0)),
+                ("single_use_functions", Some(3.0)),
+                ("trivial_wrappers", Some(1.0)),
+                ("sloc", Some(300.0)),
+            ]
+        );
+        assert_eq!(
+            metrics(&split.tests),
+            [
+                ("cc_max", Some(15.0)),
+                ("cc_high_count", Some(1.0)),
+                ("mi_mean", Some(40.0)),
+                ("max_nesting_depth", Some(5.0)),
+                ("lint_errors", Some(30.0)),
+                ("single_use_functions", Some(14.0)),
+                ("trivial_wrappers", Some(1.0)),
+                ("sloc", Some(420.0)),
+            ]
+        );
+        assert_eq!(split.application.file_count(), 2);
+        assert_eq!(split.tests_file_count(), 3);
+        assert_eq!(split.code_ratio(), Some(1.4));
+
+        // The two sets together are the whole snapshot.
+        let all_files: Vec<&FileRow> = files.iter().collect();
+        let all_symbols: Vec<&SymbolRow> = symbols.iter().collect();
+        let whole = Quality::from_rows(&all_files, &all_symbols);
+        assert_eq!(
+            metrics(&whole),
+            [
+                ("cc_max", Some(15.0)),
+                ("cc_high_count", Some(3.0)),
+                ("mi_mean", Some(44.0)),
+                ("max_nesting_depth", Some(5.0)),
+                ("lint_errors", Some(38.0)),
+                ("single_use_functions", Some(17.0)),
+                ("trivial_wrappers", Some(2.0)),
+                ("sloc", Some(720.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_set_has_zeros_and_no_mi_mean() {
+        let app_only = QualitySplit::from_rows(
+            &[file("main.py", 100.0, 3.0, 60.0, 2.0, 1.0)],
+            &[symbol("main.py", "function", 4.0, 2.0)],
+        );
+        assert_eq!(
+            metrics(&app_only.tests),
+            [
+                ("cc_max", Some(0.0)),
+                ("cc_high_count", Some(0.0)),
+                ("mi_mean", None),
+                ("max_nesting_depth", Some(0.0)),
+                ("lint_errors", Some(0.0)),
+                ("single_use_functions", Some(0.0)),
+                ("trivial_wrappers", Some(0.0)),
+                ("sloc", Some(0.0)),
+            ]
+        );
+        assert_eq!(app_only.code_ratio(), Some(0.0));
+        let tests_only =
+            QualitySplit::from_rows(&[file("tests/test_a.py", 10.0, 1.0, 50.0, 0.0, 0.0)], &[]);
+        assert_eq!(tests_only.code_ratio(), None);
+        assert_eq!(tests_only.application.get("mi_mean"), None);
+    }
+
+    fn checkpoint_dir(run_dir: &Path, name: &str, order: u32) -> std::path::PathBuf {
+        let cp = run_dir.join("p").join(name);
+        std::fs::create_dir_all(cp.join("quality_analysis")).expect("mkdir");
+        std::fs::write(
+            cp.join("checkpoint.yaml"),
+            format!("name: {name}\norder: {order}\n"),
+        )
+        .expect("checkpoint.yaml");
+        cp
+    }
+
+    #[test]
+    fn read_unit_splits_only_with_both_row_files_and_names_a_bad_line() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cp = checkpoint_dir(tmp.path(), "checkpoint_1", 1);
+        let read = || read_unit(tmp.path(), &["p".to_owned()], PassPolicy::Any);
+        assert_eq!(read().expect("read")[0].checkpoints[0].split, None);
+
+        std::fs::write(
+            cp.join(FILES_FILE),
+            "{\"file_path\":\"main.py\",\"loc\":10,\"lint_errors\":1,\"mi\":70,\"extra\":true}\n\n\
+             {\"file_path\":\"tests/test_main.py\",\"loc\":5,\"mi\":null}\n",
+        )
+        .expect("files");
+        assert_eq!(read().expect("read")[0].checkpoints[0].split, None);
+
+        std::fs::write(
+            cp.join(SYMBOLS_FILE),
+            "{\"file_path\":\"main.py\",\"type\":\"function\",\"complexity\":3,\"max_nesting_depth\":1}\n",
+        )
+        .expect("symbols");
+        let split = read().expect("read")[0].checkpoints[0]
+            .split
+            .clone()
+            .expect("split");
+        assert_eq!(split.application.get("sloc"), Some(10.0));
+        assert_eq!(split.application.get("cc_max"), Some(3.0));
+        assert_eq!(split.tests.get("sloc"), Some(5.0));
+        assert_eq!(split.tests.get("mi_mean"), Some(0.0));
+
+        std::fs::write(
+            cp.join(FILES_FILE),
+            "{\"file_path\":\"main.py\",\"loc\":10}\n{not json\n",
+        )
+        .expect("bad files");
+        let e = read().expect_err("malformed line");
+        assert!(
+            e.contains(&cp.join(FILES_FILE).display().to_string()) && e.contains("line 2"),
+            "{e}"
+        );
+    }
+
+    /// A checkpoint whose `test_outcomes` hold `(id, passed, regression)`;
+    /// `None` is an unevaluated one.
+    fn outcome_checkpoint(order: i64, tests: Option<&[(&str, bool, bool)]>) -> CheckpointOutput {
+        let evaluated = tests.is_some();
+        let tests = tests.unwrap_or(&[]);
+        CheckpointOutput {
+            name: format!("checkpoint_{order}"),
+            order,
+            passed: false,
+            evaluated,
+            quality: None,
+            split: None,
+            regression: None,
+            test_outcomes: tests
+                .iter()
+                .map(|(id, p, _)| ((*id).to_owned(), *p))
+                .collect(),
+            regression_tests: tests
+                .iter()
+                .filter(|t| t.2)
+                .map(|t| t.0.to_owned())
+                .collect(),
+            inference: None,
+        }
+    }
+
+    fn track(checkpoints: Vec<CheckpointOutput>) -> RegressionTrack {
+        regressions(&ProblemOutput {
+            problem: "p".to_owned(),
+            checkpoints,
+        })
+    }
+
+    fn step(new: u64, open: u64) -> Option<RegressionStep> {
+        Some(RegressionStep { new, open })
+    }
+
+    const T: &str = "checkpoint_1/test_t";
+
+    #[test]
+    fn a_persisting_regression_is_counted_once() {
+        let t = track(vec![
+            outcome_checkpoint(1, Some(&[(T, true, false)])),
+            outcome_checkpoint(2, Some(&[(T, false, true)])),
+            outcome_checkpoint(3, Some(&[(T, false, true)])),
+            outcome_checkpoint(4, Some(&[(T, false, true)])),
+        ]);
+        assert_eq!(t.steps, [step(0, 0), step(1, 1), step(0, 1), step(0, 1)]);
+        assert_eq!((t.onsets, t.persisting), (1, 1));
+    }
+
+    #[test]
+    fn a_fixed_regression_closes_and_a_later_failure_is_a_new_one() {
+        let fixed = vec![
+            outcome_checkpoint(1, Some(&[(T, true, false)])),
+            outcome_checkpoint(2, Some(&[(T, false, true)])),
+            outcome_checkpoint(3, Some(&[(T, true, true)])),
+        ];
+        let t = track(fixed.clone());
+        assert_eq!(t.steps, [step(0, 0), step(1, 1), step(0, 0)]);
+        assert_eq!((t.onsets, t.persisting), (1, 0));
+
+        let mut again = fixed;
+        again.push(outcome_checkpoint(4, Some(&[(T, false, true)])));
+        let t = track(again);
+        assert_eq!(t.steps[3], step(1, 1));
+        assert_eq!((t.onsets, t.persisting), (2, 1));
+    }
+
+    #[test]
+    fn a_test_that_never_passed_is_no_regression() {
+        let t = track(vec![
+            outcome_checkpoint(1, Some(&[(T, false, false)])),
+            outcome_checkpoint(2, Some(&[(T, false, true)])),
+            outcome_checkpoint(3, Some(&[(T, false, true)])),
+        ]);
+        assert_eq!((t.onsets, t.persisting), (0, 0));
+        assert_eq!(t.steps, [step(0, 0), step(0, 0), step(0, 0)]);
+    }
+
+    #[test]
+    fn an_unevaluated_checkpoint_changes_no_outcome() {
+        let t = track(vec![
+            outcome_checkpoint(1, Some(&[(T, true, false)])),
+            outcome_checkpoint(2, None),
+            outcome_checkpoint(3, Some(&[(T, false, true)])),
+        ]);
+        assert_eq!(t.steps, [step(0, 0), None, step(1, 1)]);
+        assert_eq!((t.onsets, t.persisting), (1, 1));
+    }
+
+    #[test]
+    fn evaluation_tests_key_outcomes_by_origin_and_mark_regressions() {
+        let eval: EvaluationJson = serde_json::from_str(
+            r#"{"tests":{
+                "checkpoint_1-Regression":{"passed":["a"],"failed":["b"],"skipped":["c"]},
+                "checkpoint_2-Core":{"passed":["d"],"failed":[]}
+              },
+              "pass_counts":{"Core":1,"Regression":1},
+              "total_counts":{"Core":1,"Regression":2}}"#,
+        )
+        .expect("evaluation");
+        let (outcomes, regression) = eval.outcomes();
+        assert_eq!(
+            outcomes,
+            BTreeMap::from([
+                ("checkpoint_1/a".to_owned(), true),
+                ("checkpoint_1/b".to_owned(), false),
+                ("checkpoint_2/d".to_owned(), true),
+            ])
+        );
+        assert_eq!(
+            regression,
+            BTreeSet::from(["checkpoint_1/a".to_owned(), "checkpoint_1/b".to_owned()])
+        );
+        assert_eq!(
+            eval.regression(),
+            Some(RegressionCounts {
+                passed: 1,
+                total: 2
+            })
+        );
     }
 }

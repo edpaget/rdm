@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use measure_support::{fails, json, ok};
-use scbench_support::{Checkpoint, Eval, Inference, Quality};
+use scbench_support::{Checkpoint, Eval, FileFixture, Inference, Quality, SymbolFixture};
 use serde_json::{Value, json};
 
 const RDM_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -852,7 +852,7 @@ fn report_writes_markdown_and_json() {
     assert_eq!(stdout, md);
     let report =
         json(&std::fs::read_to_string(run.join("rdm-scbench-report.json")).expect("json report"));
-    assert_eq!(report["schema"], 1);
+    assert_eq!(report["schema"], 2);
     assert_eq!(report["run"], json!(run));
 }
 
@@ -1076,4 +1076,412 @@ fn baseline_comparison_flags_differing_pins() {
         cmp["unmatched_arms"],
         json!({ "current_only": ["extra"], "baseline_only": [] })
     );
+}
+
+// --- Application code, tests and regressions --------------------------------
+
+/// A file row with `loc`, `lint`, `mi`, `single_use`, `trivial`.
+fn file(
+    path: &'static str,
+    loc: f64,
+    lint: f64,
+    mi: f64,
+    single_use: f64,
+    trivial: f64,
+) -> FileFixture {
+    FileFixture {
+        path,
+        loc,
+        lint_errors: lint,
+        mi,
+        single_use,
+        trivial,
+    }
+}
+
+fn symbol(path: &'static str, kind: &'static str, complexity: f64, depth: f64) -> SymbolFixture {
+    SymbolFixture {
+        path,
+        kind,
+        complexity,
+        depth,
+    }
+}
+
+/// The split fixture's rows at checkpoint `k` (1-3). Both arms have the
+/// application files `main.py` (growing 10 lines a checkpoint) and
+/// `lib/core.py`; just-solve's `main.py` carries 10 more lint findings.
+/// Only full-lane has test files: `tests/test_core.py`, `tests/conftest.py`
+/// and `test_cli.py`.
+fn split_rows(k: u32, with_tests: bool) -> (Vec<FileFixture>, Vec<SymbolFixture>) {
+    let main_loc = 100.0 + 10.0 * f64::from(k - 1);
+    let main_lint = if with_tests { 3.0 } else { 13.0 };
+    let mut files = vec![
+        file("main.py", main_loc, main_lint, 60.0, 2.0, 1.0),
+        file("lib/core.py", 200.0, 5.0, 40.0, 1.0, 0.0),
+    ];
+    let mut symbols = vec![
+        symbol("main.py", "function", 11.0, 3.0),
+        symbol("lib/core.py", "method", 10.0, 4.0),
+        symbol("lib/core.py", "function", 12.0, 2.0),
+        symbol("lib/core.py", "class", 30.0, 9.0),
+        symbol("lib/core.py", "variable", 0.0, 0.0),
+    ];
+    if with_tests {
+        files.extend([
+            file("tests/test_core.py", 300.0, 20.0, 30.0, 10.0, 0.0),
+            file("tests/conftest.py", 50.0, 4.0, 50.0, 1.0, 0.0),
+            file("test_cli.py", 70.0, 6.0, 40.0, 3.0, 1.0),
+        ]);
+        symbols.extend([
+            symbol("tests/test_core.py", "function", 2.0, 1.0),
+            symbol("tests/test_core.py", "function", 15.0, 5.0),
+            symbol("tests/conftest.py", "function", 1.0, 1.0),
+            symbol("test_cli.py", "method", 3.0, 2.0),
+        ]);
+    }
+    (files, symbols)
+}
+
+/// One `evaluation.json` test group: `(key, passed, failed)`.
+type TestGroup<'a> = (&'a str, &'a [&'a str], &'a [&'a str]);
+
+/// A run of full-lane (rdm) and just-solve (control), one seed each, over
+/// mvvault checkpoints 1-3. Their `overall_quality.json` is
+/// [`scbench_support::simple`]'s (`cc_max` 5, `sloc` 50, ...), deliberately
+/// unlike the split figures. Full-lane's hidden test `t_b` passes at
+/// checkpoint 1 and fails as a regression at checkpoints 2 and 3;
+/// just-solve's never fails.
+fn split_run(f: &Fixture, name: &str, pins: &RecordPins) -> PathBuf {
+    let checkpoints: Vec<Checkpoint> = (1..=3)
+        .map(|k| scbench_support::simple("mvvault", &format!("checkpoint_{k}"), k))
+        .collect();
+    let unit = |arm, group, image| UnitSpec {
+        arm,
+        group: Some(group),
+        image,
+        seed: Some(1),
+        finished: true,
+        checkpoints: checkpoints.clone(),
+        lane: None,
+        interrupted: None,
+    };
+    let run = f.write_run(
+        name,
+        true,
+        pins,
+        &[
+            unit("full-lane", "rdm", "rdm"),
+            unit("just-solve", "control", "stock"),
+        ],
+    );
+    for (arm, rdm) in [("full-lane", true), ("just-solve", false)] {
+        let out = run.join(arm).join("seed-1/output");
+        let failing: &[&str] = if rdm { &["t_b"] } else { &[] };
+        let passing: &[&str] = if rdm { &["t_a"] } else { &["t_a", "t_b"] };
+        let results: [Vec<TestGroup>; 3] = [
+            vec![("checkpoint_1-Core", &["t_a", "t_b"], &[])],
+            vec![
+                ("checkpoint_1-Regression", passing, failing),
+                ("checkpoint_2-Core", &["t_c"], &[]),
+            ],
+            vec![
+                ("checkpoint_1-Regression", passing, failing),
+                ("checkpoint_2-Regression", &["t_c"], &[]),
+                ("checkpoint_3-Core", &["t_d"], &[]),
+            ],
+        ];
+        for (i, groups) in results.iter().enumerate() {
+            let k = i as u32 + 1;
+            let cp = format!("checkpoint_{k}");
+            let (files, symbols) = split_rows(k, rdm);
+            scbench_support::write_quality_rows(&out, "mvvault", &cp, &files, &symbols);
+            scbench_support::write_test_results(&out, "mvvault", &cp, groups);
+        }
+    }
+    run
+}
+
+/// The single value of a one-seed stat, `None` for `null`.
+fn one(stat: &Value) -> Option<f64> {
+    if stat.is_null() {
+        return None;
+    }
+    let v = values(stat);
+    assert_eq!(v.len(), 1, "{stat}");
+    Some(v[0])
+}
+
+#[test]
+fn application_metrics_count_only_application_files_and_tests_only_test_files() {
+    let f = Fixture::new();
+    let run = split_run(&f, "split", &RecordPins::default());
+    let r = report_json(&run, &[]);
+    let fl = arm(&r, "full-lane");
+    let s = &fl["summary"];
+    // main.py + lib/core.py at checkpoint 3; the class (cc 30, depth 9) and
+    // the cc-10 method do not count toward cc_max / cc_high_count.
+    for (key, want) in [
+        ("app_cc_max_final", 12.0),
+        ("app_cc_high_count_final", 2.0),
+        ("app_mi_mean_final", 50.0),
+        ("app_max_nesting_depth_final", 4.0),
+        ("app_lint_errors_final", 8.0),
+        ("app_single_use_functions_final", 3.0),
+        ("app_trivial_wrappers_final", 1.0),
+        ("app_sloc_final", 320.0),
+        ("app_sloc_change", 20.0),
+        ("app_lint_errors_change", 0.0),
+        ("tests_cc_max_final", 15.0),
+        ("tests_cc_high_count_final", 1.0),
+        ("tests_mi_mean_final", 40.0),
+        ("tests_max_nesting_depth_final", 5.0),
+        ("tests_lint_errors_final", 30.0),
+        ("tests_single_use_functions_final", 14.0),
+        ("tests_trivial_wrappers_final", 1.0),
+        ("tests_sloc_final", 420.0),
+        ("tests_file_count_final", 3.0),
+        ("tests_code_ratio_final", 420.0 / 320.0),
+    ] {
+        assert_eq!(one(&s[key]), Some(want), "full-lane {key}: {}", s[key]);
+    }
+    let cp3 = &fl["checkpoints"][2];
+    assert_eq!(cp3["checkpoint"], "checkpoint_3");
+    assert_eq!(one(&cp3["application"]["sloc"]), Some(320.0));
+    assert_eq!(one(&cp3["application"]["lint_errors"]), Some(8.0));
+    assert_eq!(one(&cp3["application_delta"]["sloc"]), Some(10.0));
+    assert_eq!(one(&cp3["tests"]["sloc"]), Some(420.0));
+    assert_eq!(one(&cp3["tests"]["file_count"]), Some(3.0));
+    assert_eq!(
+        fl["checkpoints"][0]["application_delta"]["sloc"],
+        Value::Null
+    );
+
+    // just-solve wrote no tests: an empty test set, no test MI.
+    let js = &arm(&r, "just-solve")["summary"];
+    assert_eq!(one(&js["app_lint_errors_final"]), Some(18.0));
+    assert_eq!(one(&js["tests_sloc_final"]), Some(0.0));
+    assert_eq!(one(&js["tests_file_count_final"]), Some(0.0));
+    assert_eq!(one(&js["tests_code_ratio_final"]), Some(0.0));
+    assert_eq!(js["tests_mi_mean_final"], Value::Null);
+}
+
+#[test]
+fn scbench_snapshot_figures_keep_their_keys_labelled_as_including_tests() {
+    let f = Fixture::new();
+    let run = split_run(&f, "split", &RecordPins::default());
+    let r = report_json(&run, &[]);
+    let s = &arm(&r, "full-lane")["summary"];
+    // overall_quality.json's figures, not the per-file ones.
+    for (key, want) in [
+        ("cc_max_final", 5.0),
+        ("sloc_final", 50.0),
+        ("lint_errors_final", 1.0),
+        ("sloc_change", 0.0),
+    ] {
+        assert_eq!(one(&s[key]), Some(want), "{key}: {}", s[key]);
+    }
+    assert_eq!(
+        one(&arm(&r, "full-lane")["checkpoints"][2]["metrics"]["cc_max"]),
+        Some(5.0)
+    );
+    let scope = |key: &str| {
+        r["metrics"]
+            .as_array()
+            .expect("metrics")
+            .iter()
+            .find(|m| m["key"] == key)
+            .unwrap_or_else(|| panic!("no metric {key}"))["scope"]
+            .clone()
+    };
+    assert_eq!(scope("cc_max_final"), "snapshot");
+    assert_eq!(scope("sloc_change"), "snapshot");
+    assert_eq!(scope("app_cc_max_final"), "application");
+    assert_eq!(scope("tests_sloc_final"), "tests");
+    assert_eq!(scope("pass_rate"), Value::Null);
+    let md = ok(&report(&run, &[]));
+    assert!(
+        md.contains("| cc_max_final (SCBench snapshot, includes tests) |"),
+        "{md}"
+    );
+}
+
+#[test]
+fn regressions_are_counted_once_and_compared_with_the_control() {
+    let f = Fixture::new();
+    let run = split_run(&f, "split", &RecordPins::default());
+    let r = report_json(&run, &[]);
+    let fl = arm(&r, "full-lane");
+    let s = &fl["summary"];
+    // Regression tests: 1 of 2 at checkpoint 2, 2 of 3 at checkpoint 3.
+    assert_eq!(one(&s["regression_pass_rate"]), Some(3.0 / 5.0));
+    assert_eq!(one(&s["regressions"]), Some(1.0));
+    assert_eq!(one(&s["regressions_persisting"]), Some(1.0));
+    let per_cp = |field: &str| -> Vec<Option<f64>> {
+        fl["checkpoints"]
+            .as_array()
+            .expect("checkpoints")
+            .iter()
+            .map(|c| one(&c[field]))
+            .collect()
+    };
+    assert_eq!(per_cp("regression_passed"), [None, Some(1.0), Some(2.0)]);
+    assert_eq!(per_cp("regression_total"), [None, Some(2.0), Some(3.0)]);
+    assert_eq!(per_cp("regressions_new"), [Some(0.0), Some(1.0), Some(0.0)]);
+    assert_eq!(
+        per_cp("regressions_open"),
+        [Some(0.0), Some(1.0), Some(1.0)]
+    );
+
+    let js = &arm(&r, "just-solve")["summary"];
+    assert_eq!(one(&js["regression_pass_rate"]), Some(1.0));
+    assert_eq!(one(&js["regressions"]), Some(0.0));
+
+    let vs = &r["comparisons"][0];
+    assert_eq!(
+        (vs["rdm"].clone(), vs["control"].clone()),
+        (json!("full-lane"), json!("just-solve"))
+    );
+    let estimate = |key: &str| {
+        vs["metrics"][key]["estimate"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{key}"))
+    };
+    assert_eq!(estimate("app_lint_errors_final"), -10.0);
+    assert_eq!(estimate("regressions"), 1.0);
+    assert!((estimate("regression_pass_rate") + 0.4).abs() < 1e-12);
+    assert_eq!(estimate("tests_sloc_final"), 420.0);
+}
+
+#[test]
+fn markdown_reports_application_tests_regressions_and_the_snapshot_apart() {
+    let f = Fixture::new();
+    let run = split_run(&f, "split", &RecordPins::default());
+    let md = ok(&report(&run, &[]));
+    let at = |heading: &str| {
+        md.find(heading)
+            .unwrap_or_else(|| panic!("no {heading}: {md}"))
+    };
+    let order = [
+        at("## Summary\n"),
+        at("## Application code\n"),
+        at("## Tests\n"),
+        at("## Regression tests\n"),
+        at("## SCBench snapshot (includes tests)\n"),
+        at("## mvvault per checkpoint\n"),
+        at("## rdm vs control\n"),
+    ];
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}\n{md}");
+    assert!(!md.contains("No per-file quality data"), "{md}");
+    assert!(md.contains("counts once"), "{md}");
+    // full-lane checkpoint 2: 1 of 2 regression tests, one new regression.
+    assert!(
+        md.contains("| full-lane | checkpoint_2 | 0 | 1/2 | 1 |"),
+        "{md}"
+    );
+}
+
+#[test]
+fn a_run_without_per_file_rows_reports_no_split() {
+    let f = Fixture::new();
+    let run = f.write_run(
+        "a",
+        true,
+        &RecordPins::default(),
+        &main_units(Shift::default()),
+    );
+    let r = report_json(&run, &[]);
+    let s = &arm(&r, "full-lane")["summary"];
+    assert_eq!(s["app_cc_max_final"], Value::Null);
+    assert_eq!(s["tests_sloc_final"], Value::Null);
+    assert_eq!(s["cc_max_final"]["n"], 3);
+    let md = ok(&report(&run, &[]));
+    assert!(
+        md.contains(
+            "No per-file quality data (quality_analysis/files.jsonl, symbols.jsonl) in this run."
+        ),
+        "{md}"
+    );
+}
+
+#[test]
+fn a_baseline_from_before_the_split_still_compares_on_the_snapshot() {
+    let f = Fixture::new();
+    let a = split_run(&f, "a", &RecordPins::default());
+    ok(&report(&a, &["--save-baseline", "old"]));
+    // Rewrite it as a schema-1 report saved it: no scope, no split or
+    // regression metrics or checkpoint fields.
+    let path = f.baseline("old");
+    let mut b = json(&std::fs::read_to_string(&path).expect("baseline"));
+    let new_key =
+        |k: &str| k.starts_with("app_") || k.starts_with("tests_") || k.starts_with("regression");
+    let report = &mut b["report"];
+    report["schema"] = json!(1);
+    let metrics: Vec<Value> = report["metrics"]
+        .as_array()
+        .expect("metrics")
+        .iter()
+        .filter(|m| !new_key(m["key"].as_str().expect("key")))
+        .map(|m| json!({ "key": m["key"], "better": m["better"] }))
+        .collect();
+    report["metrics"] = json!(metrics);
+    for arm in report["arms"].as_array_mut().expect("arms") {
+        arm["summary"]
+            .as_object_mut()
+            .expect("summary")
+            .retain(|k, _| !new_key(k));
+        for c in arm["checkpoints"].as_array_mut().expect("checkpoints") {
+            let c = c.as_object_mut().expect("checkpoint");
+            for field in [
+                "application",
+                "application_delta",
+                "tests",
+                "regression_passed",
+                "regression_total",
+                "regressions_new",
+                "regressions_open",
+            ] {
+                assert!(c.remove(field).is_some(), "{field}");
+            }
+        }
+    }
+    for c in report["comparisons"].as_array_mut().expect("comparisons") {
+        c["metrics"]
+            .as_object_mut()
+            .expect("metrics")
+            .retain(|k, _| !new_key(k));
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&b).expect("json")).expect("rewrite");
+
+    let pins = RecordPins {
+        rdm_sha: Some(OTHER_RDM_SHA),
+        ..RecordPins::default()
+    };
+    let current = split_run(&f, "b", &pins);
+    let r = report_json(&current, &["--baseline", "old"]);
+    let cmp = &r["baseline"];
+    assert_eq!(cmp["baseline_has_split"], false);
+    assert_eq!(cmp["comparable"], true);
+    let fl = cmp["arms"]
+        .as_array()
+        .expect("arms")
+        .iter()
+        .find(|x| x["name"] == "full-lane")
+        .expect("full-lane");
+    let m = &fl["metrics"];
+    assert_eq!(m["cc_max_final"]["delta"]["estimate"].as_f64(), Some(0.0));
+    assert_eq!(m["app_cc_max_final"]["baseline"], Value::Null);
+    assert_eq!(m["app_cc_max_final"]["delta"], Value::Null);
+    assert_eq!(one(&m["app_cc_max_final"]["current"]), Some(12.0));
+    assert_eq!(m["regressions"]["baseline"], Value::Null);
+    let md = ok(&self::report(&current, &["--baseline", "old"]));
+    assert!(
+        md.contains("> baseline `old` predates the application/tests split (report schema 1)"),
+        "{md}"
+    );
+
+    // A baseline saved by this schema has the split.
+    ok(&self::report(&current, &["--save-baseline", "new"]));
+    let r = report_json(&a, &["--baseline", "new"]);
+    assert_eq!(r["baseline"]["baseline_has_split"], true);
 }

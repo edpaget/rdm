@@ -1,8 +1,10 @@
 //! SCBench per-checkpoint output fixtures, written in SCBench's full shapes
 //! at the pinned commit (`af5a9cbc`): `checkpoint.yaml`, `evaluation.json`
 //! (`CorrectnessResults`), `quality_analysis/overall_quality.json`
-//! (`SnapshotMetrics`) and `inference_result.json`
-//! (`CheckpointInferenceResult`). They are built from SCBench's source, not
+//! (`SnapshotMetrics`), `inference_result.json`
+//! (`CheckpointInferenceResult`), and on request the per-file and per-symbol
+//! rows `quality_analysis/files.jsonl` / `symbols.jsonl` (`FileMetrics`,
+//! `SymbolMetrics`). They are built from SCBench's source, not
 //! captured from a run, so only a live run confirms SCBench writes exactly
 //! these.
 
@@ -242,4 +244,109 @@ pub fn simple(problem: &str, name: &str, order: u32) -> Checkpoint {
         }),
         stream: None,
     }
+}
+
+/// One `quality_analysis/files.jsonl` row.
+#[derive(Clone, Copy)]
+pub struct FileFixture {
+    pub path: &'static str,
+    pub loc: f64,
+    pub lint_errors: f64,
+    pub mi: f64,
+    pub single_use: f64,
+    pub trivial: f64,
+}
+
+/// One `quality_analysis/symbols.jsonl` row.
+#[derive(Clone, Copy)]
+pub struct SymbolFixture {
+    pub path: &'static str,
+    /// `function`, `method`, `class` or `variable`.
+    pub kind: &'static str,
+    pub complexity: f64,
+    pub depth: f64,
+}
+
+fn checkpoint_dir(run_dir: &Path, problem: &str, checkpoint: &str) -> PathBuf {
+    run_dir.join(problem).join(checkpoint)
+}
+
+/// Writes `files.jsonl` and `symbols.jsonl` for one checkpoint, in SCBench's
+/// row shapes (with fields the report does not read).
+pub fn write_quality_rows(
+    run_dir: &Path,
+    problem: &str,
+    checkpoint: &str,
+    files: &[FileFixture],
+    symbols: &[SymbolFixture],
+) {
+    let dir = checkpoint_dir(run_dir, problem, checkpoint).join("quality_analysis");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let lines = |rows: Vec<Value>| -> String {
+        rows.iter()
+            .map(|r| serde_json::to_string(r).expect("json") + "\n")
+            .collect()
+    };
+    let file_rows = files
+        .iter()
+        .map(|f| {
+            json!({
+                "file_path": f.path, "loc": f.loc, "total_lines": f.loc + 10.0,
+                "comments": 1, "lint_errors": f.lint_errors, "lint_fixable": 0,
+                "mi": f.mi, "depth": 1, "is_entry_language": true,
+                "single_use_count": f.single_use, "trivial_wrapper_count": f.trivial,
+                "unused_variable_count": 0,
+            })
+        })
+        .collect();
+    let symbol_rows = symbols
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            json!({
+                "name": format!("sym_{i}"), "type": s.kind, "start": i, "end": i + 5,
+                "complexity": s.complexity, "branches": 0, "statements": 3,
+                "max_nesting_depth": s.depth, "lines": 5, "sloc": 4,
+                "file_path": s.path, "rating": "A",
+            })
+        })
+        .collect();
+    std::fs::write(dir.join("files.jsonl"), lines(file_rows)).expect("files.jsonl");
+    std::fs::write(dir.join("symbols.jsonl"), lines(symbol_rows)).expect("symbols.jsonl");
+}
+
+/// Rewrites one checkpoint's `evaluation.json` `tests` to `groups` (each
+/// `(group key, passed names, failed names)`, the key `<origin>-<Type>`),
+/// with `pass_counts` and `total_counts` summed per group type to match.
+pub fn write_test_results(
+    run_dir: &Path,
+    problem: &str,
+    checkpoint: &str,
+    groups: &[(&str, &[&str], &[&str])],
+) {
+    let path = checkpoint_dir(run_dir, problem, checkpoint).join("evaluation.json");
+    let mut eval: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("evaluation.json"))
+            .expect("evaluation json");
+    let mut tests = serde_json::Map::new();
+    let mut pass = serde_json::Map::new();
+    let mut total = serde_json::Map::new();
+    for (key, passed, failed) in groups {
+        tests.insert(
+            (*key).to_owned(),
+            json!({ "passed": passed, "failed": failed, "skipped": [] }),
+        );
+        let kind = key.rsplit_once('-').expect("<origin>-<Type>").1;
+        let add = |m: &mut serde_json::Map<String, Value>, n: usize| {
+            let now = m.get(kind).and_then(Value::as_u64).unwrap_or(0);
+            m.insert(kind.to_owned(), json!(now + n as u64));
+        };
+        add(&mut pass, passed.len());
+        add(&mut total, passed.len() + failed.len());
+    }
+    eval["tests"] = Value::Object(tests);
+    eval["pass_counts"] = Value::Object(pass);
+    eval["total_counts"] = Value::Object(total);
+    std::fs::write(&path, serde_json::to_string_pretty(&eval).expect("json"))
+        .expect("write evaluation.json");
 }

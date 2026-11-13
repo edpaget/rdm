@@ -10,6 +10,14 @@
 //! [`Report`]) and `<run>/rdm-scbench-report.md` (rendered from it), and
 //! prints the chosen format. It never gates: the exit code is 0 whenever a
 //! report was produced.
+//!
+//! Code quality is reported three ways: application code alone (`app_*`,
+//! the headline), the agent-written tests alone (`tests_*`), both recomputed
+//! from SCBench's per-file rows split by [`outputs::is_test_file`]; and
+//! SCBench's own whole-snapshot figures (`<metric>_final`/`_change`, scope
+//! `snapshot`), which include the tests and keep their schema-1 keys so an
+//! old report stays comparable. The hidden `Regression` tests are reported
+//! beside them ([`outputs::regressions`]).
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -30,7 +38,7 @@ pub const REPORT_JSON: &str = "rdm-scbench-report.json";
 /// The rendered markdown report's file name, beside the run record.
 pub const REPORT_MD: &str = "rdm-scbench-report.md";
 /// The report JSON's schema version.
-pub const REPORT_SCHEMA: u32 = 1;
+pub const REPORT_SCHEMA: u32 = 2;
 
 /// What `scbench report` prints to stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,8 +112,25 @@ pub struct Bootstrap {
 pub struct MetricInfo {
     /// The metric key.
     pub key: String,
-    /// `higher`, `lower`, or `null` for a context-only metric (`sloc`).
+    /// `higher`, `lower`, or `null` for a context-only metric (`sloc`,
+    /// the `tests_*` measures).
     pub better: Option<String>,
+    /// What code a quality metric measures: `application`, `tests` or
+    /// `snapshot` (SCBench's whole snapshot, tests included); `null` for
+    /// pass, regression and usage metrics, and in a schema-1 report.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+impl MetricInfo {
+    /// The metric's row label: its key, marked when it is a whole-snapshot
+    /// figure.
+    pub fn label(&self) -> String {
+        match self.scope.as_deref() {
+            Some(SNAPSHOT) => format!("{} (SCBench snapshot, includes tests)", self.key),
+            _ => self.key.clone(),
+        }
+    }
 }
 
 /// One per-seed value.
@@ -174,6 +199,28 @@ pub struct CheckpointReport {
     /// Each erosion metric minus its value at the previous checkpoint of the
     /// same problem and seed.
     pub delta: BTreeMap<String, Option<Stat>>,
+    /// Each erosion metric over the application code alone.
+    #[serde(default)]
+    pub application: BTreeMap<String, Option<Stat>>,
+    /// Each application-code erosion metric minus its previous value.
+    #[serde(default)]
+    pub application_delta: BTreeMap<String, Option<Stat>>,
+    /// Each erosion metric over the test files alone, plus `file_count` and
+    /// `code_ratio` (test lines per application line).
+    #[serde(default)]
+    pub tests: BTreeMap<String, Option<Stat>>,
+    /// Hidden `Regression` tests passed.
+    #[serde(default)]
+    pub regression_passed: Option<Stat>,
+    /// Hidden `Regression` tests run.
+    #[serde(default)]
+    pub regression_total: Option<Stat>,
+    /// Regressions first seen at this checkpoint.
+    #[serde(default)]
+    pub regressions_new: Option<Stat>,
+    /// Regressions open after this checkpoint.
+    #[serde(default)]
+    pub regressions_open: Option<Stat>,
 }
 
 /// One arm's figures.
@@ -356,7 +403,15 @@ impl LaneView {
 // --- Metrics ---------------------------------------------------------------
 
 const PASS_RATE: &str = "pass_rate";
+const REGRESSION_PASS_RATE: &str = "regression_pass_rate";
+const REGRESSIONS: &str = "regressions";
+const REGRESSIONS_PERSISTING: &str = "regressions_persisting";
 const LANE_FAILURES: &str = "lane_failures";
+const APPLICATION: &str = "application";
+const TESTS: &str = "tests";
+const SNAPSHOT: &str = "snapshot";
+/// The test-set measures beside the erosion metrics.
+const TESTS_EXTRA: [&str; 2] = ["file_count", "code_ratio"];
 const USAGE: [&str; 9] = [
     "cost_usd",
     "tokens_input",
@@ -379,20 +434,70 @@ fn erosion_better(e: &str) -> Option<&'static str> {
 
 /// Every summary metric and its better direction, in report order.
 fn metric_infos() -> Vec<MetricInfo> {
-    let info = |key: String, better: Option<&str>| MetricInfo {
+    let info = |key: String, better: Option<&str>, scope: Option<&str>| MetricInfo {
         key,
         better: better.map(str::to_owned),
+        scope: scope.map(str::to_owned),
     };
-    let mut out = vec![info(PASS_RATE.to_owned(), Some("higher"))];
+    let mut out = vec![
+        info(PASS_RATE.to_owned(), Some("higher"), None),
+        info(REGRESSION_PASS_RATE.to_owned(), Some("higher"), None),
+        info(REGRESSIONS.to_owned(), Some("lower"), None),
+        info(REGRESSIONS_PERSISTING.to_owned(), Some("lower"), None),
+    ];
     for suffix in ["final", "change"] {
         for e in EROSION {
-            out.push(info(format!("{e}_{suffix}"), erosion_better(e)));
+            out.push(info(
+                format!("app_{e}_{suffix}"),
+                erosion_better(e),
+                Some(APPLICATION),
+            ));
+        }
+    }
+    for m in EROSION.iter().chain(&TESTS_EXTRA) {
+        out.push(info(format!("tests_{m}_final"), None, Some(TESTS)));
+    }
+    for suffix in ["final", "change"] {
+        for e in EROSION {
+            out.push(info(
+                format!("{e}_{suffix}"),
+                erosion_better(e),
+                Some(SNAPSHOT),
+            ));
         }
     }
     for key in USAGE {
-        out.push(info(key.to_owned(), Some("lower")));
+        out.push(info(key.to_owned(), Some("lower"), None));
     }
     out
+}
+
+/// The test-set measure `m` (an erosion metric or one of [`TESTS_EXTRA`])
+/// of `split`.
+#[allow(clippy::cast_precision_loss)]
+fn tests_value(split: &outputs::QualitySplit, m: &str) -> Option<f64> {
+    match m {
+        "file_count" => Some(split.tests_file_count() as f64),
+        "code_ratio" => split.code_ratio(),
+        e => split.tests.get(e),
+    }
+}
+
+/// Per problem, the last and the last-minus-first of the values `pick`
+/// gives its checkpoints, skipping those without one.
+fn finals_and_changes(
+    unit: &Unit,
+    pick: &dyn Fn(&outputs::CheckpointOutput) -> Option<f64>,
+) -> (Vec<f64>, Vec<f64>) {
+    let (mut finals, mut changes) = (Vec::new(), Vec::new());
+    for p in &unit.problems {
+        let values: Vec<f64> = p.checkpoints.iter().filter_map(pick).collect();
+        if let (Some(first), Some(last)) = (values.first(), values.last()) {
+            finals.push(*last);
+            changes.push(last - first);
+        }
+    }
+    (finals, changes)
 }
 
 /// One unit: one arm at one seed, read from its checkpoint tree.
@@ -427,25 +532,51 @@ fn unit_values(unit: &Unit, expected: Option<&BTreeMap<String, u64>>) -> BTreeMa
         #[allow(clippy::cast_precision_loss)]
         v.insert(PASS_RATE.to_owned(), passed as f64 / denominator as f64);
     }
+    let checkpoints = || unit.problems.iter().flat_map(|p| &p.checkpoints);
+    let (mut regression_passed, mut regression_total) = (0u64, 0u64);
+    for r in checkpoints().filter_map(|c| c.regression) {
+        regression_passed += r.passed;
+        regression_total += r.total;
+    }
+    if regression_total > 0 {
+        #[allow(clippy::cast_precision_loss)]
+        v.insert(
+            REGRESSION_PASS_RATE.to_owned(),
+            regression_passed as f64 / regression_total as f64,
+        );
+    }
+    if checkpoints().any(|c| c.evaluated) {
+        let tracks: Vec<_> = unit.problems.iter().map(outputs::regressions).collect();
+        #[allow(clippy::cast_precision_loss)]
+        {
+            v.insert(
+                REGRESSIONS.to_owned(),
+                tracks.iter().map(|t| t.onsets).sum::<u64>() as f64,
+            );
+            v.insert(
+                REGRESSIONS_PERSISTING.to_owned(),
+                tracks.iter().map(|t| t.persisting).sum::<u64>() as f64,
+            );
+        }
+    }
+    let mut put = |key: String, xs: &[f64]| {
+        if let Some(m) = stats::mean(xs) {
+            v.insert(key, m);
+        }
+    };
     for e in EROSION {
-        let (mut finals, mut changes) = (Vec::new(), Vec::new());
-        for p in &unit.problems {
-            let values: Vec<f64> = p
-                .checkpoints
-                .iter()
-                .filter_map(|c| c.quality.as_ref()?.get(e))
-                .collect();
-            if let (Some(first), Some(last)) = (values.first(), values.last()) {
-                finals.push(*last);
-                changes.push(last - first);
-            }
-        }
-        if let Some(m) = stats::mean(&finals) {
-            v.insert(format!("{e}_final"), m);
-        }
-        if let Some(m) = stats::mean(&changes) {
-            v.insert(format!("{e}_change"), m);
-        }
+        let (finals, changes) = finals_and_changes(unit, &|c| c.split.as_ref()?.application.get(e));
+        put(format!("app_{e}_final"), &finals);
+        put(format!("app_{e}_change"), &changes);
+    }
+    for m in EROSION.iter().chain(&TESTS_EXTRA) {
+        let (finals, _) = finals_and_changes(unit, &|c| tests_value(c.split.as_ref()?, m));
+        put(format!("tests_{m}_final"), &finals);
+    }
+    for e in EROSION {
+        let (finals, changes) = finals_and_changes(unit, &|c| c.quality.as_ref()?.get(e));
+        put(format!("{e}_final"), &finals);
+        put(format!("{e}_change"), &changes);
     }
     let inferences: Vec<_> = unit
         .problems
@@ -507,36 +638,83 @@ pub(super) fn delta(key: &str, a: Option<&Stat>, b: Option<&Stat>) -> Option<Del
     })
 }
 
-/// One unit's per-checkpoint values: `(passed, metrics, deltas)`.
-type CheckpointValues = (
-    f64,
-    BTreeMap<&'static str, f64>,
-    BTreeMap<&'static str, f64>,
-);
+/// One unit's values at one checkpoint: whether it passed, and every other
+/// figure keyed `<field>.<metric>` for a [`CheckpointReport`] map field
+/// (`metrics.cc_max`, `tests.file_count`) or `<field>` for a scalar one
+/// (`regression_total`).
+type CheckpointValues = (f64, BTreeMap<String, f64>);
 
 /// One checkpoint's values on each seed that has it.
 type SeedValues = Vec<(Option<u64>, CheckpointValues)>;
 
+/// The [`CheckpointReport`] map fields over the erosion metrics.
+const EROSION_FIELDS: [&str; 4] = ["metrics", "delta", "application", "application_delta"];
+/// The [`CheckpointReport`] scalar fields.
+const SCALAR_FIELDS: [&str; 4] = [
+    "regression_passed",
+    "regression_total",
+    "regressions_new",
+    "regressions_open",
+];
+
+/// One checkpoint's erosion metrics.
+type Erosion = BTreeMap<&'static str, f64>;
+
+/// Every erosion metric `q` has.
+fn erosion_of(q: Option<&outputs::Quality>) -> Erosion {
+    EROSION
+        .iter()
+        .filter_map(|&e| Some((e, q?.get(e)?)))
+        .collect()
+}
+
+#[allow(clippy::cast_precision_loss)]
 fn checkpoint_values(problem: &ProblemOutput) -> Vec<(String, i64, CheckpointValues)> {
-    let mut prev: Option<BTreeMap<&'static str, f64>> = None;
+    let track = outputs::regressions(problem);
+    // The previous checkpoint's (snapshot, application) erosion.
+    let mut prev: Option<[Erosion; 2]> = None;
     let mut out = Vec::new();
-    for c in &problem.checkpoints {
-        let metrics: BTreeMap<&'static str, f64> = EROSION
-            .iter()
-            .filter_map(|&e| Some((e, c.quality.as_ref()?.get(e)?)))
-            .collect();
-        let deltas = prev.as_ref().map_or_else(BTreeMap::new, |p| {
-            metrics
-                .iter()
-                .filter_map(|(&e, &x)| Some((e, x - p.get(e)?)))
-                .collect()
-        });
+    for (i, c) in problem.checkpoints.iter().enumerate() {
+        let snapshot = erosion_of(c.quality.as_ref());
+        let application = erosion_of(c.split.as_ref().map(|s| &s.application));
+        let mut v = BTreeMap::new();
+        for (field, delta_field, now, before) in [
+            ("metrics", "delta", &snapshot, prev.as_ref().map(|p| &p[0])),
+            (
+                "application",
+                "application_delta",
+                &application,
+                prev.as_ref().map(|p| &p[1]),
+            ),
+        ] {
+            for (&e, &x) in now {
+                v.insert(format!("{field}.{e}"), x);
+                if let Some(p) = before.and_then(|b| b.get(e)) {
+                    v.insert(format!("{delta_field}.{e}"), x - p);
+                }
+            }
+        }
+        if let Some(split) = &c.split {
+            for m in EROSION.iter().chain(&TESTS_EXTRA) {
+                if let Some(x) = tests_value(split, m) {
+                    v.insert(format!("tests.{m}"), x);
+                }
+            }
+        }
+        if let Some(r) = c.regression {
+            v.insert("regression_passed".to_owned(), r.passed as f64);
+            v.insert("regression_total".to_owned(), r.total as f64);
+        }
+        if let Some(Some(step)) = track.steps.get(i) {
+            v.insert("regressions_new".to_owned(), step.new as f64);
+            v.insert("regressions_open".to_owned(), step.open as f64);
+        }
         out.push((
             c.name.clone(),
             c.order,
-            (if c.passed { 1.0 } else { 0.0 }, metrics.clone(), deltas),
+            (if c.passed { 1.0 } else { 0.0 }, v),
         ));
-        prev = Some(metrics);
+        prev = Some([snapshot, application]);
     }
     out
 }
@@ -568,31 +746,61 @@ fn arm_checkpoints(arm: &ArmUnits, subset: &[String]) -> Vec<CheckpointReport> {
                     })
                     .collect(),
             );
-            let mut metrics = BTreeMap::new();
-            let mut deltas = BTreeMap::new();
-            for e in EROSION {
-                let pick = |which: usize| -> Vec<Sample> {
-                    seeds
-                        .iter()
-                        .filter_map(|(seed, v)| {
-                            let m = if which == 0 { &v.1 } else { &v.2 };
-                            Some(Sample {
-                                seed: *seed,
-                                value: *m.get(e)?,
-                            })
+            // The stat of value `value_key`, its interval drawn from
+            // `stat_key`'s stream.
+            let of = |value_key: &str, stat_key: &str| -> Option<Stat> {
+                let samples = seeds
+                    .iter()
+                    .filter_map(|(seed, v)| {
+                        Some(Sample {
+                            seed: *seed,
+                            value: *v.1.get(value_key)?,
                         })
-                        .collect()
-                };
-                metrics.insert(e.to_owned(), stat(&key(e), pick(0)));
-                deltas.insert(e.to_owned(), stat(&key(&format!("delta.{e}")), pick(1)));
+                    })
+                    .collect();
+                stat(&key(stat_key), samples)
+            };
+            let mut maps: BTreeMap<&str, BTreeMap<String, Option<Stat>>> = BTreeMap::new();
+            for field in EROSION_FIELDS {
+                for e in EROSION {
+                    let value_key = format!("{field}.{e}");
+                    // The schema-1 fields keep their interval streams.
+                    let stat_key = match field {
+                        "metrics" => e.to_owned(),
+                        _ => value_key.clone(),
+                    };
+                    maps.entry(field)
+                        .or_default()
+                        .insert(e.to_owned(), of(&value_key, &stat_key));
+                }
             }
+            for m in EROSION.iter().chain(&TESTS_EXTRA) {
+                let value_key = format!("tests.{m}");
+                maps.entry(TESTS)
+                    .or_default()
+                    .insert((*m).to_owned(), of(&value_key, &value_key));
+            }
+            let [
+                regression_passed,
+                regression_total,
+                regressions_new,
+                regressions_open,
+            ] = SCALAR_FIELDS.map(|f| of(f, f));
+            let mut take = |field: &str| maps.remove(field).unwrap_or_default();
             out.push(CheckpointReport {
                 problem: problem.clone(),
                 checkpoint: name,
                 order,
                 passed,
-                metrics,
-                delta: deltas,
+                metrics: take("metrics"),
+                delta: take("delta"),
+                application: take("application"),
+                application_delta: take("application_delta"),
+                tests: take(TESTS),
+                regression_passed,
+                regression_total,
+                regressions_new,
+                regressions_open,
             });
         }
     }
@@ -877,6 +1085,7 @@ pub fn render_markdown(report: &Report) -> String {
             ];
             for key in [
                 PASS_RATE,
+                REGRESSION_PASS_RATE,
                 "cost_usd",
                 "tokens_total",
                 "wall_clock_seconds",
@@ -894,6 +1103,7 @@ pub fn render_markdown(report: &Report) -> String {
             "group",
             "n",
             "pass rate",
+            "regression pass rate",
             "cost (USD)",
             "tokens",
             "wall-clock (s)",
@@ -902,23 +1112,83 @@ pub fn render_markdown(report: &Report) -> String {
         &rows,
     );
 
-    out.push_str("## Erosion\n\n");
-    let mut header = strings(&["arm"]);
-    for suffix in ["final", "change"] {
-        for e in EROSION {
-            header.push(format!("{e}_{suffix}"));
-        }
+    let has_split = report.arms.iter().any(|a| {
+        EROSION
+            .iter()
+            .any(|e| summary_of(a, &format!("app_{e}_final")).is_some())
+    });
+    let arm_table = |out: &mut String, columns: &[(String, String)]| {
+        let mut header = strings(&["arm"]);
+        header.extend(columns.iter().map(|(label, _)| label.clone()));
+        let rows: Vec<Vec<String>> = report
+            .arms
+            .iter()
+            .map(|a| {
+                std::iter::once(a.name.clone())
+                    .chain(columns.iter().map(|(_, k)| cell(summary_of(a, k))))
+                    .collect()
+            })
+            .collect();
+        table(out, &header, &rows);
+    };
+    let erosion_columns = |prefix: &str| -> Vec<(String, String)> {
+        ["final", "change"]
+            .into_iter()
+            .flat_map(|suffix| {
+                EROSION
+                    .iter()
+                    .map(move |e| (format!("{e}_{suffix}"), format!("{prefix}{e}_{suffix}")))
+            })
+            .collect()
+    };
+    let no_split = "No per-file quality data (quality_analysis/files.jsonl, symbols.jsonl) \
+                    in this run.\n\n";
+
+    out.push_str("## Application code\n\n");
+    if has_split {
+        arm_table(&mut out, &erosion_columns("app_"));
+    } else {
+        out.push_str(no_split);
     }
-    let rows: Vec<Vec<String>> = report
-        .arms
-        .iter()
-        .map(|a| {
-            std::iter::once(a.name.clone())
-                .chain(header[1..].iter().map(|k| cell(summary_of(a, k))))
-                .collect()
-        })
+
+    out.push_str("## Tests\n\n");
+    if has_split {
+        let columns: Vec<(String, String)> = [
+            ("test lines", "sloc"),
+            ("test files", "file_count"),
+            ("test-to-code ratio", "code_ratio"),
+            ("lint_errors", "lint_errors"),
+            ("cc_max", "cc_max"),
+            ("cc_high_count", "cc_high_count"),
+            ("max_nesting_depth", "max_nesting_depth"),
+            ("mi_mean", "mi_mean"),
+        ]
+        .into_iter()
+        .map(|(label, m)| (label.to_owned(), format!("tests_{m}_final")))
         .collect();
-    table(&mut out, &header, &rows);
+        arm_table(&mut out, &columns);
+    } else {
+        out.push_str(no_split);
+    }
+
+    out.push_str("## Regression tests\n\n");
+    arm_table(
+        &mut out,
+        &[
+            ("regression pass rate", REGRESSION_PASS_RATE),
+            ("regressions", REGRESSIONS),
+            ("persisting regressions", REGRESSIONS_PERSISTING),
+        ]
+        .map(|(label, k)| (label.to_owned(), k.to_owned())),
+    );
+    out.push_str(
+        "A hidden regression test that fails after passing counts once, when it first \
+         fails; it persists while it keeps failing and counts again only if it fails after \
+         passing again.\n\n",
+    );
+
+    out.push_str("## SCBench snapshot (includes tests)\n\n");
+    arm_table(&mut out, &erosion_columns(""));
 
     let mut problems: Vec<&str> = Vec::new();
     for c in report.arms.iter().flat_map(|a| &a.checkpoints) {
@@ -928,24 +1198,38 @@ pub fn render_markdown(report: &Report) -> String {
     }
     for problem in problems {
         out.push_str(&format!("## {problem} per checkpoint\n\n"));
-        let mut header = strings(&["arm", "checkpoint", "pass"]);
-        header.extend(EROSION.iter().map(|e| format!("{e} (Δ)")));
+        let mut header = strings(&[
+            "arm",
+            "checkpoint",
+            "pass",
+            "regression passed/total",
+            "new regressions",
+        ]);
+        header.extend(EROSION.iter().map(|e| format!("app {e} (Δ)")));
+        header.push("test sloc".to_owned());
         let mut rows = Vec::new();
         for a in &report.arms {
             for c in a.checkpoints.iter().filter(|c| c.problem == problem) {
+                let regression = match (&c.regression_passed, &c.regression_total) {
+                    (Some(p), Some(t)) => format!("{}/{}", num(p.mean), num(t.mean)),
+                    _ => "—".to_owned(),
+                };
                 let mut row = vec![
                     a.name.clone(),
                     c.checkpoint.clone(),
                     cell(c.passed.as_ref()),
+                    regression,
+                    cell(c.regressions_new.as_ref()),
                 ];
                 for e in EROSION {
-                    let m = c.metrics.get(e).and_then(Option::as_ref);
-                    let d = c.delta.get(e).and_then(Option::as_ref);
+                    let m = c.application.get(e).and_then(Option::as_ref);
+                    let d = c.application_delta.get(e).and_then(Option::as_ref);
                     row.push(match d {
                         Some(d) => format!("{} (Δ {})", cell(m), signed(d.mean)),
                         None => cell(m),
                     });
                 }
+                row.push(cell(c.tests.get("sloc").and_then(Option::as_ref)));
                 rows.push(row);
             }
         }
@@ -965,7 +1249,7 @@ pub fn render_markdown(report: &Report) -> String {
             .metrics
             .iter()
             .map(|m| {
-                std::iter::once(m.key.clone())
+                std::iter::once(m.label())
                     .chain(
                         report
                             .comparisons
@@ -1082,20 +1366,59 @@ mod tests {
     }
 
     #[test]
-    fn every_summary_metric_has_a_direction_except_sloc() {
+    fn every_summary_metric_has_a_direction_except_context_metrics() {
         let infos = metric_infos();
         assert_eq!(infos[0].key, "pass_rate");
         let get = |k: &str| {
+            let i = infos
+                .iter()
+                .find(|i| i.key == k)
+                .unwrap_or_else(|| panic!("{k}"));
+            (i.better.clone(), i.scope.clone())
+        };
+        let some = |s: &str| Some(s.to_owned());
+        assert_eq!(get("mi_mean_change"), (some("higher"), some("snapshot")));
+        assert_eq!(get("sloc_final"), (None, some("snapshot")));
+        assert_eq!(
+            get("app_mi_mean_change"),
+            (some("higher"), some("application"))
+        );
+        assert_eq!(
+            get("app_lint_errors_final"),
+            (some("lower"), some("application"))
+        );
+        assert_eq!(get("app_sloc_final"), (None, some("application")));
+        for i in infos.iter().filter(|i| i.key.starts_with("tests_")) {
+            assert_eq!(
+                (i.better.clone(), i.scope.clone()),
+                (None, some("tests")),
+                "{}",
+                i.key
+            );
+        }
+        assert_eq!(get("regression_pass_rate"), (some("higher"), None));
+        assert_eq!(get("regressions"), (some("lower"), None));
+        assert_eq!(get("regressions_persisting"), (some("lower"), None));
+        assert_eq!(get("lane_failures"), (some("lower"), None));
+        // pass rate, regressions, app final+change, tests, snapshot, usage.
+        assert_eq!(infos.len(), 1 + 3 + 16 + 10 + 16 + 9);
+    }
+
+    #[test]
+    fn snapshot_rows_are_labelled_as_including_tests() {
+        let infos = metric_infos();
+        let label = |k: &str| {
             infos
                 .iter()
                 .find(|i| i.key == k)
                 .unwrap_or_else(|| panic!("{k}"))
-                .better
-                .clone()
+                .label()
         };
-        assert_eq!(get("mi_mean_change").as_deref(), Some("higher"));
-        assert_eq!(get("sloc_final"), None);
-        assert_eq!(get("lane_failures").as_deref(), Some("lower"));
-        assert_eq!(infos.len(), 1 + 16 + 9);
+        assert_eq!(
+            label("cc_max_final"),
+            "cc_max_final (SCBench snapshot, includes tests)"
+        );
+        assert_eq!(label("app_cc_max_final"), "app_cc_max_final");
+        assert_eq!(label("pass_rate"), "pass_rate");
     }
 }
